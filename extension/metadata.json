@@ -1,0 +1,8 @@
+{
+    "uuid": "wgaf@wgaf.dev",
+    "name": "wgaf Window Bridge",
+    "description": "Minimal GNOME Shell bridge exposing window/workspace introspection and control over D-Bus (org.gnome.Shell.Extensions.Wgaf.V1) for the wgaf automation daemon. No input synthesis, no accessibility calls - window/workspace enumeration and control only.",
+    "shell-version": ["50"],
+    "url": "https://github.com/wgaf-project/wgaf",
+    "version-name": "0.2.0"
+}

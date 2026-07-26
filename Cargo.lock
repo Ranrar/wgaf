@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "wgaf-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "tokio",
@@ -910,11 +910,11 @@ dependencies = [
 
 [[package]]
 name = "wgaf-common"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "wgaf-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "serde",
