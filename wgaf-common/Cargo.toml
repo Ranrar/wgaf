@@ -3,3 +3,14 @@ name = "wgaf-common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+serde.workspace = true
+# Only used by the `dict` submodule's `a{sv}` wire types (Type/
+# SerializeDict/DeserializeDict) — this crate has no D-Bus connection logic
+# of its own, see src/dict.rs's module doc comment for why these live
+# alongside the plain DTOs instead of purely in wgaf-daemon.
+zbus.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

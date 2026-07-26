@@ -1,3 +1,5 @@
+pub mod windows_api;
+
 use zbus::interface;
 
 pub struct Daemon;
