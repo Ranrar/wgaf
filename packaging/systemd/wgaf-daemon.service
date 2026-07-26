@@ -1,0 +1,13 @@
+[Unit]
+Description=wgaf automation daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.wgaf.Daemon
+ExecStart=%h/.cargo/bin/wgaf-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
