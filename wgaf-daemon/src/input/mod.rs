@@ -194,7 +194,24 @@ impl InputBackend {
     {
         let device = self.device().await?;
         tokio::task::spawn_blocking(move || {
-            let mut device = device.lock().expect("uinput device mutex poisoned");
+            // FIXED: recover from poisoning instead of panicking. The guarded
+            // state is just an open `/dev/uinput` file descriptor plus the
+            // kernel-side device it created — every operation on it
+            // (`emit`/`sync` in `device.rs`) is a sequential, self-contained
+            // `write()`/ioctl with no multi-step invariant spanning the
+            // `Mutex` that a panic partway through could leave torn. Worst
+            // case, a panic mid-sequence (e.g. between a key-press emit and
+            // its matching release in `keyboard::type_text`) leaves a key
+            // logically "stuck down" at the kernel's evdev layer, which is a
+            // synthesized-input correctness issue for that one call, not
+            // corruption of the fd itself — the next call's `emit`/`sync`
+            // still succeeds against the same still-valid device. Poisoning
+            // the whole subsystem over that would make one panicking caller
+            // permanently disable input synthesis for every other caller for
+            // the rest of the daemon's life, which is worse than proceeding.
+            let mut device = device
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             f(&mut device)
         })
         .await

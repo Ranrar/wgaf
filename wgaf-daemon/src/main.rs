@@ -16,21 +16,24 @@ use tracing_subscriber::EnvFilter;
 /// GNOME Shell Extension talk to.
 #[derive(Parser)]
 struct Args {
-    /// Path to a TOML config file.
+    /// Path to a TOML config file. Defaults to
+    /// `$XDG_CONFIG_HOME/wgaf/config.toml` (or `$HOME/.config/wgaf/config.toml`
+    /// if `$XDG_CONFIG_HOME` is unset) if not given — see
+    /// `config::default_config_path`. That default file need not exist: a
+    /// missing file (explicit path or default) just means "use built-in
+    /// defaults", not an error.
     #[arg(long)]
     config: Option<PathBuf>,
 
     /// Path to a TOML permission-policy file. Same file format as
     /// `--config` (plain TOML), always expected as a *sibling* of wherever
-    /// `--config`'s file lives — same "explicit path, or a sensible
-    /// default" shape as `Config::load`, except here the *default* itself
-    /// is "no file -> every capability defaults to Allow" rather than a
-    /// `Default` struct — see `permissions::policy`'s module docs. If
-    /// omitted, the daemon looks for `permissions.toml` next to
-    /// `--config`'s file (or, if `--config` itself was omitted, does not
-    /// look anywhere and simply runs all-Allow — a real default `--config`
-    /// path — and thus a real default location for this file too — isn't
-    /// implemented yet).
+    /// `--config`'s file lives (or would live by default — see `--config`'s
+    /// own doc comment) — same "explicit path, or a sensible default" shape
+    /// as `Config::load`, except here the *default* itself is "no file ->
+    /// every capability defaults to Allow" rather than a `Default` struct —
+    /// see `permissions::policy`'s module docs. If omitted, the daemon
+    /// looks for `permissions.toml` next to the resolved `--config` path
+    /// (explicit or default).
     #[arg(long)]
     permissions: Option<PathBuf>,
 
@@ -43,7 +46,17 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let mut config = Config::load(args.config.as_deref())?;
+    // ADDED: resolve a real default `--config` location
+    // (`$XDG_CONFIG_HOME/wgaf/config.toml`, falling back to
+    // `$HOME/.config/wgaf/config.toml`) when `--config` wasn't given
+    // explicitly, closing the gap flagged during Phase 6 where the daemon
+    // had no on-disk config location at all short of an explicit flag. An
+    // explicit `--config` always wins; `config::default_config_path`
+    // returns `None` (no default at all) only if neither
+    // `$XDG_CONFIG_HOME` nor `$HOME` is usable.
+    let config_path = args.config.clone().or_else(config::default_config_path);
+
+    let mut config = Config::load(config_path.as_deref())?;
     if let Some(log_level) = args.log_level {
         config.log_level = log_level;
     }
@@ -54,19 +67,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    tracing::info!(bus_name = %config.bus_name, "starting wgaf-daemon");
+    tracing::info!(
+        bus_name = %config.bus_name,
+        config_path = ?config_path,
+        "starting wgaf-daemon"
+    );
 
     // Resolve the permission-policy file path: an explicit `--permissions`
-    // wins; otherwise default to a `permissions.toml` sibling of
-    // `--config`'s file (same directory), if one was given. `PolicyMap::load`
+    // wins; otherwise default to a `permissions.toml` sibling of the
+    // resolved `--config` path (same directory) — `config_path`, not
+    // `args.config`, so this now finds `permissions.toml` next to the new
+    // XDG default `config.toml` location automatically, without needing an
+    // explicit `--config` to anchor the sibling lookup. `PolicyMap::load`
     // treats a missing/nonexistent path as "every capability defaults to
-    // Allow", not an error — see `permissions::policy`'s module docs — so
-    // there is deliberately no fallback path to try when `--config` itself
-    // was never given (there is, as yet, no default `--config` location to
-    // anchor a sibling lookup to at all — the intended eventual default is
-    // XDG-based).
+    // Allow", not an error — see `permissions::policy`'s module docs.
     let permissions_path = args.permissions.or_else(|| {
-        args.config
+        config_path
             .as_ref()
             .and_then(|c| c.parent())
             .map(|dir| dir.join("permissions.toml"))

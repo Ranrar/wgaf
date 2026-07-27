@@ -177,10 +177,24 @@ impl PermissionGate {
         capability: Capability,
         connection: &zbus::Connection,
     ) -> Result<bool, PermissionError> {
+        // FIXED: recover from poisoning instead of panicking. The guarded
+        // state is just a `HashMap<Capability, bool>` of already-resolved
+        // `Prompt` decisions; every critical section here is a single
+        // `get`/`insert` that either completes or doesn't (no multi-step
+        // invariant across the map that a panic partway through could leave
+        // torn), and per the struct docs, this lock is never held across an
+        // `.await`, so the only realistic way to poison it is a panic from
+        // deep inside `HashMap`'s own internals — not something recovering
+        // makes worse. Treating poisoning as fatal here would mean one
+        // panicking caller permanently disables the *entire* permission gate
+        // (every capability check, for all three D-Bus interfaces) for the
+        // rest of the daemon's life, which is a far worse failure mode than
+        // proceeding with a possibly-incomplete cache and simply re-prompting
+        // if an entry didn't make it in.
         if let Some(cached) = self
             .prompt_cache
             .lock()
-            .expect("prompt cache mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&capability)
             .copied()
         {
@@ -191,7 +205,7 @@ impl PermissionGate {
 
         self.prompt_cache
             .lock()
-            .expect("prompt cache mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(capability, allowed);
         Ok(allowed)
     }

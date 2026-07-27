@@ -32,11 +32,11 @@ fn print_ok(json: bool, message: &str) {
     }
 }
 
-pub async fn list(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     let reply = connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::WINDOWS_OBJECT_PATH,
             Some(wgaf_common::WINDOWS_INTERFACE_NAME),
             "ListWindows",
@@ -68,11 +68,11 @@ pub async fn list(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub async fn focus(id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn focus(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::WINDOWS_OBJECT_PATH,
             Some(wgaf_common::WINDOWS_INTERFACE_NAME),
             "FocusWindow",
@@ -85,6 +85,7 @@ pub async fn focus(id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>
 }
 
 pub async fn move_window(
+    bus_name: &str,
     id: u32,
     x: i32,
     y: i32,
@@ -93,7 +94,7 @@ pub async fn move_window(
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::WINDOWS_OBJECT_PATH,
             Some(wgaf_common::WINDOWS_INTERFACE_NAME),
             "MoveWindow",
@@ -106,6 +107,7 @@ pub async fn move_window(
 }
 
 pub async fn resize(
+    bus_name: &str,
     id: u32,
     width: i32,
     height: i32,
@@ -114,7 +116,7 @@ pub async fn resize(
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::WINDOWS_OBJECT_PATH,
             Some(wgaf_common::WINDOWS_INTERFACE_NAME),
             "ResizeWindow",
@@ -126,11 +128,11 @@ pub async fn resize(
     Ok(())
 }
 
-pub async fn close(id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn close(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::WINDOWS_OBJECT_PATH,
             Some(wgaf_common::WINDOWS_INTERFACE_NAME),
             "CloseWindow",
@@ -142,11 +144,11 @@ pub async fn close(id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub async fn workspaces(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn workspaces(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     let reply = connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::WINDOWS_OBJECT_PATH,
             Some(wgaf_common::WINDOWS_INTERFACE_NAME),
             "GetWorkspaces",

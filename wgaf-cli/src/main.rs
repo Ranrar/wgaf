@@ -1,6 +1,6 @@
 mod commands;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 /// wgaf — Wayland GNOME automation framework CLI.
 #[derive(Parser)]
@@ -9,6 +9,13 @@ struct Cli {
     /// Emit machine-readable JSON instead of human-readable output.
     #[arg(long, global = true)]
     json: bool,
+
+    /// D-Bus well-known bus name of the daemon to talk to. Defaults to the
+    /// daemon's own default (`org.wgaf.Daemon`, [`wgaf_common::BUS_NAME`]) —
+    /// only pass this if the target daemon was started with a customized
+    /// `bus_name` in its `config.toml` (see `Config::bus_name`).
+    #[arg(long, global = true)]
+    bus_name: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -61,6 +68,16 @@ enum Command {
         #[command(subcommand)]
         command: A11yCommand,
     },
+
+    /// Print a shell completion script for the given shell to stdout.
+    ///
+    /// Redirect the output to wherever your shell loads completions from,
+    /// e.g. `wgaf completions bash > /etc/bash_completion.d/wgaf` or `wgaf
+    /// completions zsh > "${fpath[1]}/_wgaf"`.
+    Completions {
+        /// Shell to generate a completion script for.
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -92,7 +109,7 @@ enum MouseCommand {
 
     /// Click (press then release) a mouse button.
     Click {
-        /// `left`, `right`, or `middle`.
+        /// Mouse button to click: `left`, `right`, or `middle`.
         button: String,
     },
 
@@ -211,7 +228,9 @@ enum WindowCommand {
     Resize {
         #[command(flatten)]
         id: WindowId,
+        /// Target width, in pixels.
         width: i32,
+        /// Target height, in pixels.
         height: i32,
     },
 
@@ -232,37 +251,58 @@ struct WindowId {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let json = cli.json;
+    // ADDED: `--bus-name` defaults to the daemon's own default rather than
+    // being baked into a clap `default_value`, so the "customized bus name"
+    // case and the "default" case both flow through the same
+    // `Option::unwrap_or_else` path instead of clap needing to stringify a
+    // `const` at derive-macro time.
+    let bus_name = cli
+        .bus_name
+        .unwrap_or_else(|| wgaf_common::BUS_NAME.to_string());
+    let bus_name = bus_name.as_str();
 
     match cli.command {
-        Command::Ping => commands::ping().await?,
+        Command::Ping => commands::ping(bus_name, json).await?,
         Command::Window { command } => match command {
-            WindowCommand::List => commands::window::list(json).await?,
-            WindowCommand::Focus(WindowId { id }) => commands::window::focus(id, json).await?,
+            WindowCommand::List => commands::window::list(bus_name, json).await?,
+            WindowCommand::Focus(WindowId { id }) => {
+                commands::window::focus(bus_name, id, json).await?
+            }
             WindowCommand::Move {
                 id: WindowId { id },
                 x,
                 y,
-            } => commands::window::move_window(id, x, y, json).await?,
+            } => commands::window::move_window(bus_name, id, x, y, json).await?,
             WindowCommand::Resize {
                 id: WindowId { id },
                 width,
                 height,
-            } => commands::window::resize(id, width, height, json).await?,
-            WindowCommand::Close(WindowId { id }) => commands::window::close(id, json).await?,
-            WindowCommand::Workspaces => commands::window::workspaces(json).await?,
+            } => commands::window::resize(bus_name, id, width, height, json).await?,
+            WindowCommand::Close(WindowId { id }) => {
+                commands::window::close(bus_name, id, json).await?
+            }
+            WindowCommand::Workspaces => commands::window::workspaces(bus_name, json).await?,
         },
-        Command::Type { text } => commands::input::type_text(&text, json).await?,
+        Command::Type { text } => commands::input::type_text(bus_name, &text, json).await?,
         Command::Key { command } => match command {
-            KeyCommand::Press { key } => commands::input::key_press(&key, json).await?,
-            KeyCommand::Release { key } => commands::input::key_release(&key, json).await?,
+            KeyCommand::Press { key } => commands::input::key_press(bus_name, &key, json).await?,
+            KeyCommand::Release { key } => {
+                commands::input::key_release(bus_name, &key, json).await?
+            }
         },
         Command::Mouse { command } => match command {
-            MouseCommand::Move { dx, dy } => commands::input::mouse_move(dx, dy, json).await?,
-            MouseCommand::Click { button } => commands::input::mouse_click(&button, json).await?,
-            MouseCommand::Scroll { dx, dy } => commands::input::mouse_scroll(dx, dy, json).await?,
+            MouseCommand::Move { dx, dy } => {
+                commands::input::mouse_move(bus_name, dx, dy, json).await?
+            }
+            MouseCommand::Click { button } => {
+                commands::input::mouse_click(bus_name, &button, json).await?
+            }
+            MouseCommand::Scroll { dx, dy } => {
+                commands::input::mouse_scroll(bus_name, dx, dy, json).await?
+            }
         },
         Command::A11y { command } => match command {
-            A11yCommand::ListApps => commands::accessibility::list_apps(json).await?,
+            A11yCommand::ListApps => commands::accessibility::list_apps(bus_name, json).await?,
             A11yCommand::Find {
                 app,
                 role,
@@ -270,25 +310,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 description,
                 max_results,
             } => {
-                commands::accessibility::find(&app, &role, &name, &description, max_results, json)
-                    .await?
+                commands::accessibility::find(
+                    bus_name,
+                    &app,
+                    &role,
+                    &name,
+                    &description,
+                    max_results,
+                    json,
+                )
+                .await?
             }
             A11yCommand::Tree { app, max_depth } => {
-                commands::accessibility::tree(&app, max_depth, json).await?
+                commands::accessibility::tree(bus_name, &app, max_depth, json).await?
             }
             A11yCommand::Info { element } => {
-                commands::accessibility::get_element_info(&element, json).await?
+                commands::accessibility::get_element_info(bus_name, &element, json).await?
             }
             A11yCommand::Click { element, action } => {
-                commands::accessibility::click(&element, &action, json).await?
+                commands::accessibility::click(bus_name, &element, &action, json).await?
             }
             A11yCommand::Focus { element } => {
-                commands::accessibility::focus(&element, json).await?
+                commands::accessibility::focus(bus_name, &element, json).await?
             }
             A11yCommand::SetText { element, text } => {
-                commands::accessibility::set_text(&element, &text, json).await?
+                commands::accessibility::set_text(bus_name, &element, &text, json).await?
             }
         },
+        Command::Completions { shell } => {
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+        }
     }
 
     Ok(())
@@ -297,7 +350,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -644,5 +696,49 @@ mod tests {
             }
             _ => panic!("expected A11y(SetText)"),
         }
+    }
+
+    #[test]
+    fn parses_completions_bash() {
+        let cli = Cli::try_parse_from(["wgaf", "completions", "bash"]).expect("parse");
+        match cli.command {
+            Command::Completions { shell } => assert_eq!(shell, clap_complete::Shell::Bash),
+            _ => panic!("expected Completions"),
+        }
+    }
+
+    #[test]
+    fn parses_completions_zsh() {
+        let cli = Cli::try_parse_from(["wgaf", "completions", "zsh"]).expect("parse");
+        match cli.command {
+            Command::Completions { shell } => assert_eq!(shell, clap_complete::Shell::Zsh),
+            _ => panic!("expected Completions"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_completions_shell() {
+        assert!(Cli::try_parse_from(["wgaf", "completions", "not-a-shell"]).is_err());
+    }
+
+    /// Regenerates `wgaf`'s man pages (one `.1` file per subcommand,
+    /// recursively) into `target/man/`. Not run as part of the normal test
+    /// suite (`#[ignore]`) since it writes files rather than asserting
+    /// anything — run it on demand with:
+    ///
+    ///     cargo test -p wgaf-cli generate_man_pages -- --ignored
+    ///
+    /// `clap_mangen` is a `[dev-dependencies]`-only dependency (see
+    /// `wgaf-cli/Cargo.toml`), so none of this ships in the release binary —
+    /// there is no packaging pipeline yet to consume a build-time artifact,
+    /// so this is deliberately an on-demand dev step rather than a
+    /// `build.rs`.
+    #[test]
+    #[ignore]
+    fn generate_man_pages() {
+        let out_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/man");
+        std::fs::create_dir_all(out_dir).expect("create target/man");
+        clap_mangen::generate_to(Cli::command(), out_dir).expect("generate man pages");
+        println!("man pages written to {out_dir}");
     }
 }

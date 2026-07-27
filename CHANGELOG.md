@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-27
+
+### Added
+
+- `wgaf-cli`: new `wgaf completions <shell>` subcommand (`wgaf-cli/src/main.rs`) generating a real shell completion script via `clap_complete::generate` (bash/zsh/fish/elvish/powershell via `clap_complete::Shell`, new runtime workspace dependency `clap_complete = "4"`), spot-checked for bash/zsh output; 3 new parsing tests (`parses_completions_bash`/`parses_completions_zsh`/`rejects_unknown_completions_shell`).
+- `wgaf-cli`: man page generation via `clap_mangen` (new `[dev-dependencies]`-only workspace dependency, `clap_mangen = "0.3"`, kept out of the release binary since there is no packaging pipeline yet to consume a build-time artifact), exercised on demand by a `#[ignore]`d test, `generate_man_pages` (`wgaf-cli/src/main.rs`), run via `cargo test -p wgaf-cli generate_man_pages -- --ignored` or the new root `make man` target; generates all 26 per-subcommand `.1` pages into `target/man/`.
+- `wgaf-daemon/src/config.rs`: `default_config_path`/`resolve_default_config_path` resolve a real default `--config` location per the XDG Base Directory spec — `$XDG_CONFIG_HOME/wgaf/config.toml`, falling back to `$HOME/.config/wgaf/config.toml` — closing the gap flagged during Phase 6 where the daemon had no on-disk config location short of an explicit `--config` flag. `wgaf-daemon/src/main.rs`'s `--permissions` sibling-file lookup now anchors off this resolved default path too, so `permissions.toml` is found automatically next to the new default `config.toml` location even with neither `--config` nor `--permissions` given. 5 new unit tests on `resolve_default_config_path`, plus a real spawned-binary end-to-end test, `wgaf-daemon/tests/default_config_path.rs`, confirming the daemon actually picks up `$XDG_CONFIG_HOME/wgaf/config.toml` with no `--config` flag given at all.
+- Root `Makefile`: `build`/`install`/`uninstall`/`man`/`clean` targets wrapping `cargo install --path` for `wgaf-daemon`/`wgaf-cli`, installing the systemd user unit, and invoking `extension/Makefile`'s own `install`/`enable`/`uninstall` targets, plus printed (not automated — still needs root) `/dev/uinput` udev-rule/`input`-group setup instructions consistent with Phase 4/6's existing guidance. Full distro (`.deb`/`.rpm`) packaging was evaluated and explicitly deferred to post-1.0, since there is no tagged release yet to package.
+- `docs/`: `cli-reference.md` (full flag/command reference), `user-guide.md` (practical how-to), and `example-walkthrough.md` (a complete start-to-finish task) — new end-user-facing documentation, linked from the rewritten README.
+- `wgaf-cli`: new global `--bus-name` CLI flag (`wgaf-cli/src/main.rs`), defaulting to `wgaf_common::BUS_NAME`, threaded through every command function in `wgaf-cli/src/commands/{mod,window,input,accessibility}.rs` — previously the CLI always hardcoded the default bus name and had no way to reach a daemon running with a custom `bus_name` from `config.toml`, a supported config option with no matching CLI-side way to target it.
+
+### Changed
+
+- `README.md`: rewritten as a focused end-user overview (what it can do, use cases, requirements, install/run/uninstall via the new `Makefile`, shell completions) that links out to the new `docs/` directory for the full command reference and walkthroughs, rather than inlining every command's usage inline.
+
+### Fixed
+
+- `wgaf-cli`: `wgaf ping` (`wgaf-cli/src/commands/mod.rs`) silently ignored the global `--json` flag, always printing plain text; it now honors it like every other command, printing `{"ok": true, "response": "..."}`. Found during the Phase 7 `--help` consistency pass.
+- `wgaf-cli`: `window resize`'s `<WIDTH>`/`<HEIGHT>` positional arguments (`wgaf-cli/src/main.rs`) had no help text at all, and `mouse click`'s `<BUTTON>` help text broke the capitalized-sentence convention every other argument followed. Both fixed.
+- `wgaf-cli`: `describe_dbus_error` (`wgaf-cli/src/commands/mod.rs`) gained a case for the three `PermissionDenied` D-Bus errors (`WINDOWS_ERROR_PERMISSION_DENIED`/`INPUT_ERROR_PERMISSION_DENIED`/`ACCESSIBILITY_ERROR_PERMISSION_DENIED`), which previously fell through to a raw `zbus::Error` debug dump instead of a human-readable "permission denied" message.
+- `wgaf-daemon`: `InputBackend::run` (`wgaf-daemon/src/input/mod.rs`) and `PermissionGate::resolve_prompt` (`wgaf-daemon/src/permissions/mod.rs`) changed from `.lock().expect(...)` to `.lock().unwrap_or_else(|poisoned| poisoned.into_inner())`, so a panic while either mutex is held no longer permanently poisons it and wedges the input subsystem or the permission gate — including every capability check across all three D-Bus interfaces — for the rest of the daemon's process lifetime.
+
 ## [0.6.0] - 2026-07-27
 
 ### Added

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["wgaf-common", "wgaf-daemon", "wgaf-cli"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 authors = ["Kim Skov Rasmussen"]
@@ -37,3 +37,11 @@ atspi = { version = "0.30", default-features = false, features = ["connection", 
 # `default-features = false` + `std` only: no need for the `async-await`
 # macro helpers or `alloc`-only mode.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Shell completion script generation for `wgaf completions <shell>`
+# (wgaf-cli/src/main.rs). Pinned to the 4.x line to track `clap` 4.
+clap_complete = "4"
+# Man page generation, exercised on demand via an `#[ignore]`d test
+# (wgaf-cli/src/main.rs) rather than at every build — see that test's doc
+# comment. `[dev-dependencies]`-only in wgaf-cli, so it never ships in the
+# release binary.
+clap_mangen = "0.3"

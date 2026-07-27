@@ -35,11 +35,15 @@ fn print_ok(json: bool, message: &str) {
     }
 }
 
-pub async fn type_text(text: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn type_text(
+    bus_name: &str,
+    text: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::INPUT_OBJECT_PATH,
             Some(wgaf_common::INPUT_INTERFACE_NAME),
             "TypeText",
@@ -54,11 +58,15 @@ pub async fn type_text(text: &str, json: bool) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-pub async fn key_press(key: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn key_press(
+    bus_name: &str,
+    key: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::INPUT_OBJECT_PATH,
             Some(wgaf_common::INPUT_INTERFACE_NAME),
             "KeyPress",
@@ -70,11 +78,15 @@ pub async fn key_press(key: &str, json: bool) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-pub async fn key_release(key: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn key_release(
+    bus_name: &str,
+    key: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::INPUT_OBJECT_PATH,
             Some(wgaf_common::INPUT_INTERFACE_NAME),
             "KeyRelease",
@@ -86,11 +98,16 @@ pub async fn key_release(key: &str, json: bool) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-pub async fn mouse_move(dx: i32, dy: i32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_move(
+    bus_name: &str,
+    dx: i32,
+    dy: i32,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::INPUT_OBJECT_PATH,
             Some(wgaf_common::INPUT_INTERFACE_NAME),
             "MouseMove",
@@ -102,11 +119,15 @@ pub async fn mouse_move(dx: i32, dy: i32, json: bool) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-pub async fn mouse_click(button: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_click(
+    bus_name: &str,
+    button: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::INPUT_OBJECT_PATH,
             Some(wgaf_common::INPUT_INTERFACE_NAME),
             "MouseClick",
@@ -118,11 +139,16 @@ pub async fn mouse_click(button: &str, json: bool) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-pub async fn mouse_scroll(dx: i32, dy: i32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_scroll(
+    bus_name: &str,
+    dx: i32,
+    dy: i32,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::INPUT_OBJECT_PATH,
             Some(wgaf_common::INPUT_INTERFACE_NAME),
             "MouseScroll",

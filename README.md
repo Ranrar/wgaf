@@ -2,89 +2,126 @@
 
 **W**ayland **G**NOME **A**utomation **F**ramework
 
-A Wayland-native automation framework for GNOME Shell — window management, keyboard/mouse automation, application discovery, and accessibility-driven UI automation.
-
-## What we're building
-
-A Rust daemon and scriptable CLI that provide window management, keyboard/mouse automation, application discovery, and accessibility-driven UI automation on GNOME Wayland — built entirely on the APIs the platform actually exposes for this: a GNOME Shell Extension for window management, Linux `uinput` for input synthesis, and AT-SPI for accessibility-based automation.
-
-The GNOME Shell Extension bridge (`wgaf@wgaf.dev`, `extension/`) exposes window/workspace enumeration and control over D-Bus as `org.gnome.Shell.Extensions.Wgaf.V1`. The daemon mirrors that as its own `org.wgaf.Windows1` D-Bus interface, driven from the CLI via `wgaf window list/focus/move/resize/close/workspaces`. Keyboard/mouse synthesis goes through `uinput` via the daemon's own `org.wgaf.Input1` D-Bus interface, driven from the CLI via `wgaf type/key/mouse` — no Shell extension involved. Accessibility-driven UI automation goes through AT-SPI via the daemon's own `org.wgaf.Accessibility1` D-Bus interface, driven from the CLI via `wgaf a11y ...`.
+Script your GNOME desktop from the terminal — move windows, type into apps,
+click buttons by name, drive any app's UI. If you relied on `xdotool` or
+`wmctrl` before switching to Wayland, this gets that power back, built the
+way GNOME actually allows it: no X11 hacks, nothing fighting the compositor,
+nothing that stops working with the next GNOME release.
 
 ## Why
 
-Wayland's security model is correct, but it left a real gap: there's no modern, native equivalent to `xdotool`/`wmctrl` for GNOME. People still need to script window layouts, automate repetitive UI interactions, and drive applications for testing — without resorting to X11 compatibility hacks or bypassing the platform's protections. The goal is automation that works *with* GNOME's security model instead of around it: explicit, attributable actions through supported APIs, not silent global control.
+Wayland's security model correctly stops one app from spying on or
+controlling another — which is exactly why `xdotool`/`wmctrl`-style tools
+broke, and why most "fixes" for that are actually workarounds waiting to
+break again. wgaf doesn't take that shortcut: every capability goes through
+an explicit, supported API — a GNOME Shell Extension for window management,
+Linux `uinput` for input synthesis, and AT-SPI (the same system screen
+readers use) for accessibility automation — so it keeps working instead of
+racing GNOME's next release.
 
-## Getting Started
+## What it can do
 
-### Build
+- **Window management** — list, focus, move, resize, and close windows
+  (`wgaf window ...`)
+- **Keyboard & mouse** — type text, press keys, move/click/scroll the mouse
+  (`wgaf type` / `wgaf key` / `wgaf mouse ...`)
+- **Accessibility automation** — find and act on UI elements by name/role
+  instead of screen coordinates (`wgaf a11y ...`)
+- **Per-capability permissions** — allow, deny, or prompt-before-allowing
+  any of the above
+- **Shell completions** (bash/zsh/fish/elvish/powershell) and man pages
 
-```sh
-cargo build --release --workspace
-```
+## Use cases
 
-Produces `target/release/wgaf-daemon` and `target/release/wgaf` (the CLI).
+- **Scripted window layouts** — snap a specific set of apps into position
+  when you start a work session, instead of dragging windows around by hand
+  every time.
+- **Repetitive UI tasks** — fill out the same form, click through a
+  multi-step dialog, or repeat a sequence of clicks/keystrokes without doing
+  it by hand each time.
+- **Reliable GUI automation** — drive an app's UI by button/element name
+  instead of screen coordinates, so scripts keep working when a window
+  resizes or a theme changes.
+- **Shell-scriptable desktop control** — every command supports `--json`
+  output, so `wgaf` drops straight into shell scripts or other tooling that
+  needs to query or drive the desktop.
 
-### Enable the GNOME Shell extension (needed for window management only)
+See the [user guide](docs/user-guide.md) for how to actually use each of
+these, the [CLI reference](docs/cli-reference.md) for every command's exact
+flags, and the [example walkthrough](docs/example-walkthrough.md) for a
+complete task done start to finish.
 
-```sh
-cd extension && make install
-```
+## Requirements
 
-A newly installed extension isn't picked up by an already-running Shell on Wayland — log out and back in once, then:
+- A recent Rust toolchain (the workspace uses the 2024 edition)
+- GNOME Shell on Wayland (built and tested against GNOME Shell 50)
 
-```sh
-gnome-extensions enable wgaf@wgaf.dev
-```
-
-`wgaf type/key/mouse` and `wgaf a11y ...` don't need this — they talk to the daemon directly via `uinput`/AT-SPI, no Shell extension involved.
-
-### Run the daemon
-
-```sh
-wgaf-daemon &
-```
-
-See "Configuration" below for `config.toml`/`permissions.toml`, or `packaging/systemd/wgaf-daemon.service` to run it as a systemd user service instead of backgrounding it manually.
-
-### Use the CLI
-
-```sh
-wgaf ping                                        # daemon health check
-
-wgaf window list
-wgaf window focus/move/resize/close <id>
-wgaf window workspaces
-
-wgaf type "hello"
-wgaf key press/release <key>
-wgaf mouse move/click/scroll ...
-
-wgaf a11y list-apps
-wgaf a11y find --app <name> --role <role> --name <name>
-wgaf a11y tree --app <name>
-wgaf a11y info/click/focus/set-text <element-ref> ...
-```
-
-Add `--json` (before or after the subcommand) to any command for machine-readable output.
-
-### Troubleshooting: "extension bridge unavailable"
-
-If `wgaf window ...` fails immediately with this error even though the extension is enabled, check for a duplicate `wgaf-daemon` process holding the `org.wgaf.Daemon` D-Bus name — a stale instance wins the name race and makes a freshly started second one silently useless:
+## Install
 
 ```sh
-pgrep -af wgaf-daemon
-pkill -f wgaf-daemon
+git clone https://github.com/Ranrar/wgaf.git
+cd wgaf
+make install
 ```
 
-For development/testing procedures, see the test suites under `wgaf-daemon/tests/`.
+This builds and installs `wgaf-daemon`/`wgaf` (via `cargo install`, default
+`~/.cargo/bin`), installs a systemd user unit, and installs + enables the
+GNOME Shell Extension that window management needs.
+
+Two one-time steps `make install` can't do for you:
+
+**1. GNOME Shell needs to actually load the extension.** Wayland has no
+in-session Shell restart — log out and back in once after the first
+install.
+
+**2. Keyboard/mouse automation needs `/dev/uinput` access:**
+
+```sh
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-wgaf-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG input $USER
+```
+
+Then log out and back in again for the new group membership to apply.
+
+## Run it
+
+```sh
+systemctl --user enable --now wgaf-daemon.service
+```
+
+or just `wgaf-daemon &` if you'd rather not run it as a service.
+
+Then:
+
+```sh
+wgaf ping
+```
+
+should print `pong`.
+
+## Shell completions
+
+```sh
+wgaf completions bash > /etc/bash_completion.d/wgaf
+wgaf completions zsh > "${fpath[1]}/_wgaf"
+```
+
+(`fish`/`elvish`/`powershell` also supported.) Man pages are optional —
+`make man` generates and installs them.
 
 ## Configuration
 
-`wgaf-daemon` optionally reads a `permissions.toml` file controlling per-capability policy. It must live in the **same directory** as `config.toml` (pass `--config` and `wgaf-daemon` looks for `permissions.toml` right next to it automatically), or point at it directly with `--permissions /path`. Neither file has a default filesystem location yet.
+`wgaf-daemon` reads two optional TOML files from `$XDG_CONFIG_HOME/wgaf/`
+(defaults to `~/.config/wgaf/`): `config.toml` (daemon settings) and its
+sibling `permissions.toml` (per-capability policy). Both are entirely
+optional — with neither present, the daemon runs with sane defaults and
+every capability allowed.
 
 ### `permissions.toml` — per-capability policy
 
-Thirteen capabilities exist, one per gated (mutating) D-Bus method — read-only methods (`ListWindows`, `GetTree`, `FindElements`, ...) can't be gated at all:
+Thirteen capabilities exist, one per gated (mutating) command — read-only
+commands (`window list`, `a11y find`, etc.) can't be gated at all:
 
 | Interface | Capabilities |
 |---|---|
@@ -93,24 +130,35 @@ Thirteen capabilities exist, one per gated (mutating) D-Bus method — read-only
 | `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement` |
 
 ```toml
-# permissions.toml
+# ~/.config/wgaf/permissions.toml
 [capabilities]
 TypeText = "Deny"        # block `wgaf type` entirely
 CloseWindow = "Prompt"    # ask via a GNOME notification (Allow/Deny) before closing a window
 ```
 
-Any capability not listed defaults to `Allow` — this is a dev tool, so permissions are an opt-in *restriction* you configure, never an opt-in *unlock* you must grant before anything works.
+Any capability not listed defaults to `Allow` — this is a personal
+automation tool, so permissions are an opt-in *restriction* you configure,
+never an opt-in *unlock* you must grant before anything works.
 
-## TODO
+## Uninstall
 
-- [x] Phase 1: Daemon + CLI scaffolding (D-Bus `Ping`/`Version`)
-- [x] Phase 2: GNOME Shell Extension bridge (window enumeration/control)
-- [x] Phase 3: Window management via CLI
-- [x] Phase 4: Keyboard/mouse automation (`uinput`)
-- [x] Phase 5: Accessibility automation (AT-SPI)
-- [x] Phase 6: Permissions & security hardening
-- [ ] Phase 7: Packaging & documentation
-- [ ] Phase 8: MCP server for AI agent integration
+```sh
+make uninstall
+```
+
+## Troubleshooting
+
+**"GNOME Shell Extension bridge unavailable"** even though the extension is
+enabled — check for a duplicate `wgaf-daemon` process holding the D-Bus
+name (a stale instance wins the name race and makes a freshly started one
+silently useless):
+
+```sh
+pgrep -af wgaf-daemon
+pkill -f wgaf-daemon
+```
+
+More: [user guide](docs/user-guide.md) · [CLI reference](docs/cli-reference.md) · [example walkthrough](docs/example-walkthrough.md)
 
 ## License
 

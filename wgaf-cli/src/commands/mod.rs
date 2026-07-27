@@ -4,11 +4,11 @@ pub mod window;
 
 use zbus::Connection;
 
-pub async fn ping() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ping(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = Connection::session().await?;
     let reply = connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::OBJECT_PATH,
             Some(wgaf_common::INTERFACE_NAME),
             "Ping",
@@ -16,7 +16,18 @@ pub async fn ping() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
     let response: String = reply.body().deserialize()?;
-    println!("{response}");
+    // FIXED: `--json` is a global flag advertised on every subcommand's
+    // `--help` (including this one), but this command silently ignored it
+    // and always printed plain text — found during the Phase 7 --help
+    // consistency pass. Every other command family already honors it.
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "ok": true, "response": response })
+        );
+    } else {
+        println!("{response}");
+    }
     Ok(())
 }
 
@@ -52,6 +63,11 @@ pub(crate) fn describe_dbus_error(err: &zbus::Error) -> Option<String> {
         Some(format!("accessible element not found{detail}"))
     } else if name.as_str() == wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED {
         Some(format!("action not supported{detail}"))
+    } else if name.as_str() == wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED
+        || name.as_str() == wgaf_common::INPUT_ERROR_PERMISSION_DENIED
+        || name.as_str() == wgaf_common::ACCESSIBILITY_ERROR_PERMISSION_DENIED
+    {
+        Some(format!("permission denied{detail}"))
     } else {
         None
     }

@@ -33,14 +33,19 @@ fn print_ok(json: bool, message: &str) {
     }
 }
 
-async fn call<R, A>(connection: &Connection, method: &str, args: &A) -> zbus::Result<R>
+async fn call<R, A>(
+    connection: &Connection,
+    bus_name: &str,
+    method: &str,
+    args: &A,
+) -> zbus::Result<R>
 where
     R: serde::de::DeserializeOwned + zbus::zvariant::Type,
     A: serde::Serialize + zbus::zvariant::Type,
 {
     let reply = connection
         .call_method(
-            Some(wgaf_common::BUS_NAME),
+            Some(bus_name),
             wgaf_common::ACCESSIBILITY_OBJECT_PATH,
             Some(wgaf_common::ACCESSIBILITY_INTERFACE_NAME),
             method,
@@ -50,9 +55,11 @@ where
     reply.body().deserialize()
 }
 
-pub async fn list_apps(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list_apps(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
-    let apps: Vec<AppRecord> = call(&connection, "ListApps", &()).await.map_err(map_err)?;
+    let apps: Vec<AppRecord> = call(&connection, bus_name, "ListApps", &())
+        .await
+        .map_err(map_err)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&apps)?);
@@ -68,6 +75,7 @@ pub async fn list_apps(json: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn find(
+    bus_name: &str,
     app: &str,
     role: &str,
     name: &str,
@@ -78,6 +86,7 @@ pub async fn find(
     let connection = connect().await?;
     let elements: Vec<ElementRecord> = call(
         &connection,
+        bus_name,
         "FindElements",
         &(app, role, name, description, max_results),
     )
@@ -99,9 +108,14 @@ pub async fn find(
     Ok(())
 }
 
-pub async fn tree(app: &str, max_depth: i32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn tree(
+    bus_name: &str,
+    app: &str,
+    max_depth: i32,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
-    let nodes: Vec<TreeNode> = call(&connection, "GetTree", &(app, max_depth))
+    let nodes: Vec<TreeNode> = call(&connection, bus_name, "GetTree", &(app, max_depth))
         .await
         .map_err(map_err)?;
 
@@ -119,11 +133,12 @@ pub async fn tree(app: &str, max_depth: i32, json: bool) -> Result<(), Box<dyn s
 }
 
 pub async fn get_element_info(
+    bus_name: &str,
     element: &ElementRef,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
-    let info: ElementRecord = call(&connection, "GetElementInfo", &(element.clone(),))
+    let info: ElementRecord = call(&connection, bus_name, "GetElementInfo", &(element.clone(),))
         .await
         .map_err(map_err)?;
 
@@ -141,34 +156,45 @@ pub async fn get_element_info(
 }
 
 pub async fn click(
+    bus_name: &str,
     element: &ElementRef,
     action: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
-    call::<(), _>(&connection, "InvokeAction", &(element.clone(), action))
-        .await
-        .map_err(map_err)?;
+    call::<(), _>(
+        &connection,
+        bus_name,
+        "InvokeAction",
+        &(element.clone(), action),
+    )
+    .await
+    .map_err(map_err)?;
     print_ok(json, &format!("invoked action on {element}"));
     Ok(())
 }
 
 pub async fn set_text(
+    bus_name: &str,
     element: &ElementRef,
     text: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
-    call::<(), _>(&connection, "SetText", &(element.clone(), text))
+    call::<(), _>(&connection, bus_name, "SetText", &(element.clone(), text))
         .await
         .map_err(map_err)?;
     print_ok(json, &format!("set text on {element}"));
     Ok(())
 }
 
-pub async fn focus(element: &ElementRef, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn focus(
+    bus_name: &str,
+    element: &ElementRef,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
-    call::<(), _>(&connection, "FocusElement", &(element.clone(),))
+    call::<(), _>(&connection, bus_name, "FocusElement", &(element.clone(),))
         .await
         .map_err(map_err)?;
     print_ok(json, &format!("focused {element}"));
