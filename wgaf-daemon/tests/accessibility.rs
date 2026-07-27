@@ -2,14 +2,14 @@
 //! against a **real** `gtk4-demo` process and the **real** AT-SPI
 //! accessibility bus — not a stub, per this project's established
 //! "attempt real verification before falling back to a stub/mock" precedent
-//! (Phase 3's `windows_stub.rs` had to fake the GNOME Shell Extension only
-//! because no real GNOME Shell session was available; Phase 4's
-//! `input.rs` used a real `/dev/uinput` device because it was genuinely
-//! writable). Here, this environment turned out to have a real, live GNOME
-//! Wayland session with AT-SPI already enabled and working — confirmed
-//! directly (`org.a11y.Bus.GetAddress` resolves, and `gtk4-demo`, the same
-//! reference app Phase 3's manual verification used, registers a real
-//! accessible tree) — so these tests exercise the real `wgaf-daemon` binary,
+//! (`windows_stub.rs` had to fake the GNOME Shell Extension only because no
+//! real GNOME Shell session was available; `input.rs` used a real
+//! `/dev/uinput` device because it was genuinely writable). Here, this
+//! environment turned out to have a real, live GNOME Wayland session with
+//! AT-SPI already enabled and working — confirmed directly
+//! (`org.a11y.Bus.GetAddress` resolves, and `gtk4-demo`, the same reference
+//! app used for earlier manual verification, registers a real accessible
+//! tree) — so these tests exercise the real `wgaf-daemon` binary,
 //! its real `org.wgaf.Accessibility1` interface, the real `atspi` crate, and
 //! a real spawned `gtk4-demo` process end-to-end.
 //!
@@ -41,7 +41,7 @@
 //! error, but does **not** claim a successful focus grab was demonstrated.
 //! Confirming a real successful `GrabFocus` would need a different
 //! toolkit/widget or a newer AT-SPI bridge — out of scope for this
-//! sandboxed run, same category of gap as Phase 4's per-event-readback
+//! sandboxed run, same category of gap as `input.rs`'s per-event-readback
 //! `EACCES` limitation.
 
 use std::process::{Child, Command};
@@ -99,12 +99,12 @@ fn spawn_gtk4_demo() -> DemoGuard {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("failed to start gtk4-demo — is it installed? (Documentation/phase5-accessibility-api.md notes this test requires it)");
+        .expect("failed to start gtk4-demo — is it installed?");
     DemoGuard(child)
 }
 
 /// AT-SPI's application-name namespace is a machine-global resource with no
-/// per-instance identifier this daemon/test can set — unlike Phase 4's
+/// per-instance identifier this daemon/test can set — unlike
 /// `Config::input_device_name` for `uinput` devices, `gtk4-demo` has no
 /// "give this instance a unique name" flag. Running this file's tests
 /// concurrently (the default, both within this binary and across
@@ -434,7 +434,7 @@ async fn set_text_on_a_real_read_only_editable_text_widget_reports_action_not_su
         "SetText",
         &(
             text_box.element,
-            "hello from wgaf's Phase 5 integration test",
+            "hello from wgaf's accessibility integration test",
         ),
     )
     .await

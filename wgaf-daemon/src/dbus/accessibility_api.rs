@@ -6,11 +6,15 @@
 //! error (`AccessibilityApiError`), following the exact pattern
 //! `windows_api.rs`/`input_api.rs` established.
 
+use std::sync::Arc;
+
 use wgaf_common::{AppRecord, ElementRecord, ElementRef, TreeNode};
 use zbus::DBusError;
 use zbus::interface;
+use zbus::message::Header;
 
 use crate::accessibility::{AccessibilityBackend, AccessibilityError};
+use crate::permissions::{Capability, PermissionError, PermissionGate};
 
 /// D-Bus error names for `org.wgaf.Accessibility1`, matching
 /// `wgaf_common::ACCESSIBILITY_ERROR_*` (asserted in this module's tests).
@@ -28,6 +32,9 @@ enum AccessibilityApiError {
     AppNotFound(String),
     ElementNotFound(String),
     ActionNotSupported(String),
+    /// The call was refused by `permissions.toml`'s policy (or the
+    /// caller declined an interactive `Prompt`) — see `crate::permissions`.
+    PermissionDenied(String),
 }
 
 impl From<AccessibilityError> for AccessibilityApiError {
@@ -44,13 +51,28 @@ impl From<AccessibilityError> for AccessibilityApiError {
     }
 }
 
+impl From<PermissionError> for AccessibilityApiError {
+    fn from(err: PermissionError) -> Self {
+        match err {
+            PermissionError::Denied { .. } | PermissionError::DeniedByPrompt { .. } => {
+                Self::PermissionDenied(err.to_string())
+            }
+            PermissionError::DBus(e) => Self::ZBus(e),
+        }
+    }
+}
+
 pub struct AccessibilityApi {
     backend: AccessibilityBackend,
+    permissions: Arc<PermissionGate>,
 }
 
 impl AccessibilityApi {
-    pub fn new(backend: AccessibilityBackend) -> Self {
-        Self { backend }
+    pub fn new(backend: AccessibilityBackend, permissions: Arc<PermissionGate>) -> Self {
+        Self {
+            backend,
+            permissions,
+        }
     }
 }
 
@@ -113,19 +135,41 @@ impl AccessibilityApi {
         &self,
         element: ElementRef,
         action_name: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), AccessibilityApiError> {
+        self.permissions
+            .check(Capability::InvokeAction, connection, &header)
+            .await?;
         Ok(self.backend.invoke_action(&element, action_name).await?)
     }
 
     /// Replaces `element`'s text content (requires the AT-SPI
     /// `EditableText` interface).
-    async fn set_text(&self, element: ElementRef, text: &str) -> Result<(), AccessibilityApiError> {
+    async fn set_text(
+        &self,
+        element: ElementRef,
+        text: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), AccessibilityApiError> {
+        self.permissions
+            .check(Capability::SetText, connection, &header)
+            .await?;
         Ok(self.backend.set_text(&element, text).await?)
     }
 
     /// Requests keyboard focus for `element` (requires the AT-SPI
     /// `Component` interface).
-    async fn focus_element(&self, element: ElementRef) -> Result<(), AccessibilityApiError> {
+    async fn focus_element(
+        &self,
+        element: ElementRef,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), AccessibilityApiError> {
+        self.permissions
+            .check(Capability::FocusElement, connection, &header)
+            .await?;
         Ok(self.backend.focus_element(&element).await?)
     }
 }
@@ -141,6 +185,7 @@ mod tests {
         let element_not_found = AccessibilityApiError::ElementNotFound("gone".to_string());
         let action_not_supported =
             AccessibilityApiError::ActionNotSupported("unsupported".to_string());
+        let permission_denied = AccessibilityApiError::PermissionDenied("denied".to_string());
         assert_eq!(
             bus_unavailable.name().as_str(),
             wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE
@@ -156,6 +201,10 @@ mod tests {
         assert_eq!(
             action_not_supported.name().as_str(),
             wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED
+        );
+        assert_eq!(
+            permission_denied.name().as_str(),
+            wgaf_common::ACCESSIBILITY_ERROR_PERMISSION_DENIED
         );
     }
 }

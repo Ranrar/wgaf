@@ -2,9 +2,11 @@ mod accessibility;
 mod config;
 mod dbus;
 mod input;
+mod permissions;
 mod windows;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use config::Config;
@@ -17,6 +19,20 @@ struct Args {
     /// Path to a TOML config file.
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Path to a TOML permission-policy file. Same file format as
+    /// `--config` (plain TOML), always expected as a *sibling* of wherever
+    /// `--config`'s file lives — same "explicit path, or a sensible
+    /// default" shape as `Config::load`, except here the *default* itself
+    /// is "no file -> every capability defaults to Allow" rather than a
+    /// `Default` struct — see `permissions::policy`'s module docs. If
+    /// omitted, the daemon looks for `permissions.toml` next to
+    /// `--config`'s file (or, if `--config` itself was omitted, does not
+    /// look anywhere and simply runs all-Allow — a real default `--config`
+    /// path — and thus a real default location for this file too — isn't
+    /// implemented yet).
+    #[arg(long)]
+    permissions: Option<PathBuf>,
 
     /// Override the configured log level (trace, debug, info, warn, error).
     #[arg(long)]
@@ -39,6 +55,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     tracing::info!(bus_name = %config.bus_name, "starting wgaf-daemon");
+
+    // Resolve the permission-policy file path: an explicit `--permissions`
+    // wins; otherwise default to a `permissions.toml` sibling of
+    // `--config`'s file (same directory), if one was given. `PolicyMap::load`
+    // treats a missing/nonexistent path as "every capability defaults to
+    // Allow", not an error — see `permissions::policy`'s module docs — so
+    // there is deliberately no fallback path to try when `--config` itself
+    // was never given (there is, as yet, no default `--config` location to
+    // anchor a sibling lookup to at all — the intended eventual default is
+    // XDG-based).
+    let permissions_path = args.permissions.or_else(|| {
+        args.config
+            .as_ref()
+            .and_then(|c| c.parent())
+            .map(|dir| dir.join("permissions.toml"))
+    });
+    let policy = permissions::PolicyMap::load(permissions_path.as_deref())?;
+    let permission_gate = Arc::new(permissions::PermissionGate::new(policy));
+    tracing::info!(
+        permissions_path = ?permissions_path,
+        "loaded permission policy (unmentioned capabilities default to Allow)"
+    );
 
     // A separate session-bus connection used only as a client of the GNOME
     // Shell Extension bridge — independent from the connection the daemon
@@ -79,15 +117,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(wgaf_common::OBJECT_PATH, dbus::Daemon)?
         .serve_at(
             wgaf_common::WINDOWS_OBJECT_PATH,
-            dbus::windows_api::WindowsApi::new(window_manager),
+            dbus::windows_api::WindowsApi::new(window_manager, Arc::clone(&permission_gate)),
         )?
         .serve_at(
             wgaf_common::INPUT_OBJECT_PATH,
-            dbus::input_api::InputApi::new(input_backend),
+            dbus::input_api::InputApi::new(input_backend, Arc::clone(&permission_gate)),
         )?
         .serve_at(
             wgaf_common::ACCESSIBILITY_OBJECT_PATH,
-            dbus::accessibility_api::AccessibilityApi::new(accessibility_backend),
+            dbus::accessibility_api::AccessibilityApi::new(
+                accessibility_backend,
+                Arc::clone(&permission_gate),
+            ),
         )?
         .build()
         .await?;

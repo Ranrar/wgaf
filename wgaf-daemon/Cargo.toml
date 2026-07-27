@@ -16,3 +16,4 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 libc.workspace = true
 atspi.workspace = true
+futures-util.workspace = true

@@ -38,7 +38,7 @@ pub(crate) fn element_ref_from_object_ref(obj: &ObjectRefOwned) -> Option<Elemen
 ///
 /// **`role` is `GetRoleName`'s string, not `GetRole`'s fixed numeric-enum
 /// name (`atspi::Role::name()`)** — this was the original design (reasoned
-/// as "stable, locale-independent"), but Phase 5's real-`gtk4-demo`
+/// as "stable, locale-independent"), but real-`gtk4-demo`
 /// integration testing found it actively misleading for modern GTK4
 /// widgets: a `GtkSearchEntry` reports numeric role 87, whose *fixed*
 /// AT-SPI enum name is `"form"` (the closest slot the decades-old

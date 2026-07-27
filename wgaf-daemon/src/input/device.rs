@@ -1,7 +1,8 @@
 //! Low-level `/dev/uinput` virtual device: creation via the kernel's
 //! `UI_SET_*`/`UI_DEV_SETUP`/`UI_DEV_CREATE` ioctls, and raw `struct
 //! input_event` emission. One combined keyboard+pointer device (matching
-//! `ydotoold`'s approach and this phase's scope), not two separate devices.
+//! `ydotoold`'s approach and this daemon's current scope), not two separate
+//! devices.
 //!
 //! This module owns all the `unsafe` in the `input` module. Everything
 //! above it (`keyboard.rs`, `mouse.rs`, `mod.rs`) only ever calls
@@ -14,8 +15,7 @@
 //! rather than hand-copied as magic numbers — `tests::ioctl_numbers_match_known_values`
 //! cross-checks the result against the literal values documented in
 //! `<linux/uinput.h>` (`0x40045564`, `0x5501`, `0x405c5503`), which were
-//! also confirmed against a real kernel in this environment (see the
-//! Phase 4 verification notes in `Documentation/phase4-input-automation-api.md`).
+//! also confirmed against a real kernel in this environment.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -28,9 +28,8 @@ use crate::input::codes::{ALL_KEYS, EV_KEY, EV_REL, EV_SYN, REL_HWHEEL, REL_WHEE
 /// Path to the kernel's `uinput` control device. Not currently
 /// configurable — unlike `Config::extension_bus_name` for the Windows1/
 /// extension boundary, there's no equivalent stub/fake for `uinput` itself
-/// (see the Phase 4 testing notes: the daemon-side test suite exercises the
-/// *real* device at this real path, since it's confirmed writable in the
-/// target environment).
+/// (the daemon-side test suite exercises the *real* device at this real
+/// path, since it's confirmed writable in the target environment).
 const UINPUT_PATH: &str = "/dev/uinput";
 
 /// Vendor/product/version reported in the device's `input_id` — arbitrary
@@ -268,11 +267,10 @@ mod tests {
 
     /// Cross-checks the computed ioctl request numbers against the literal
     /// values documented in `<linux/uinput.h>` (stable across kernel
-    /// versions) — confirmed against a real kernel in this environment
-    /// during Phase 4 development (see
-    /// `Documentation/phase4-input-automation-api.md`). This guards against
-    /// a mistake in the `ioc`/`io`/`iow` formula itself, independent of
-    /// whether `/dev/uinput` is available to actually exercise it.
+    /// versions) — confirmed against a real kernel in this environment.
+    /// This guards against a mistake in the `ioc`/`io`/`iow` formula itself,
+    /// independent of whether `/dev/uinput` is available to actually
+    /// exercise it.
     #[test]
     fn ioctl_numbers_match_known_kernel_constants() {
         assert_eq!(UI_SET_EVBIT, 0x4004_5564);

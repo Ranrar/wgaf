@@ -1,8 +1,8 @@
 # Makefile for the wgaf GNOME Shell Extension bridge.
 #
-# Dev-iteration packaging/install only (Phase 2 scope) - full distro
-# packaging (.deb/.rpm bundling daemon + extension + udev rules) is Phase 7
-# and lives elsewhere.
+# Dev-iteration packaging/install only - full distro packaging (.deb/.rpm
+# bundling daemon + extension + udev rules) is not built here and lives
+# elsewhere.
 #
 # Usage:
 #   make pack      - build wgaf@wgaf.dev.shell-extension.zip via `gnome-extensions pack`

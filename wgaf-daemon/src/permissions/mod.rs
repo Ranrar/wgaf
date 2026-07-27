@@ -1,0 +1,232 @@
+//! Permissions & security hardening. Formalizes the permission/consent
+//! model across `org.wgaf.Windows1`/`Input1`/`Accessibility1`'s mutating
+//! methods — a central `permissions` module owning policy config and audit
+//! logging.
+//!
+//! **Scope: audit + explicit allow/deny/prompt policy, not sandboxing.**
+//! This module does not change *what* any operation can do (it's still the
+//! same `WindowManager`/`InputBackend`/`AccessibilityBackend` calls) — it
+//! decides *whether* a mutating call is allowed to happen at all, and
+//! records that decision. Read-only methods (`ListWindows`,
+//! `GetWorkspaces`, `ListApps`, `FindElements`, `GetTree`,
+//! `GetElementInfo`) have no [`Capability`] variant and are never checked —
+//! see `policy`'s module docs for why.
+//!
+//! **Default-allow.** See `policy`'s module docs for the full rationale:
+//! wgaf is a dev tool, and nothing that already worked should stop working
+//! just because this module exists. `permissions.toml` is an opt-in
+//! *restriction*, and its absence is not an error.
+//!
+//! **Architecture.**
+//! ```text
+//! windows_api.rs / input_api.rs / accessibility_api.rs
+//!       |  PermissionGate::check(capability, connection, header)
+//!       v
+//! permissions::PermissionGate
+//!       |                              |
+//!       v (policy lookup)              v (Prompt only)
+//! policy::PolicyMap               notify::prompt_user
+//!       |                              | org.freedesktop.Notifications
+//!       v                              v (ActionInvoked/NotificationClosed)
+//!    (Allow/Deny/Prompt)          user's Allow/Deny choice, cached
+//!       |
+//!       v (both branches)
+//! audit::log_attempt / audit::log_outcome
+//! ```
+//!
+//! **Prompt caching.** Per the roadmap's own language ("persist the
+//! decision... rather than prompting on every call"), a `Prompt` capability
+//! is only ever shown to the user once per daemon run: the first resolution
+//! (`true`/`false`) is cached in [`PermissionGate`] for the remainder of the
+//! process's lifetime. This is deliberately in-memory only, not persisted
+//! across daemon restarts — judged sufficient for now rather than
+//! over-engineered.
+//!
+//! **Error-namespace choice.** A denial surfaces as a `PermissionDenied`
+//! variant added to each of `WindowsApiError`/`InputApiError`/
+//! `AccessibilityApiError` (i.e. `org.wgaf.Windows1.Error.PermissionDenied`,
+//! `org.wgaf.Input1.Error.PermissionDenied`,
+//! `org.wgaf.Accessibility1.Error.PermissionDenied`) rather than a fourth,
+//! cross-cutting D-Bus error namespace — consistent with this codebase's
+//! existing convention that each interface owns its own named error space
+//! (see `dbus/windows_api.rs`'s `WindowsApiError`, `input_api.rs`'s
+//! `InputApiError`, `accessibility_api.rs`'s `AccessibilityApiError`). This
+//! [`PermissionError`] (defined here) is an internal type the three
+//! `dbus::*_api` modules convert *from*, not itself a D-Bus-visible error
+//! type.
+
+mod audit;
+mod notify;
+pub mod policy;
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use thiserror::Error;
+use zbus::message::Header;
+
+pub use audit::CallerInfo;
+pub use policy::{Capability, PolicyMap, PolicyValue};
+
+/// Errors returned by [`PermissionGate::check`]. Each of
+/// `dbus::windows_api`/`dbus::input_api`/`dbus::accessibility_api` converts
+/// this into its own interface's `PermissionDenied` error variant (see
+/// module docs) rather than serving it directly.
+#[derive(Debug, Error)]
+pub enum PermissionError {
+    /// The configured policy (`permissions.toml`) denies this capability
+    /// outright.
+    #[error(
+        "operation `{capability}` denied by permission policy — see `permissions.toml`; an \
+         administrator can change this capability's policy value to `Allow` or `Prompt` if this \
+         restriction was unintentional"
+    )]
+    Denied { capability: &'static str },
+
+    /// The capability is configured as `Prompt`, and the user declined (or
+    /// didn't respond to, within the timeout) the resulting notification.
+    #[error(
+        "operation `{capability}` denied: the user declined the permission prompt (or it timed \
+         out)"
+    )]
+    DeniedByPrompt { capability: &'static str },
+
+    /// A D-Bus-level failure while resolving the caller's identity (for
+    /// audit logging) or while showing/awaiting a `Prompt` notification.
+    /// Deliberately fails the call rather than silently treating it as
+    /// allowed or denied — a broken notification service (say) should be a
+    /// visible error, not a silent policy decision.
+    #[error("D-Bus error while checking permissions: {0}")]
+    DBus(#[from] zbus::Error),
+}
+
+/// Owns the daemon-wide permission policy and the in-memory cache of
+/// `Prompt` resolutions made so far this run. One instance is created at
+/// daemon startup (`main.rs`) and shared, via `Arc`, across `WindowsApi`/
+/// `InputApi`/`AccessibilityApi` — unlike `WindowManager`/`InputBackend`/
+/// `AccessibilityBackend` (one instance per interface), this one is
+/// genuinely shared across all three, since policy and the prompt cache are
+/// cross-cutting by design.
+pub struct PermissionGate {
+    policy: PolicyMap,
+    /// `Prompt`-capability resolutions already made this daemon run (see
+    /// module docs on caching). A `std::sync::Mutex` is fine here: every
+    /// critical section is a single non-blocking `HashMap` op, never held
+    /// across an `.await`.
+    prompt_cache: Mutex<HashMap<Capability, bool>>,
+}
+
+impl PermissionGate {
+    pub fn new(policy: PolicyMap) -> Self {
+        Self {
+            policy,
+            prompt_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Checks whether `capability` is currently permitted for the caller
+    /// identified by `header`, on `connection` (the same connection the
+    /// calling D-Bus method arrived on — used both to resolve the caller's
+    /// identity for audit logging, and, for a `Prompt` capability, to reach
+    /// the session's notification service).
+    ///
+    /// Logs the attempt and its outcome via `audit` (see module docs) in
+    /// every case, including denial.
+    pub async fn check(
+        &self,
+        capability: Capability,
+        connection: &zbus::Connection,
+        header: &Header<'_>,
+    ) -> Result<(), PermissionError> {
+        let caller = CallerInfo::resolve(connection, header).await;
+        audit::log_attempt(capability, &caller);
+
+        let policy = self.policy.get(capability);
+        let result = match policy {
+            PolicyValue::Allow => Ok(()),
+            PolicyValue::Deny => Err(PermissionError::Denied {
+                capability: capability.as_str(),
+            }),
+            PolicyValue::Prompt => {
+                if self.resolve_prompt(capability, connection).await? {
+                    Ok(())
+                } else {
+                    Err(PermissionError::DeniedByPrompt {
+                        capability: capability.as_str(),
+                    })
+                }
+            }
+        };
+
+        let outcome = match (policy, &result) {
+            (_, Ok(())) if policy == PolicyValue::Prompt => audit::Outcome::PromptedAllow,
+            (_, Ok(())) => audit::Outcome::Allowed,
+            (PolicyValue::Prompt, Err(_)) => audit::Outcome::PromptedDeny,
+            (_, Err(_)) => audit::Outcome::Denied,
+        };
+        audit::log_outcome(capability, &caller, outcome);
+
+        result
+    }
+
+    /// Resolves a `Prompt`-policy capability: returns the cached decision if
+    /// this capability has already been prompted for this run, otherwise
+    /// shows a real notification and caches the result.
+    async fn resolve_prompt(
+        &self,
+        capability: Capability,
+        connection: &zbus::Connection,
+    ) -> Result<bool, PermissionError> {
+        if let Some(cached) = self
+            .prompt_cache
+            .lock()
+            .expect("prompt cache mutex poisoned")
+            .get(&capability)
+            .copied()
+        {
+            return Ok(cached);
+        }
+
+        let allowed = notify::prompt_user(connection, capability).await?;
+
+        self.prompt_cache
+            .lock()
+            .expect("prompt cache mutex poisoned")
+            .insert(capability, allowed);
+        Ok(allowed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_error_messages_name_the_capability() {
+        let denied = PermissionError::Denied {
+            capability: Capability::TypeText.as_str(),
+        };
+        assert!(denied.to_string().contains("TypeText"));
+
+        let prompt_denied = PermissionError::DeniedByPrompt {
+            capability: Capability::MouseClick.as_str(),
+        };
+        assert!(prompt_denied.to_string().contains("MouseClick"));
+    }
+
+    #[test]
+    fn gate_allows_by_default_with_empty_policy() {
+        let gate = PermissionGate::new(PolicyMap::default());
+        assert_eq!(gate.policy.get(Capability::FocusWindow), PolicyValue::Allow);
+    }
+
+    #[test]
+    fn gate_reads_deny_from_configured_policy() {
+        let policy: PolicyMap = toml::from_str("[capabilities]\nCloseWindow = \"Deny\"\n")
+            .expect("valid TOML policy map");
+        let gate = PermissionGate::new(policy);
+        assert_eq!(gate.policy.get(Capability::CloseWindow), PolicyValue::Deny);
+        // Unmentioned capability still defaults to Allow.
+        assert_eq!(gate.policy.get(Capability::FocusWindow), PolicyValue::Allow);
+    }
+}

@@ -9,8 +9,9 @@
 //! `tracing` on the `wgaf_daemon::input::audit` target before it executes.
 //! This is deliberately *not* an allow/deny gate — nothing here blocks an
 //! action — it exists purely so there's some accountability trail for input
-//! synthesis ahead of Phase 6's real permission/policy engine. Do not add
-//! allow/deny logic here; that's explicitly out of scope for this phase.
+//! synthesis ahead of the real permission/policy engine (see
+//! `crate::permissions`). Do not add allow/deny logic here; that's
+//! explicitly out of scope for this module.
 
 mod codes;
 mod device;
@@ -36,14 +37,12 @@ const AUDIT_TARGET: &str = "wgaf_daemon::input::audit";
 /// test's (or a real production daemon's).
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "wgaf virtual input device";
 
-/// Safety cap on `TypeText`'s input length — not a policy decision (Phase 6
-/// owns those), just a sane default guarding against a runaway/mistaken
-/// caller asking the daemon to synthesize an unbounded number of key events
-/// in one call. The roadmap's "rate limiting safeguards" TODO is only
-/// partially addressed by this (see
-/// `Documentation/phase4-input-automation-api.md` for the honest
-/// breakdown) — a proper token-bucket-style rate limiter across calls is
-/// deferred, not implemented here.
+/// Safety cap on `TypeText`'s input length — not a policy decision (the
+/// permission module owns those, see `crate::permissions`), just a sane
+/// default guarding against a runaway/mistaken caller asking the daemon to
+/// synthesize an unbounded number of key events in one call. This only
+/// partially addresses rate limiting — a proper token-bucket-style rate
+/// limiter across calls is deferred, not implemented here.
 const MAX_TYPE_TEXT_LEN: usize = 4096;
 
 /// Errors surfaced by the daemon's input-automation layer.
@@ -60,8 +59,7 @@ pub enum InputError {
          `KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"` in a file under \
          /etc/udev/rules.d/) and that this user is a member of the `input` group \
          (`sudo usermod -aG input $USER`, then log out and back in — group membership \
-         changes don't apply to already-running sessions). See \
-         Documentation/phase4-input-automation-api.md for the full setup steps."
+         changes don't apply to already-running sessions)."
     )]
     DeviceUnavailable { path: String, reason: String },
 

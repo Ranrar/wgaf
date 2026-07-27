@@ -19,7 +19,7 @@ use zbus::zvariant::Type;
 pub mod dict;
 
 // ---------------------------------------------------------------------------
-// Daemon's own public D-Bus API (org.wgaf.Daemon1) — Phase 1.
+// Daemon's own public D-Bus API (org.wgaf.Daemon1).
 // ---------------------------------------------------------------------------
 
 /// Well-known session bus name the daemon registers on startup.
@@ -33,9 +33,9 @@ pub const OBJECT_PATH: &str = "/org/wgaf/Daemon";
 pub const INTERFACE_NAME: &str = "org.wgaf.Daemon1";
 
 // ---------------------------------------------------------------------------
-// Daemon's own public window-management D-Bus API (org.wgaf.Windows1) —
-// Phase 3. Served on the same bus name/connection as `org.wgaf.Daemon1`
-// above, at a sibling object path.
+// Daemon's own public window-management D-Bus API (org.wgaf.Windows1).
+// Served on the same bus name/connection as `org.wgaf.Daemon1` above, at a
+// sibling object path.
 // ---------------------------------------------------------------------------
 
 /// Object path the daemon's window-management interface is served at.
@@ -57,9 +57,15 @@ pub const WINDOWS_ERROR_WINDOW_NOT_FOUND: &str = "org.wgaf.Windows1.Error.Window
 pub const WINDOWS_ERROR_EXTENSION_UNAVAILABLE: &str =
     "org.wgaf.Windows1.Error.ExtensionUnavailable";
 
+/// D-Bus error name returned by `org.wgaf.Windows1`'s mutating methods
+/// (`FocusWindow`/`MoveWindow`/`ResizeWindow`/`CloseWindow`) when the
+/// permission policy (`permissions.toml`) denies the call, or the caller
+/// declined an interactive `Prompt`. See `wgaf-daemon/src/permissions/`.
+pub const WINDOWS_ERROR_PERMISSION_DENIED: &str = "org.wgaf.Windows1.Error.PermissionDenied";
+
 // ---------------------------------------------------------------------------
-// Daemon's own public input-automation D-Bus API (org.wgaf.Input1) —
-// Phase 4. Served on the same bus name/connection as `org.wgaf.Daemon1`/
+// Daemon's own public input-automation D-Bus API (org.wgaf.Input1).
+// Served on the same bus name/connection as `org.wgaf.Daemon1`/
 // `org.wgaf.Windows1` above, at a sibling object path. Unlike Windows1, this
 // interface has no upstream GNOME Shell Extension dependency — it talks
 // directly to a `uinput`-backed virtual input device owned by the daemon
@@ -89,6 +95,13 @@ pub const INPUT_ERROR_UNKNOWN_KEY: &str = "org.wgaf.Input1.Error.UnknownKey";
 /// than `left`, `right`, or `middle`.
 pub const INPUT_ERROR_INVALID_BUTTON: &str = "org.wgaf.Input1.Error.InvalidButton";
 
+/// D-Bus error name returned by `org.wgaf.Input1`'s mutating methods
+/// (`TypeText`/`KeyPress`/`KeyRelease`/`MouseMove`/`MouseClick`/
+/// `MouseScroll`) when the permission policy (`permissions.toml`)
+/// denies the call, or the caller declined an interactive `Prompt`. See
+/// `wgaf-daemon/src/permissions/`.
+pub const INPUT_ERROR_PERMISSION_DENIED: &str = "org.wgaf.Input1.Error.PermissionDenied";
+
 // ---------------------------------------------------------------------------
 // GNOME Shell Extension's D-Bus API (client-side naming) — the daemon is a
 // `zbus` client of this interface. Canonical definition lives in
@@ -116,7 +129,7 @@ pub const EXTENSION_ERROR_WINDOW_NOT_FOUND: &str =
 
 // ---------------------------------------------------------------------------
 // Daemon's own public accessibility-automation D-Bus API
-// (org.wgaf.Accessibility1) — Phase 5. Served on the same bus name/
+// (org.wgaf.Accessibility1). Served on the same bus name/
 // connection as `org.wgaf.Daemon1`/`org.wgaf.Windows1`/`org.wgaf.Input1`
 // above, at a sibling object path. Like Input1 (and unlike Windows1), there
 // is no GNOME Shell Extension hop — the daemon talks directly to the
@@ -157,6 +170,13 @@ pub const ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND: &str =
 /// respectively).
 pub const ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED: &str =
     "org.wgaf.Accessibility1.Error.ActionNotSupported";
+
+/// D-Bus error name returned by `org.wgaf.Accessibility1`'s mutating methods
+/// (`InvokeAction`/`SetText`/`FocusElement`) when the permission
+/// policy (`permissions.toml`) denies the call, or the caller declined an
+/// interactive `Prompt`. See `wgaf-daemon/src/permissions/`.
+pub const ACCESSIBILITY_ERROR_PERMISSION_DENIED: &str =
+    "org.wgaf.Accessibility1.Error.PermissionDenied";
 
 // ---------------------------------------------------------------------------
 // Shared DTOs
@@ -200,7 +220,7 @@ pub struct WorkspaceRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Accessibility DTOs (Phase 5).
+// Accessibility DTOs.
 //
 // Unlike `WindowRecord`/`WorkspaceRecord` above, these derive `zvariant::Type`
 // directly and are used as-is on `org.wgaf.Accessibility1`'s method
@@ -214,8 +234,7 @@ pub struct WorkspaceRecord {
 // `#[derive(Serialize, Deserialize, Type)]` struct is used directly: zvariant
 // encodes it as an ordinary positional D-Bus struct (e.g. `(ssss)`), while
 // plain `serde_json` still serializes/deserializes it as an ordinary JSON
-// object with named fields. Confirmed by this phase's round-trip tests
-// below.
+// object with named fields. Confirmed by the round-trip tests below.
 
 /// A stable reference to one AT-SPI accessible object.
 ///
@@ -394,7 +413,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Accessibility DTOs (Phase 5)
+    // Accessibility DTOs
     // -----------------------------------------------------------------------
 
     fn sample_element_ref() -> ElementRef {

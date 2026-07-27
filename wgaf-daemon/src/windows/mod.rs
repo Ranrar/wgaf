@@ -1,7 +1,7 @@
 //! Daemon-side window management: a `zbus` client of the GNOME Shell
 //! Extension's window bridge (`org.gnome.Shell.Extensions.Wgaf.V1`), with
-//! extension-availability discovery (the Phase 2 leftover TODO) and
-//! translation of the extension's D-Bus errors into daemon-level errors.
+//! extension-availability discovery and translation of the extension's
+//! D-Bus errors into daemon-level errors.
 //! Exposed to the CLI via the daemon's own `org.wgaf.Windows1` interface,
 //! see `crate::dbus::windows_api`.
 
@@ -108,7 +108,7 @@ impl WindowManager {
 
     /// Confirms the extension is present on the bus and exposes the
     /// expected versioned interface, via
-    /// `org.freedesktop.DBus.Introspectable.Introspect` — per the Phase 2
+    /// `org.freedesktop.DBus.Introspectable.Introspect` — per the
     /// versioning strategy documented in `extension/dbusInterface.js`.
     /// Cached only on success (see `verified`'s doc comment).
     async fn ensure_extension_available(&self) -> Result<(), WindowsError> {

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["wgaf-common", "wgaf-daemon", "wgaf-cli"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 authors = ["Kim Skov Rasmussen"]
@@ -21,11 +21,19 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 libc = "0.2"
-# AT-SPI (Phase 5, accessibility automation). `tokio` feature is additive on
-# top of the crate's own defaults (connection/proxies/p2p/wrappers) — see
-# Documentation/phase5-accessibility-api.md §1 for why `zbus/async-io` still
-# ends up compiled in transitively (atspi-connection/atspi-proxies pin it
-# unconditionally) even though this workspace's own `zbus` dependency above
-# only requests the `tokio` feature; this is harmless (unused reactor code),
-# not a runtime conflict, confirmed by this phase's real-AT-SPI-bus tests.
+# AT-SPI (accessibility automation). `tokio` feature is additive on top of
+# the crate's own defaults (connection/proxies/p2p/wrappers) — `zbus/async-io`
+# still ends up compiled in transitively (atspi-connection/atspi-proxies pin
+# it unconditionally) even though this workspace's own `zbus` dependency
+# above only requests the `tokio` feature; this is harmless (unused reactor
+# code), not a runtime conflict, confirmed by the real-AT-SPI-bus tests in
+# wgaf-daemon/tests/accessibility.rs.
 atspi = { version = "0.30", default-features = false, features = ["connection", "proxies", "tokio"] }
+# Only needed to call `.next()` on the `zbus` signal streams used to await
+# the user's Allow/Deny choice from a `Prompt`-policy notification
+# (`wgaf-daemon/src/permissions/notify.rs`). Not a new crate in the build
+# graph — `futures-util` 0.3.33 is already resolved transitively via `zbus`/
+# `atspi` (confirmed in `Cargo.lock`); this just makes it directly nameable.
+# `default-features = false` + `std` only: no need for the `async-await`
+# macro helpers or `alloc`-only mode.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

@@ -4,14 +4,19 @@
 //! into a stable, named D-Bus error (`InputApiError`), following the exact
 //! pattern `windows_api.rs` established for `org.wgaf.Windows1`.
 
+use std::sync::Arc;
+
 use zbus::DBusError;
 use zbus::interface;
+use zbus::message::Header;
 
 use crate::input::{InputBackend, InputError};
+use crate::permissions::{Capability, PermissionError, PermissionGate};
 
 /// D-Bus error names for `org.wgaf.Input1`, matching
 /// `wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE`/`INPUT_ERROR_UNKNOWN_KEY`/
-/// `INPUT_ERROR_INVALID_BUTTON` (asserted in this module's tests).
+/// `INPUT_ERROR_INVALID_BUTTON`/`INPUT_ERROR_PERMISSION_DENIED` (asserted in
+/// this module's tests).
 #[derive(Debug, DBusError)]
 #[zbus(prefix = "org.wgaf.Input1.Error")]
 enum InputApiError {
@@ -24,6 +29,9 @@ enum InputApiError {
     DeviceUnavailable(String),
     UnknownKey(String),
     InvalidButton(String),
+    /// The call was refused by `permissions.toml`'s policy (or the
+    /// caller declined an interactive `Prompt`) — see `crate::permissions`.
+    PermissionDenied(String),
 }
 
 impl From<InputError> for InputApiError {
@@ -39,13 +47,28 @@ impl From<InputError> for InputApiError {
     }
 }
 
+impl From<PermissionError> for InputApiError {
+    fn from(err: PermissionError) -> Self {
+        match err {
+            PermissionError::Denied { .. } | PermissionError::DeniedByPrompt { .. } => {
+                Self::PermissionDenied(err.to_string())
+            }
+            PermissionError::DBus(e) => Self::ZBus(e),
+        }
+    }
+}
+
 pub struct InputApi {
     backend: InputBackend,
+    permissions: Arc<PermissionGate>,
 }
 
 impl InputApi {
-    pub fn new(backend: InputBackend) -> Self {
-        Self { backend }
+    pub fn new(backend: InputBackend, permissions: Arc<PermissionGate>) -> Self {
+        Self {
+            backend,
+            permissions,
+        }
     }
 }
 
@@ -57,7 +80,15 @@ impl InputApi {
     /// Types `text`, character by character, using a US-QWERTY ASCII
     /// mapping (see `crate::input::codes`). Non-ASCII characters fail the
     /// whole call with `UnknownKey`.
-    async fn type_text(&self, text: &str) -> Result<(), InputApiError> {
+    async fn type_text(
+        &self,
+        text: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::TypeText, connection, &header)
+            .await?;
         Ok(self.backend.type_text(text).await?)
     }
 
@@ -65,31 +96,73 @@ impl InputApi {
     /// `enter`, `leftshift`, ...) — see `crate::input::codes::key_name_to_code`.
     /// No ASCII/shift awareness: callers wanting a capital letter or a
     /// shifted symbol press/release `leftshift` themselves around the key.
-    async fn key_press(&self, key: &str) -> Result<(), InputApiError> {
+    async fn key_press(
+        &self,
+        key: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::KeyPress, connection, &header)
+            .await?;
         Ok(self.backend.key_press(key).await?)
     }
 
     /// Releases a key previously pressed via `KeyPress`.
-    async fn key_release(&self, key: &str) -> Result<(), InputApiError> {
+    async fn key_release(
+        &self,
+        key: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::KeyRelease, connection, &header)
+            .await?;
         Ok(self.backend.key_release(key).await?)
     }
 
     /// Moves the pointer by `(dx, dy)` relative to its current position.
     /// There is no absolute-move method — see `crate::input::mouse`'s
     /// module docs for why.
-    async fn mouse_move(&self, dx: i32, dy: i32) -> Result<(), InputApiError> {
+    async fn mouse_move(
+        &self,
+        dx: i32,
+        dy: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::MouseMove, connection, &header)
+            .await?;
         Ok(self.backend.mouse_move(dx, dy).await?)
     }
 
     /// Clicks (press then release) `button`, which must be `left`, `right`,
     /// or `middle`.
-    async fn mouse_click(&self, button: &str) -> Result<(), InputApiError> {
+    async fn mouse_click(
+        &self,
+        button: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::MouseClick, connection, &header)
+            .await?;
         Ok(self.backend.mouse_click(button).await?)
     }
 
     /// Scrolls: `dx` horizontal (`REL_HWHEEL`, positive = right), `dy`
     /// vertical (`REL_WHEEL`, positive = up).
-    async fn mouse_scroll(&self, dx: i32, dy: i32) -> Result<(), InputApiError> {
+    async fn mouse_scroll(
+        &self,
+        dx: i32,
+        dy: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::MouseScroll, connection, &header)
+            .await?;
         Ok(self.backend.mouse_scroll(dx, dy).await?)
     }
 }
@@ -103,6 +176,7 @@ mod tests {
         let device_unavailable = InputApiError::DeviceUnavailable("unavailable".to_string());
         let unknown_key = InputApiError::UnknownKey("unknown".to_string());
         let invalid_button = InputApiError::InvalidButton("invalid".to_string());
+        let permission_denied = InputApiError::PermissionDenied("denied".to_string());
         assert_eq!(
             device_unavailable.name().as_str(),
             wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE
@@ -114,6 +188,10 @@ mod tests {
         assert_eq!(
             invalid_button.name().as_str(),
             wgaf_common::INPUT_ERROR_INVALID_BUTTON
+        );
+        assert_eq!(
+            permission_denied.name().as_str(),
+            wgaf_common::INPUT_ERROR_PERMISSION_DENIED
         );
     }
 }

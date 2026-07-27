@@ -7,25 +7,25 @@
 //! elements. Exposed to the CLI via the daemon's own `org.wgaf.Accessibility1`
 //! interface, see `crate::dbus::accessibility_api`.
 //!
-//! Like `input/` (Phase 4) and unlike `windows/` (Phase 3), there is no
-//! GNOME Shell Extension hop here — GJS/Mutter plays no role in AT-SPI at
-//! all; applications register their own accessible trees directly with the
-//! separate a11y bus, independent of the compositor.
+//! Like `input/` and unlike `windows/`, there is no GNOME Shell Extension
+//! hop here — GJS/Mutter plays no role in AT-SPI at all; applications
+//! register their own accessible trees directly with the separate a11y
+//! bus, independent of the compositor.
 //!
 //! **Element references.** AT-SPI's own object-reference scheme — a
 //! `(bus_name, object_path)` pair — is already stable and unique for the
 //! lifetime of the owning application process, so it's exposed directly as
 //! [`wgaf_common::ElementRef`] rather than wrapped in an invented id scheme
-//! (contrast Phase 3's window ids, which had to substitute Mutter's stable
-//! sequence number for X11's unsafe/unstable XIDs — there is no equivalent
-//! problem here).
+//! (contrast `windows/`'s window ids, which had to substitute Mutter's
+//! stable sequence number for X11's unsafe/unstable XIDs — there is no
+//! equivalent problem here).
 //!
 //! **Audit logging, not policy:** every *mutating* action (`invoke_action`,
 //! `set_text`, `focus_element`) is logged via `tracing` on the
 //! `wgaf_daemon::accessibility::audit` target before it executes, mirroring
 //! `input::AUDIT_TARGET`'s "accountability trail, not an allow/deny gate"
-//! design (Phase 6 owns real policy). Read-only queries (`list_apps`,
-//! `find_elements`, `get_tree`, `get_element_info`) do *not* log here, same
+//! design (the permissions module owns real policy). Read-only queries
+//! (`list_apps`, `find_elements`, `get_tree`, `get_element_info`) do *not* log here, same
 //! reasoning as `input`'s module docs: nothing is blocked by this, so
 //! logging only the state-changing calls keeps the audit trail meaningful
 //! rather than noisy.
@@ -70,7 +70,7 @@ pub enum AccessibilityError {
     /// "recover without a daemon restart" precedent).
     #[error(
         "AT-SPI accessibility bus unavailable: {reason} — accessibility may not be enabled for \
-         this session; see Documentation/phase5-accessibility-api.md for how to check/enable it"
+         this session"
     )]
     BusUnavailable { reason: String },
 
@@ -133,8 +133,7 @@ impl AccessibilityBackend {
     }
 
     /// Enumerates every currently-registered accessible application (the AT-SPI
-    /// registry's root object's children — see `Documentation/phase5-accessibility-api.md`
-    /// §1 for how this maps onto the raw AT-SPI calls).
+    /// registry's root object's children).
     pub async fn list_apps(&self) -> Result<Vec<AppRecord>, AccessibilityError> {
         let conn = self.connection().await?;
         let registry_root = conn.root_accessible_on_registry().await?;

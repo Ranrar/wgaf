@@ -1,12 +1,11 @@
 //! Integration tests for the daemon's `org.wgaf.Input1` D-Bus API.
 //!
-//! Unlike Phase 3's `windows_stub.rs` (which has to fake the GNOME Shell
+//! Unlike `windows_stub.rs` (which has to fake the GNOME Shell
 //! Extension because no real GNOME Shell session is available in this
 //! sandbox), `/dev/uinput` in this environment is confirmed writable by the
-//! current user (a POSIX ACL grants `rw-` directly — see
-//! `Documentation/phase4-input-automation-api.md` for how this was
-//! confirmed), so these tests exercise a **real** `uinput` virtual device
-//! created by a **real** spawned `wgaf-daemon` process, not a stub.
+//! current user (a POSIX ACL grants `rw-` directly), so these tests
+//! exercise a **real** `uinput` virtual device created by a **real**
+//! spawned `wgaf-daemon` process, not a stub.
 //!
 //! Each test gives its spawned daemon a unique `input_device_name` (via
 //! `Config::input_device_name`, see `wgaf-daemon/src/config.rs`) rather than
@@ -31,17 +30,18 @@
 //!
 //! What is NOT verified here (a documented gap, not silently skipped):
 //! reading back the individual synthesized `struct input_event`s from the
-//! device's own `/dev/input/eventN` node. This was investigated directly
-//! (see the Phase 4 development notes) — the resulting event node is
-//! created with the standard udev-managed permissions (`root:input`, mode
-//! `0660`), and this sandbox's user is *not* a member of the `input` group
+//! device's own `/dev/input/eventN` node. This was investigated directly —
+//! the resulting event node is created with the standard udev-managed
+//! permissions (`root:input`, mode `0660`), and this sandbox's user is
+//! *not* a member of the `input` group
 //! (only `/dev/uinput` itself has a one-off ACL granting this user direct
 //! access, for creating the device — not for reading back the events of
 //! devices it creates). Opening `/dev/input/eventN` for reading fails with
 //! `EACCES` as a result, confirmed by direct experiment. Per-event
 //! readback would need either `input` group membership or a VM/CI runner
 //! configured for it — out of scope for this sandboxed test run, same
-//! category of gap as Phase 3's "no real GNOME Shell session" limitation.
+//! category of gap as `windows_stub.rs`'s "no real GNOME Shell session"
+//! limitation.
 
 use std::process::{Child, Command};
 use std::time::Duration;

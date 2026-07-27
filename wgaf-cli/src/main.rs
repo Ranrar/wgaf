@@ -27,8 +27,7 @@ enum Command {
         command: WindowCommand,
     },
 
-    /// Type a string of text (ASCII/US-QWERTY only — see
-    /// `Documentation/phase4-input-automation-api.md`), backed by the
+    /// Type a string of text (ASCII/US-QWERTY only), backed by the
     /// daemon's `org.wgaf.Input1` D-Bus interface.
     Type {
         /// The text to type.
@@ -46,8 +45,7 @@ enum Command {
 
     /// Mouse automation commands (relative move, click, scroll), backed by
     /// the daemon's `org.wgaf.Input1` D-Bus interface. There is no
-    /// absolute-move command — see
-    /// `Documentation/phase4-input-automation-api.md` for why.
+    /// absolute-move command.
     Mouse {
         #[command(subcommand)]
         command: MouseCommand,
@@ -58,7 +56,7 @@ enum Command {
     /// invoke actions (click/focus/set text) on them — backed by the
     /// daemon's `org.wgaf.Accessibility1` D-Bus interface. Preferred over
     /// coordinate-based automation whenever an element can be found this
-    /// way — see `Documentation/phase5-accessibility-api.md`.
+    /// way.
     A11y {
         #[command(subcommand)]
         command: A11yCommand,
