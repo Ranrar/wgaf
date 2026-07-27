@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-07-27
 
+### Fixed
+
+- `wgaf-daemon`: `permissions::notify::prompt_user` (`wgaf-daemon/src/permissions/notify.rs`) subscribed to the `ActionInvoked`/`NotificationClosed` signals *after* posting the notification, leaving a window in which a user's "Allow" click on a `Prompt`-policy capability was dropped entirely — the call then blocked the full 60-second `PROMPT_TIMEOUT` and failed closed, making an instant, deliberate approval indistinguishable from ignoring the prompt. Both signal streams are now subscribed before `Notify` is called, so no response can be missed however quickly it arrives. Found by inspection during the 2026-07-27 documentation audit; no automated test guards the ordering (see the phase 6 notes for the private-bus stub a regression test would need).
+
+- `docs/cli-reference.md`: the global options table documented only `--json` and omitted `--bus-name` entirely — the sole way to reach a daemon started with a customised `bus_name` from `config.toml`. Also documented that `wgaf window list` deliberately omits transient surfaces (tooltips, open menus, combo dropdowns), a user-visible behaviour of the extension's `listWindows()` that was only recorded in a source comment.
+- Doc comments corrected to match the code they describe (comments only, no behaviour change): `wgaf-common/src/lib.rs` pointed at a nonexistent `wgaf-daemon/src/windows/wire.rs` for the `a{sv}` wire types (they are in `wgaf-common/src/dict.rs`); `wgaf-daemon/src/input/device.rs` named a test that doesn't exist (`ioctl_numbers_match_known_values`, actually `ioctl_numbers_match_known_kernel_constants`); `wgaf-daemon/src/input/mouse.rs`'s `scroll` claimed both wheel axes are emitted as one `SYN_REPORT`-terminated batch, contradicted by its own implementation (two separately-synced events); `Cargo.toml`'s `atspi` comment described the `tokio` feature as additive on top of the crate's defaults, contradicting `default-features = false` on the same dependency line.
+- `wgaf-daemon/src/permissions/audit.rs`: the module header described this target as superseding the per-module `wgaf_daemon::input::audit` / `wgaf_daemon::accessibility::audit` targets. It does not — both still exist and still emit, so three audit targets coexist and one gated call produces three log lines across two targets. Documented accurately, with the consolidation recorded as an open cleanup item rather than a completed one.
+
+## [0.7.0] - 2026-07-27
+
 ### Added
 
 - `wgaf-cli`: new `wgaf completions <shell>` subcommand (`wgaf-cli/src/main.rs`) generating a real shell completion script via `clap_complete::generate` (bash/zsh/fish/elvish/powershell via `clap_complete::Shell`, new runtime workspace dependency `clap_complete = "4"`), spot-checked for bash/zsh output; 3 new parsing tests (`parses_completions_bash`/`parses_completions_zsh`/`rejects_unknown_completions_shell`).

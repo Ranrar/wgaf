@@ -1,17 +1,27 @@
-//! Consolidated audit logging for every permission-gated (mutating) D-Bus
-//! call, superseding the earlier separate per-module `tracing` targets
-//! (`input::AUDIT_TARGET`, `accessibility::AUDIT_TARGET`) with one shared
-//! target: `wgaf_daemon::permissions::audit`. Those modules' own docs
-//! called their logging "an accountability trail, not an allow/deny gate,
-//! ahead of the real permission engine" — this module is that engine's
-//! logging half.
+//! Audit logging for every permission-gated (mutating) D-Bus call, on the
+//! `wgaf_daemon::permissions::audit` target. The `input`/`accessibility`
+//! modules' own docs called their logging "an accountability trail, not an
+//! allow/deny gate, ahead of the real permission engine" — this module is
+//! that engine's logging half.
 //!
-//! Unlike the earlier per-module logging (which only recorded *that* an
-//! action happened), every gated call now logs **twice**: once when the
-//! check is requested (before the policy lookup/prompt), and once with the
-//! resolved outcome (`allowed` / `denied` / `prompted-allow` /
-//! `prompted-deny`) — so the audit trail shows both the attempt and its
-//! result, not just "action happened".
+//! Unlike the per-module logging (which only records *that* an action
+//! happened), every gated call logs **twice** here: once when the check is
+//! requested (before the policy lookup/prompt), and once with the resolved
+//! outcome (`allowed` / `denied` / `prompted-allow` / `prompted-deny`) — so
+//! the audit trail shows both the attempt and its result, not just "action
+//! happened".
+//!
+//! **This target does not (yet) supersede the per-module ones.** It was
+//! originally introduced as a consolidation that would replace
+//! `input::AUDIT_TARGET` (`wgaf_daemon::input::audit`) and
+//! `accessibility::AUDIT_TARGET` (`wgaf_daemon::accessibility::audit`) —
+//! but those were never removed, and still emit. Three targets coexist, so
+//! one gated `TypeText` produces three lines across two targets: this
+//! module's attempt and outcome lines, plus `input/mod.rs`'s own
+//! `synthesizing text input` line. Retiring the two legacy targets in
+//! favour of this one is an open cleanup item; until then, anything
+//! consuming the audit trail must know about all three and must not treat a
+//! per-call line count as meaningful.
 //!
 //! **Source identification.** Every entry records the caller's D-Bus unique
 //! connection name, and — resolved via `org.freedesktop.DBus`'s

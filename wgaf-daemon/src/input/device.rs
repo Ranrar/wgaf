@@ -12,7 +12,7 @@
 //! The `UI_SET_EVBIT`/`UI_SET_KEYBIT`/`UI_DEV_SETUP`/`UI_DEV_CREATE` ioctl
 //! request numbers are computed from the same `_IOC`/`_IOW`/`_IO` formula
 //! the kernel headers use (see the `ioc`/`io`/`iow` `const fn`s below)
-//! rather than hand-copied as magic numbers — `tests::ioctl_numbers_match_known_values`
+//! rather than hand-copied as magic numbers — `tests::ioctl_numbers_match_known_kernel_constants`
 //! cross-checks the result against the literal values documented in
 //! `<linux/uinput.h>` (`0x40045564`, `0x5501`, `0x405c5503`), which were
 //! also confirmed against a real kernel in this environment.

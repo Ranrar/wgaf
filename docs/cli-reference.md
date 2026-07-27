@@ -11,6 +11,7 @@ running (`wgaf-daemon &`, or as a systemd user service via `make install`).
 | Flag | Effect |
 |---|---|
 | `--json` | Emit machine-readable JSON instead of human-readable text. Valid on either side of the subcommand — both `wgaf --json window list` and `wgaf window list --json` work. |
+| `--bus-name <NAME>` | Which daemon to talk to, by D-Bus well-known name. Defaults to `org.wgaf.Daemon`. You only need this if the daemon was started with a customised `bus_name` in its `config.toml` — see [Configuration](../README.md#configuration). Also valid on either side of the subcommand. |
 
 Commands that don't return data (`window focus`, `type`, `mouse click`, ...)
 still respect `--json`: they print `{"ok": true, "message": "..."}` instead of
@@ -49,6 +50,10 @@ Lists all windows. Human-readable output is one line per window:
 
 `--json` prints the full array of window records (`id`, `title`, `app_id`,
 `workspace`, `x`, `y`, `width`, `height`, `focused`, `maximized`).
+
+Transient surfaces — tooltips, open menus, combo-box dropdowns — are
+deliberately left out, since they aren't things you'd sensibly focus, move,
+resize, or close. If a menu is open when you run this, it won't be listed.
 
 ### `wgaf window focus <id>`
 

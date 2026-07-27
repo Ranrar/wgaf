@@ -7,11 +7,16 @@
 //! coupling: zvariant's `a{sv}` dict (de)serialization wraps every field in
 //! a `Variant` marker, which is not interchangeable with plain JSON (a
 //! `--json` CLI field would come out as `{"signature": "u", "value": 42}`
-//! instead of `42`). `wgaf-daemon` defines its own private `a{sv}`-shaped
-//! "wire" structs (see `wgaf-daemon/src/windows/wire.rs`) purely for the two
-//! D-Bus hops (extension -> daemon, daemon -> CLI), and converts to/from
-//! these DTOs at the edges. These DTOs are what `wgaf-cli` actually
-//! serializes for `--json` output.
+//! instead of `42`). The matching `a{sv}`-shaped "wire" structs live in this
+//! crate's own [`dict`] module, purely for the two D-Bus hops
+//! (extension -> daemon, daemon -> CLI); both `wgaf-daemon` and `wgaf-cli`
+//! convert to/from the plain DTOs here at the edges. These DTOs are what
+//! `wgaf-cli` actually serializes for `--json` output.
+//!
+//! Note this split applies only to the window/workspace types, which have to
+//! match the GNOME Shell Extension's self-authored `a{sv}` dicts. The
+//! accessibility DTOs further down derive `zvariant::Type` directly and need
+//! no wire counterpart — see their own section comment for why.
 
 use serde::{Deserialize, Serialize};
 use zbus::zvariant::Type;

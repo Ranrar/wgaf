@@ -18,6 +18,13 @@
 //! the notification body itself, or it expiring) all resolve to `Ok(false)`
 //! — only an explicit "Allow" click resolves to `Ok(true)`. Silence is
 //! treated as refusal, never as permission.
+//!
+//! **Fail closed must mean "the user didn't answer", not "we weren't
+//! listening yet".** Signal subscription therefore happens *before* the
+//! notification is posted — see the ordering note in [`prompt_user`]. Get
+//! that order wrong and a fast "Allow" click is silently converted into a
+//! 60-second stall followed by a denial, which looks identical to the user
+//! ignoring the prompt.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -79,6 +86,29 @@ pub(crate) async fn prompt_user(
 ) -> Result<bool, PermissionError> {
     let proxy = NotificationsProxy::new(connection).await?;
 
+    // ORDER MATTERS: subscribe to both signals BEFORE calling `Notify`.
+    //
+    // FIXED: this function used to call `Notify` first and subscribe
+    // afterwards, which left a window between the notification appearing on
+    // screen and the match rules being installed on the bus. A user who
+    // clicked "Allow" inside that window had the click dropped entirely, and
+    // the call then blocked the full `PROMPT_TIMEOUT` before failing closed —
+    // so an instant, deliberate "yes" was indistinguishable from walking
+    // away. The window is short, but it is widest exactly when the user is
+    // already watching for the prompt and reacts immediately, which is the
+    // common interactive case rather than a rare one.
+    //
+    // `receive_*` installs the match rule and begins buffering matching
+    // signals as soon as it returns, so with this ordering nothing emitted
+    // after this point can be missed, however fast the reply comes back.
+    //
+    // Subscribing before we know `notification_id` is intentional and safe:
+    // these streams also carry other applications' notification signals, and
+    // the `args.id == notification_id` checks in the loop below discard
+    // everything that isn't ours.
+    let mut action_invoked = proxy.receive_action_invoked().await?;
+    let mut notification_closed = proxy.receive_notification_closed().await?;
+
     let summary = format!("wgaf automation: allow \"{}\"?", capability.as_str());
     let body = "A script or CLI command is requesting permission to perform this action. Your \
                 choice is remembered for the rest of this wgaf-daemon session.";
@@ -97,9 +127,6 @@ pub(crate) async fn prompt_user(
             0, // never expire on its own; PROMPT_TIMEOUT below bounds the wait instead.
         )
         .await?;
-
-    let mut action_invoked = proxy.receive_action_invoked().await?;
-    let mut notification_closed = proxy.receive_notification_closed().await?;
 
     let wait_for_choice = async {
         loop {

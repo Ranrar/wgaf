@@ -33,9 +33,12 @@ pub(crate) fn click(device: &mut UinputDevice, button_code: u16) -> Result<(), I
 
 /// Scrolls: `dy` is vertical (`REL_WHEEL`, positive = up, matching the
 /// kernel's own convention), `dx` is horizontal (`REL_HWHEEL`, positive =
-/// right). Either may be `0`; both are always emitted (as a single
-/// `SYN_REPORT`-terminated batch) for a simple, predictable contract rather
-/// than skipping zero axes.
+/// right). Either may be `0`; both are always emitted, for a simple,
+/// predictable contract rather than skipping zero axes.
+///
+/// The two axes go out as two separately-`SYN_REPORT`-terminated events, not
+/// one batch — see the implementation note below for why that's acceptable
+/// here (unlike [`move_relative`], where X and Y must land atomically).
 pub(crate) fn scroll(device: &mut UinputDevice, dx: i32, dy: i32) -> Result<(), InputError> {
     // Two separate emit calls that need to land in the same SYN batch: reuse
     // the raw `rel_event`/sync pattern via two calls plus a shared final
