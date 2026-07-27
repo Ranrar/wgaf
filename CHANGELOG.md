@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-28
+
+### Added
+
+- `wgaf-daemon`: regression tests for the `Prompt` permission flow (`wgaf-daemon/src/permissions/notify.rs`'s own `mod tests`, 3 tests) — an Allow click resolving to permission granted, and a Deny click and a dismissal-without-a-button-press both resolving to refusal (the fail-closed contract, previously untested). They run against a stub `org.freedesktop.Notifications` service on a private, unique bus name on the session bus, the same pattern `wgaf-daemon/tests/windows_stub.rs` uses for the GNOME Shell Extension; the real notification bus name is owned by GNOME Shell on a live session and cannot be faked. The stub emits its response signal *before* replying to `Notify`, which is what makes the tests deterministic rather than timing-dependent: under the pre-fix ordering the bus has no match rule to route that signal to and drops it every time. Verified to genuinely catch the regression by temporarily reverting the fix — all three failed in ~5s, bounded by a per-test 5-second timeout rather than the 60-second `PROMPT_TIMEOUT`. These guard the `prompt_user` ordering fix released in 0.7.0, which shipped without test coverage.
+- `wgaf-daemon`: `permissions::notify::prompt_user_at` — an internal seam letting the notification service's bus name be overridden for testing, mirroring `Config::extension_bus_name`'s existing role on the `org.wgaf.Windows1` side. `prompt_user` is unchanged for callers and always targets the real `org.freedesktop.Notifications`.
+
+### Changed
+
+- `wgaf-daemon`: the `wgaf-daemon` unit test binary now requires a session bus, which it did not before (the integration tests already did) — the new `permissions::notify` tests deliberately fail rather than skip when no bus is available, since a silently skipped regression test is worse than a failing one. Run the suite under `dbus-run-session -- cargo test` in environments without one.
+
 ## [0.7.0] - 2026-07-27
 
 ### Fixed

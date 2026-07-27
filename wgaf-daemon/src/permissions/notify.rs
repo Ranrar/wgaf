@@ -41,6 +41,14 @@ use super::policy::Capability;
 /// automation script blocked on this call doesn't hang indefinitely.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Well-known bus name of the session's notification service, per the
+/// freedesktop.org Notifications spec. Overridable only via
+/// [`prompt_user_at`], for the same reason `Config::extension_bus_name`
+/// exists on the Windows1 side: it lets a test point this at a stub service
+/// on a private, unique bus name instead of the real one, which is otherwise
+/// owned by GNOME Shell and impossible to fake on a live session.
+const NOTIFICATIONS_BUS_NAME: &str = "org.freedesktop.Notifications";
+
 /// Client proxy for the freedesktop.org Notifications spec
 /// (`org.freedesktop.Notifications` at `/org/freedesktop/Notifications`,
 /// registered by the session's notification daemon — e.g. `gnome-shell`
@@ -84,7 +92,26 @@ pub(crate) async fn prompt_user(
     connection: &zbus::Connection,
     capability: Capability,
 ) -> Result<bool, PermissionError> {
-    let proxy = NotificationsProxy::new(connection).await?;
+    prompt_user_at(connection, NOTIFICATIONS_BUS_NAME, capability).await
+}
+
+/// [`prompt_user`] with the notification service's bus name made explicit.
+/// Production always passes [`NOTIFICATIONS_BUS_NAME`]; the tests below pass
+/// a private, unique name owned by a stub service, mirroring how
+/// `Config::extension_bus_name` lets `tests/windows_stub.rs` stand in for the
+/// GNOME Shell Extension.
+async fn prompt_user_at(
+    connection: &zbus::Connection,
+    destination: &str,
+    capability: Capability,
+) -> Result<bool, PermissionError> {
+    // Owned `String` (not a borrowed `&str`) so the proxy's lifetime isn't
+    // tied to `destination` — same convention as
+    // `windows::proxy::ShellExtensionProxy`'s `.destination(….to_string())`.
+    let proxy = NotificationsProxy::builder(connection)
+        .destination(destination.to_string())?
+        .build()
+        .await?;
 
     // ORDER MATTERS: subscribe to both signals BEFORE calling `Notify`.
     //
@@ -156,4 +183,172 @@ pub(crate) async fn prompt_user(
     Ok(tokio::time::timeout(PROMPT_TIMEOUT, wait_for_choice)
         .await
         .unwrap_or(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zbus::object_server::SignalEmitter;
+
+    // These tests need a session bus (the whole `wgaf-daemon` integration
+    // suite already does — see `tests/ping.rs`). They deliberately do NOT
+    // skip when one is absent: a silently-skipped regression test is worse
+    // than a failing one.
+
+    /// Bounds every test well below [`PROMPT_TIMEOUT`], so a regression fails
+    /// in seconds rather than stalling the suite for a minute per test.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// The id the stub assigns to every notification it accepts.
+    const STUB_NOTIFICATION_ID: u32 = 1;
+
+    /// How the stub should answer a `Notify` call.
+    #[derive(Clone, Copy)]
+    enum StubResponse {
+        Allow,
+        Deny,
+        /// Closed without any button press (dismissed/expired) — reason 2 is
+        /// the spec's "dismissed by the user".
+        Dismiss,
+    }
+
+    /// A stand-in for the desktop's notification service that answers
+    /// **before** replying to `Notify`.
+    ///
+    /// That ordering is the whole point, and is what makes these tests
+    /// deterministic rather than timing-dependent. On a real bus a signal is
+    /// only delivered to connections that already have a matching match rule
+    /// installed. So if `prompt_user_at` posts the notification *before*
+    /// subscribing (the bug fixed on 2026-07-27), the bus has nowhere to
+    /// route this signal and drops it outright — guaranteed, not
+    /// occasionally — and the call then blocks until `PROMPT_TIMEOUT` and
+    /// fails closed. Subscribing first means the match rule exists when the
+    /// stub emits, so the signal is buffered and picked up as soon as the
+    /// `Notify` reply lands.
+    ///
+    /// Net effect: reorder those two statements in `prompt_user_at` and all
+    /// three tests below fail within `TEST_TIMEOUT`.
+    struct NotificationsStub {
+        response: StubResponse,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.Notifications")]
+    impl NotificationsStub {
+        #[allow(clippy::too_many_arguments)]
+        async fn notify(
+            &self,
+            _app_name: &str,
+            _replaces_id: u32,
+            _app_icon: &str,
+            _summary: &str,
+            _body: &str,
+            _actions: Vec<String>,
+            _hints: HashMap<String, zbus::zvariant::OwnedValue>,
+            _expire_timeout: i32,
+            #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        ) -> u32 {
+            let emitted = match self.response {
+                StubResponse::Allow => {
+                    Self::action_invoked(&emitter, STUB_NOTIFICATION_ID, "allow").await
+                }
+                StubResponse::Deny => {
+                    Self::action_invoked(&emitter, STUB_NOTIFICATION_ID, "deny").await
+                }
+                StubResponse::Dismiss => {
+                    Self::notification_closed(&emitter, STUB_NOTIFICATION_ID, 2).await
+                }
+            };
+            // Report rather than swallow: the assertion below would fail
+            // anyway, but silently is a miserable way to debug it.
+            if let Err(e) = emitted {
+                eprintln!("notification stub failed to emit its response signal: {e}");
+            }
+            STUB_NOTIFICATION_ID
+        }
+
+        #[zbus(signal)]
+        pub async fn action_invoked(
+            emitter: &SignalEmitter<'_>,
+            id: u32,
+            action_key: &str,
+        ) -> zbus::Result<()>;
+
+        #[zbus(signal)]
+        pub async fn notification_closed(
+            emitter: &SignalEmitter<'_>,
+            id: u32,
+            reason: u32,
+        ) -> zbus::Result<()>;
+    }
+
+    /// Serves the stub on a private, unique bus name and leaks the connection
+    /// for the rest of the test process — the same pattern (and the same
+    /// rationale for leaking) as `tests/windows_stub.rs`'s
+    /// `start_stub_extension`.
+    async fn start_stub(bus_name: &str, response: StubResponse) {
+        let connection = zbus::connection::Builder::session()
+            .expect("session bus builder")
+            .name(bus_name)
+            .expect("valid bus name")
+            .serve_at("/org/freedesktop/Notifications", NotificationsStub {
+                response,
+            })
+            .expect("serve stub notification service")
+            .build()
+            .await
+            .expect("stub notification service registers on the session bus");
+        std::mem::forget(connection);
+    }
+
+    /// Runs one prompt against a freshly-started stub. `tag` keeps each
+    /// test's bus name distinct, since these run concurrently by default and
+    /// a bus name is a session-global resource.
+    ///
+    /// `tag` and the pid are concatenated into a *single* name element
+    /// (`…NotificationsAllow1234`, not `…Notifications.Allow.1234`) because a
+    /// D-Bus name element may not begin with a digit — the same convention
+    /// `tests/windows_stub.rs` already uses for its unique names.
+    async fn prompt_against_stub(tag: &str, response: StubResponse) -> bool {
+        let bus_name = format!("org.wgaf.Test.Notifications{tag}{}", std::process::id());
+        start_stub(&bus_name, response).await;
+
+        let connection = zbus::Connection::session()
+            .await
+            .expect("connect to session bus");
+
+        tokio::time::timeout(
+            TEST_TIMEOUT,
+            prompt_user_at(&connection, &bus_name, Capability::TypeText),
+        )
+        .await
+        .expect(
+            "prompt_user_at blocked waiting for a response the stub had already sent — the \
+             ActionInvoked/NotificationClosed subscriptions must happen BEFORE Notify is called",
+        )
+        .expect("the prompt flow should complete without a D-Bus error")
+    }
+
+    #[tokio::test]
+    async fn allow_click_arriving_before_the_notify_reply_is_not_missed() {
+        assert!(
+            prompt_against_stub("Allow", StubResponse::Allow).await,
+            "an explicit Allow must resolve to permission granted"
+        );
+    }
+
+    #[tokio::test]
+    async fn deny_click_resolves_to_refusal() {
+        assert!(
+            !prompt_against_stub("Deny", StubResponse::Deny).await,
+            "an explicit Deny must resolve to permission refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn dismissal_without_a_button_press_resolves_to_refusal() {
+        assert!(
+            !prompt_against_stub("Dismiss", StubResponse::Dismiss).await,
+            "a notification closed without a button press must fail closed, not open"
+        );
+    }
 }
