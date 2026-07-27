@@ -3,7 +3,7 @@ resolver = "2"
 members = ["wgaf-common", "wgaf-daemon", "wgaf-cli"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 authors = ["Kim Skov Rasmussen"]
@@ -20,3 +20,4 @@ toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+libc = "0.2"

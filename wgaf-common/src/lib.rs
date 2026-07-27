@@ -57,6 +57,38 @@ pub const WINDOWS_ERROR_EXTENSION_UNAVAILABLE: &str =
     "org.wgaf.Windows1.Error.ExtensionUnavailable";
 
 // ---------------------------------------------------------------------------
+// Daemon's own public input-automation D-Bus API (org.wgaf.Input1) —
+// Phase 4. Served on the same bus name/connection as `org.wgaf.Daemon1`/
+// `org.wgaf.Windows1` above, at a sibling object path. Unlike Windows1, this
+// interface has no upstream GNOME Shell Extension dependency — it talks
+// directly to a `uinput`-backed virtual input device owned by the daemon
+// (see `wgaf-daemon/src/input/`), since GJS/Mutter has no `uinput` access.
+// ---------------------------------------------------------------------------
+
+/// Object path the daemon's input-automation interface is served at.
+pub const INPUT_OBJECT_PATH: &str = "/org/wgaf/Input";
+
+/// Versioned interface name for the daemon's own input-automation API.
+pub const INPUT_INTERFACE_NAME: &str = "org.wgaf.Input1";
+
+/// D-Bus error name returned by `org.wgaf.Input1` methods when the daemon's
+/// `uinput` virtual device could not be opened/created — typically a
+/// permissions problem (`/dev/uinput` not accessible), not a code bug. See
+/// `wgaf-daemon/src/input/device.rs` for the exact diagnostic text and the
+/// required udev rule.
+pub const INPUT_ERROR_DEVICE_UNAVAILABLE: &str = "org.wgaf.Input1.Error.DeviceUnavailable";
+
+/// D-Bus error name returned when a `KeyPress`/`KeyRelease`/`TypeText` call
+/// references a key name or character this daemon's ASCII/US-QWERTY mapping
+/// table (see `wgaf-daemon/src/input/codes.rs`) doesn't know how to
+/// synthesize.
+pub const INPUT_ERROR_UNKNOWN_KEY: &str = "org.wgaf.Input1.Error.UnknownKey";
+
+/// D-Bus error name returned when `MouseClick` is given a button name other
+/// than `left`, `right`, or `middle`.
+pub const INPUT_ERROR_INVALID_BUTTON: &str = "org.wgaf.Input1.Error.InvalidButton";
+
+// ---------------------------------------------------------------------------
 // GNOME Shell Extension's D-Bus API (client-side naming) — the daemon is a
 // `zbus` client of this interface. Canonical definition lives in
 // `extension/dbusInterface.js`; keep these in sync with it.

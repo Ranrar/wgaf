@@ -1,5 +1,6 @@
 mod config;
 mod dbus;
+mod input;
 mod windows;
 
 use std::path::PathBuf;
@@ -55,6 +56,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    // `InputBackend::new` does not touch `/dev/uinput` — like
+    // `WindowManager::connect_to` above, the actual resource (the virtual
+    // uinput device) is only created lazily on first real use, so a
+    // permissions problem here never prevents the daemon from starting or
+    // from serving `org.wgaf.Windows1`. See `input::InputBackend`'s doc
+    // comments.
+    let input_backend = input::InputBackend::new(config.input_device_name.clone());
+
     let _connection = zbus::connection::Builder::session()?
         .name(config.bus_name.as_str())?
         .serve_at(wgaf_common::OBJECT_PATH, dbus::Daemon)?
@@ -62,12 +71,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             wgaf_common::WINDOWS_OBJECT_PATH,
             dbus::windows_api::WindowsApi::new(window_manager),
         )?
+        .serve_at(
+            wgaf_common::INPUT_OBJECT_PATH,
+            dbus::input_api::InputApi::new(input_backend),
+        )?
         .build()
         .await?;
 
     tracing::info!(
         object_path = wgaf_common::OBJECT_PATH,
         windows_object_path = wgaf_common::WINDOWS_OBJECT_PATH,
+        input_object_path = wgaf_common::INPUT_OBJECT_PATH,
         "registered on session bus, waiting for requests"
     );
     tokio::signal::ctrl_c().await?;

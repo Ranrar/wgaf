@@ -1,3 +1,4 @@
+pub mod input_api;
 pub mod windows_api;
 
 use zbus::interface;

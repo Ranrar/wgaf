@@ -14,6 +14,12 @@ pub struct Config {
     /// `wgaf-daemon/tests/windows_stub.rs`), without needing to run a real
     /// GNOME Shell session.
     pub extension_bus_name: String,
+    /// Name the daemon's virtual `uinput` device reports to the kernel.
+    /// Defaults to `crate::input::DEFAULT_DEVICE_NAME`; overridable so
+    /// tests can give each spawned daemon a unique device name — see that
+    /// constant's doc comment for why (`/proc/bus/input/devices` has no
+    /// concept of "which process created this").
+    pub input_device_name: String,
 }
 
 impl Default for Config {
@@ -22,6 +28,7 @@ impl Default for Config {
             bus_name: wgaf_common::BUS_NAME.to_string(),
             log_level: "info".to_string(),
             extension_bus_name: wgaf_common::EXTENSION_BUS_NAME.to_string(),
+            input_device_name: crate::input::DEFAULT_DEVICE_NAME.to_string(),
         }
     }
 }

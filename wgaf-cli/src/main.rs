@@ -26,6 +26,76 @@ enum Command {
         #[command(subcommand)]
         command: WindowCommand,
     },
+
+    /// Type a string of text (ASCII/US-QWERTY only — see
+    /// `Documentation/phase4-input-automation-api.md`), backed by the
+    /// daemon's `org.wgaf.Input1` D-Bus interface.
+    Type {
+        /// The text to type.
+        text: String,
+    },
+
+    /// Low-level single-key press/release, by evdev key name (`a`, `enter`,
+    /// `leftshift`, ...). No ASCII/shift awareness — see `wgaf type` for
+    /// that; combine `key press leftshift` + `key press a` + releases for a
+    /// capital `A`.
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
+
+    /// Mouse automation commands (relative move, click, scroll), backed by
+    /// the daemon's `org.wgaf.Input1` D-Bus interface. There is no
+    /// absolute-move command — see
+    /// `Documentation/phase4-input-automation-api.md` for why.
+    Mouse {
+        #[command(subcommand)]
+        command: MouseCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyCommand {
+    /// Press (hold down) a key.
+    Press {
+        /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`).
+        key: String,
+    },
+
+    /// Release a previously-pressed key.
+    Release {
+        /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`).
+        key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MouseCommand {
+    /// Move the pointer relative to its current position.
+    Move {
+        /// May be negative (move left).
+        #[arg(allow_hyphen_values = true)]
+        dx: i32,
+        /// May be negative (move up).
+        #[arg(allow_hyphen_values = true)]
+        dy: i32,
+    },
+
+    /// Click (press then release) a mouse button.
+    Click {
+        /// `left`, `right`, or `middle`.
+        button: String,
+    },
+
+    /// Scroll the mouse wheel.
+    Scroll {
+        /// Horizontal scroll amount, positive = right. May be negative.
+        #[arg(allow_hyphen_values = true)]
+        dx: i32,
+        /// Vertical scroll amount, positive = up. May be negative.
+        #[arg(allow_hyphen_values = true)]
+        dy: i32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,6 +161,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } => commands::window::resize(id, width, height, json).await?,
             WindowCommand::Close(WindowId { id }) => commands::window::close(id, json).await?,
             WindowCommand::Workspaces => commands::window::workspaces(json).await?,
+        },
+        Command::Type { text } => commands::input::type_text(&text, json).await?,
+        Command::Key { command } => match command {
+            KeyCommand::Press { key } => commands::input::key_press(&key, json).await?,
+            KeyCommand::Release { key } => commands::input::key_release(&key, json).await?,
+        },
+        Command::Mouse { command } => match command {
+            MouseCommand::Move { dx, dy } => commands::input::mouse_move(dx, dy, json).await?,
+            MouseCommand::Click { button } => commands::input::mouse_click(&button, json).await?,
+            MouseCommand::Scroll { dx, dy } => commands::input::mouse_scroll(dx, dy, json).await?,
         },
     }
 
@@ -204,5 +284,77 @@ mod tests {
     #[test]
     fn rejects_missing_window_id() {
         assert!(Cli::try_parse_from(["wgaf", "window", "focus"]).is_err());
+    }
+
+    #[test]
+    fn parses_type() {
+        let cli = Cli::try_parse_from(["wgaf", "type", "hello world"]).expect("parse");
+        match cli.command {
+            Command::Type { text } => assert_eq!(text, "hello world"),
+            _ => panic!("expected Type"),
+        }
+    }
+
+    #[test]
+    fn parses_key_press_and_release() {
+        let cli = Cli::try_parse_from(["wgaf", "key", "press", "a"]).expect("parse");
+        match cli.command {
+            Command::Key {
+                command: KeyCommand::Press { key },
+            } => assert_eq!(key, "a"),
+            _ => panic!("expected Key(Press)"),
+        }
+
+        let cli = Cli::try_parse_from(["wgaf", "key", "release", "leftshift"]).expect("parse");
+        match cli.command {
+            Command::Key {
+                command: KeyCommand::Release { key },
+            } => assert_eq!(key, "leftshift"),
+            _ => panic!("expected Key(Release)"),
+        }
+    }
+
+    #[test]
+    fn parses_mouse_move_with_negative_values() {
+        let cli = Cli::try_parse_from(["wgaf", "mouse", "move", "-10", "20"]).expect("parse");
+        match cli.command {
+            Command::Mouse {
+                command: MouseCommand::Move { dx, dy },
+            } => {
+                assert_eq!(dx, -10);
+                assert_eq!(dy, 20);
+            }
+            _ => panic!("expected Mouse(Move)"),
+        }
+    }
+
+    #[test]
+    fn parses_mouse_click() {
+        let cli = Cli::try_parse_from(["wgaf", "mouse", "click", "left"]).expect("parse");
+        match cli.command {
+            Command::Mouse {
+                command: MouseCommand::Click { button },
+            } => assert_eq!(button, "left"),
+            _ => panic!("expected Mouse(Click)"),
+        }
+    }
+
+    #[test]
+    fn parses_mouse_scroll_with_negative_values() {
+        let cli = Cli::try_parse_from(["wgaf", "mouse", "scroll", "0", "-5"]).expect("parse");
+        match cli.command {
+            Command::Mouse {
+                command: MouseCommand::Scroll { dx, dy },
+            } => {
+                assert_eq!(dx, 0);
+                assert_eq!(dy, -5);
+            }
+            _ => panic!("expected Mouse(Scroll)"),
+        }
+    }
+
+    #[test]
+    fn rejects_missing_mouse_move_args() {
+        assert!(Cli::try_parse_from(["wgaf", "mouse", "move", "10"]).is_err());
     }
 }

@@ -1,3 +1,4 @@
+pub mod input;
 pub mod window;
 
 use zbus::Connection;
@@ -18,10 +19,10 @@ pub async fn ping() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Recognizes the daemon's named `org.wgaf.Windows1` D-Bus errors and
-/// returns a short, human-friendly message for them instead of the raw
-/// `zbus::Error` debug dump. Returns `None` for anything else, so the
-/// caller can fall back to propagating the original error.
+/// Recognizes the daemon's named `org.wgaf.Windows1`/`org.wgaf.Input1`
+/// D-Bus errors and returns a short, human-friendly message for them
+/// instead of the raw `zbus::Error` debug dump. Returns `None` for anything
+/// else, so the caller can fall back to propagating the original error.
 pub(crate) fn describe_dbus_error(err: &zbus::Error) -> Option<String> {
     let zbus::Error::MethodError(name, description, _) = err else {
         return None;
@@ -36,6 +37,12 @@ pub(crate) fn describe_dbus_error(err: &zbus::Error) -> Option<String> {
         Some(format!("window not found{detail}"))
     } else if name.as_str() == wgaf_common::WINDOWS_ERROR_EXTENSION_UNAVAILABLE {
         Some(format!("GNOME Shell Extension bridge unavailable{detail}"))
+    } else if name.as_str() == wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE {
+        Some(format!("input device unavailable{detail}"))
+    } else if name.as_str() == wgaf_common::INPUT_ERROR_UNKNOWN_KEY {
+        Some(format!("unknown key{detail}"))
+    } else if name.as_str() == wgaf_common::INPUT_ERROR_INVALID_BUTTON {
+        Some(format!("invalid mouse button{detail}"))
     } else {
         None
     }
