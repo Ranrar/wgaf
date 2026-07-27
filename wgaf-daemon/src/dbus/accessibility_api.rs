@@ -1,0 +1,161 @@
+//! The daemon's own public accessibility-automation D-Bus API
+//! (`org.wgaf.Accessibility1`). Thin delegation to
+//! [`crate::accessibility::AccessibilityBackend`] — this module's only job
+//! is D-Bus marshaling and translating
+//! [`crate::accessibility::AccessibilityError`] into a stable, named D-Bus
+//! error (`AccessibilityApiError`), following the exact pattern
+//! `windows_api.rs`/`input_api.rs` established.
+
+use wgaf_common::{AppRecord, ElementRecord, ElementRef, TreeNode};
+use zbus::DBusError;
+use zbus::interface;
+
+use crate::accessibility::{AccessibilityBackend, AccessibilityError};
+
+/// D-Bus error names for `org.wgaf.Accessibility1`, matching
+/// `wgaf_common::ACCESSIBILITY_ERROR_*` (asserted in this module's tests).
+#[derive(Debug, DBusError)]
+#[zbus(prefix = "org.wgaf.Accessibility1.Error")]
+enum AccessibilityApiError {
+    /// Catch-all for D-Bus-level failures not otherwise translated below
+    /// (includes `AccessibilityError::Atspi`/`AccessibilityError::DBus`,
+    /// which don't warrant their own named D-Bus error — callers see them
+    /// as a generic failure description, same as `InputApiError`'s catch-all
+    /// handles `TextTooLong`/`Io`).
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    BusUnavailable(String),
+    AppNotFound(String),
+    ElementNotFound(String),
+    ActionNotSupported(String),
+}
+
+impl From<AccessibilityError> for AccessibilityApiError {
+    fn from(err: AccessibilityError) -> Self {
+        match err {
+            AccessibilityError::BusUnavailable { .. } => Self::BusUnavailable(err.to_string()),
+            AccessibilityError::AppNotFound(_) => Self::AppNotFound(err.to_string()),
+            AccessibilityError::ElementNotFound(_) => Self::ElementNotFound(err.to_string()),
+            AccessibilityError::ActionNotSupported(_) => Self::ActionNotSupported(err.to_string()),
+            AccessibilityError::Atspi(_) | AccessibilityError::DBus(_) => {
+                Self::ZBus(zbus::Error::Failure(err.to_string()))
+            }
+        }
+    }
+}
+
+pub struct AccessibilityApi {
+    backend: AccessibilityBackend,
+}
+
+impl AccessibilityApi {
+    pub fn new(backend: AccessibilityBackend) -> Self {
+        Self { backend }
+    }
+}
+
+// Interface name must match `wgaf_common::ACCESSIBILITY_INTERFACE_NAME` (zbus
+// requires a string literal here, so it can't reference the constant
+// directly) — see the existing convention in `dbus/mod.rs`/`windows_api.rs`/
+// `input_api.rs`.
+#[interface(name = "org.wgaf.Accessibility1")]
+impl AccessibilityApi {
+    /// Enumerates every currently-registered accessible application.
+    async fn list_apps(&self) -> Result<Vec<AppRecord>, AccessibilityApiError> {
+        Ok(self.backend.list_apps().await?)
+    }
+
+    /// Finds elements within application `app` (matched by name — see
+    /// `crate::accessibility::query::find_matching_app`) whose role/name/
+    /// description satisfy the given filters. Any of `role`/`name`/
+    /// `description` may be empty to mean "match anything". `max_results
+    /// <= 0` uses a built-in default (100); values are hard-capped at 1000
+    /// regardless.
+    async fn find_elements(
+        &self,
+        app: &str,
+        role: &str,
+        name: &str,
+        description: &str,
+        max_results: i32,
+    ) -> Result<Vec<ElementRecord>, AccessibilityApiError> {
+        Ok(self
+            .backend
+            .find_elements(app, role, name, description, max_results)
+            .await?)
+    }
+
+    /// Walks the accessible tree of the application matching `app`, up to
+    /// `max_depth` levels deep (`<= 0` uses a built-in default of 10; values
+    /// are hard-capped at 64 regardless), returned as a flat, depth-first
+    /// list (see [`TreeNode::depth`]).
+    async fn get_tree(
+        &self,
+        app: &str,
+        max_depth: i32,
+    ) -> Result<Vec<TreeNode>, AccessibilityApiError> {
+        Ok(self.backend.get_tree(app, max_depth).await?)
+    }
+
+    /// Re-reads a single element's info directly from its [`ElementRef`].
+    async fn get_element_info(
+        &self,
+        element: ElementRef,
+    ) -> Result<ElementRecord, AccessibilityApiError> {
+        Ok(self.backend.get_element_info(&element).await?)
+    }
+
+    /// Invokes an accessible action on `element`. `action_name` selects
+    /// which action by its machine-readable name (case-insensitive); empty
+    /// invokes the element's default action (index 0) — see
+    /// `crate::accessibility::actions::invoke_action`'s docs.
+    async fn invoke_action(
+        &self,
+        element: ElementRef,
+        action_name: &str,
+    ) -> Result<(), AccessibilityApiError> {
+        Ok(self.backend.invoke_action(&element, action_name).await?)
+    }
+
+    /// Replaces `element`'s text content (requires the AT-SPI
+    /// `EditableText` interface).
+    async fn set_text(&self, element: ElementRef, text: &str) -> Result<(), AccessibilityApiError> {
+        Ok(self.backend.set_text(&element, text).await?)
+    }
+
+    /// Requests keyboard focus for `element` (requires the AT-SPI
+    /// `Component` interface).
+    async fn focus_element(&self, element: ElementRef) -> Result<(), AccessibilityApiError> {
+        Ok(self.backend.focus_element(&element).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_prefix_matches_wgaf_common_constants() {
+        let bus_unavailable = AccessibilityApiError::BusUnavailable("unavailable".to_string());
+        let app_not_found = AccessibilityApiError::AppNotFound("not found".to_string());
+        let element_not_found = AccessibilityApiError::ElementNotFound("gone".to_string());
+        let action_not_supported =
+            AccessibilityApiError::ActionNotSupported("unsupported".to_string());
+        assert_eq!(
+            bus_unavailable.name().as_str(),
+            wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE
+        );
+        assert_eq!(
+            app_not_found.name().as_str(),
+            wgaf_common::ACCESSIBILITY_ERROR_APP_NOT_FOUND
+        );
+        assert_eq!(
+            element_not_found.name().as_str(),
+            wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND
+        );
+        assert_eq!(
+            action_not_supported.name().as_str(),
+            wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED
+        );
+    }
+}

@@ -1,3 +1,4 @@
+mod accessibility;
 mod config;
 mod dbus;
 mod input;
@@ -64,6 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // comments.
     let input_backend = input::InputBackend::new(config.input_device_name.clone());
 
+    // `AccessibilityBackend::new` does not touch the AT-SPI bus — like
+    // `WindowManager::connect_to`/`InputBackend::new` above, the actual
+    // resource (a connection to `org.a11y.Bus`) is only established lazily
+    // on first real use, so accessibility being unavailable/not-yet-enabled
+    // for this session never prevents the daemon from starting or from
+    // serving the other interfaces. See `accessibility::AccessibilityBackend`'s
+    // doc comments.
+    let accessibility_backend = accessibility::AccessibilityBackend::new();
+
     let _connection = zbus::connection::Builder::session()?
         .name(config.bus_name.as_str())?
         .serve_at(wgaf_common::OBJECT_PATH, dbus::Daemon)?
@@ -75,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             wgaf_common::INPUT_OBJECT_PATH,
             dbus::input_api::InputApi::new(input_backend),
         )?
+        .serve_at(
+            wgaf_common::ACCESSIBILITY_OBJECT_PATH,
+            dbus::accessibility_api::AccessibilityApi::new(accessibility_backend),
+        )?
         .build()
         .await?;
 
@@ -82,6 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         object_path = wgaf_common::OBJECT_PATH,
         windows_object_path = wgaf_common::WINDOWS_OBJECT_PATH,
         input_object_path = wgaf_common::INPUT_OBJECT_PATH,
+        accessibility_object_path = wgaf_common::ACCESSIBILITY_OBJECT_PATH,
         "registered on session bus, waiting for requests"
     );
     tokio::signal::ctrl_c().await?;

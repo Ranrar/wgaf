@@ -1,3 +1,4 @@
+pub mod accessibility_api;
 pub mod input_api;
 pub mod windows_api;
 

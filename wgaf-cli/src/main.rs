@@ -52,6 +52,17 @@ enum Command {
         #[command(subcommand)]
         command: MouseCommand,
     },
+
+    /// Accessibility automation (AT-SPI): enumerate accessible
+    /// applications, find/inspect elements by role/name/description, and
+    /// invoke actions (click/focus/set text) on them — backed by the
+    /// daemon's `org.wgaf.Accessibility1` D-Bus interface. Preferred over
+    /// coordinate-based automation whenever an element can be found this
+    /// way — see `Documentation/phase5-accessibility-api.md`.
+    A11y {
+        #[command(subcommand)]
+        command: A11yCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -95,6 +106,86 @@ enum MouseCommand {
         /// Vertical scroll amount, positive = up. May be negative.
         #[arg(allow_hyphen_values = true)]
         dy: i32,
+    },
+}
+
+#[derive(Subcommand)]
+enum A11yCommand {
+    /// List every currently-registered accessible application.
+    ListApps,
+
+    /// Find elements within an application by role/name/description.
+    Find {
+        /// Application name (matched against `wgaf a11y list-apps`'
+        /// output — exact match preferred, falls back to a substring
+        /// match).
+        #[arg(long)]
+        app: String,
+        /// AT-SPI role name (e.g. `push button`, `menu item`), matched
+        /// case-insensitively as a whole. Empty (the default) matches any
+        /// role.
+        #[arg(long, default_value = "")]
+        role: String,
+        /// Case-insensitive substring match against the element's
+        /// accessible name. Empty (the default) matches any name.
+        #[arg(long, default_value = "")]
+        name: String,
+        /// Case-insensitive substring match against the element's
+        /// accessible description. Empty (the default) matches any
+        /// description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Maximum number of results to return. `0` (the default) uses the
+        /// daemon's built-in default (100); values are hard-capped at 1000
+        /// regardless.
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        max_results: i32,
+    },
+
+    /// Walk and print an application's accessible object tree.
+    Tree {
+        /// Application name — same matching rules as `find --app`.
+        #[arg(long)]
+        app: String,
+        /// Maximum depth to descend, relative to the application's root
+        /// object. `0` (the default) uses the daemon's built-in default
+        /// (10); values are hard-capped at 64 regardless.
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        max_depth: i32,
+    },
+
+    /// Print a single element's current info, re-read directly from its
+    /// reference.
+    Info {
+        /// Element reference, in `bus_name#object_path` form — as printed
+        /// by `list-apps`/`find`/`tree`.
+        element: wgaf_common::ElementRef,
+    },
+
+    /// Invoke an accessible action on an element (click/press/activate).
+    Click {
+        /// Element reference, in `bus_name#object_path` form.
+        element: wgaf_common::ElementRef,
+        /// Which action to invoke, by its machine-readable name
+        /// (case-insensitive). Empty (the default) invokes the element's
+        /// default action (AT-SPI's own convention: action index 0).
+        #[arg(long, default_value = "")]
+        action: String,
+    },
+
+    /// Request keyboard focus for an element.
+    Focus {
+        /// Element reference, in `bus_name#object_path` form.
+        element: wgaf_common::ElementRef,
+    },
+
+    /// Replace an element's text content (requires the element to
+    /// implement AT-SPI's `EditableText` interface — most text fields do).
+    SetText {
+        /// Element reference, in `bus_name#object_path` form.
+        element: wgaf_common::ElementRef,
+        /// The new text content.
+        text: String,
     },
 }
 
@@ -171,6 +262,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             MouseCommand::Move { dx, dy } => commands::input::mouse_move(dx, dy, json).await?,
             MouseCommand::Click { button } => commands::input::mouse_click(&button, json).await?,
             MouseCommand::Scroll { dx, dy } => commands::input::mouse_scroll(dx, dy, json).await?,
+        },
+        Command::A11y { command } => match command {
+            A11yCommand::ListApps => commands::accessibility::list_apps(json).await?,
+            A11yCommand::Find {
+                app,
+                role,
+                name,
+                description,
+                max_results,
+            } => {
+                commands::accessibility::find(&app, &role, &name, &description, max_results, json)
+                    .await?
+            }
+            A11yCommand::Tree { app, max_depth } => {
+                commands::accessibility::tree(&app, max_depth, json).await?
+            }
+            A11yCommand::Info { element } => {
+                commands::accessibility::get_element_info(&element, json).await?
+            }
+            A11yCommand::Click { element, action } => {
+                commands::accessibility::click(&element, &action, json).await?
+            }
+            A11yCommand::Focus { element } => {
+                commands::accessibility::focus(&element, json).await?
+            }
+            A11yCommand::SetText { element, text } => {
+                commands::accessibility::set_text(&element, &text, json).await?
+            }
         },
     }
 
@@ -356,5 +475,176 @@ mod tests {
     #[test]
     fn rejects_missing_mouse_move_args() {
         assert!(Cli::try_parse_from(["wgaf", "mouse", "move", "10"]).is_err());
+    }
+
+    #[test]
+    fn parses_a11y_list_apps() {
+        let cli = Cli::try_parse_from(["wgaf", "a11y", "list-apps"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Command::A11y {
+                command: A11yCommand::ListApps
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_a11y_find_with_all_filters() {
+        let cli = Cli::try_parse_from([
+            "wgaf",
+            "a11y",
+            "find",
+            "--app",
+            "gtk4-demo",
+            "--role",
+            "push button",
+            "--name",
+            "Save",
+            "--description",
+            "Saves the file",
+            "--max-results",
+            "5",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::A11y {
+                command:
+                    A11yCommand::Find {
+                        app,
+                        role,
+                        name,
+                        description,
+                        max_results,
+                    },
+            } => {
+                assert_eq!(app, "gtk4-demo");
+                assert_eq!(role, "push button");
+                assert_eq!(name, "Save");
+                assert_eq!(description, "Saves the file");
+                assert_eq!(max_results, 5);
+            }
+            _ => panic!("expected A11y(Find)"),
+        }
+    }
+
+    #[test]
+    fn parses_a11y_find_with_only_required_app_filter() {
+        let cli =
+            Cli::try_parse_from(["wgaf", "a11y", "find", "--app", "gtk4-demo"]).expect("parse");
+        match cli.command {
+            Command::A11y {
+                command:
+                    A11yCommand::Find {
+                        app,
+                        role,
+                        name,
+                        description,
+                        max_results,
+                    },
+            } => {
+                assert_eq!(app, "gtk4-demo");
+                assert_eq!(role, "");
+                assert_eq!(name, "");
+                assert_eq!(description, "");
+                assert_eq!(max_results, 0);
+            }
+            _ => panic!("expected A11y(Find)"),
+        }
+    }
+
+    #[test]
+    fn rejects_a11y_find_without_app() {
+        assert!(Cli::try_parse_from(["wgaf", "a11y", "find"]).is_err());
+    }
+
+    #[test]
+    fn parses_a11y_tree() {
+        let cli = Cli::try_parse_from([
+            "wgaf",
+            "a11y",
+            "tree",
+            "--app",
+            "gtk4-demo",
+            "--max-depth",
+            "3",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::A11y {
+                command: A11yCommand::Tree { app, max_depth },
+            } => {
+                assert_eq!(app, "gtk4-demo");
+                assert_eq!(max_depth, 3);
+            }
+            _ => panic!("expected A11y(Tree)"),
+        }
+    }
+
+    #[test]
+    fn parses_a11y_element_ref_argument() {
+        let cli = Cli::try_parse_from([
+            "wgaf",
+            "a11y",
+            "focus",
+            ":1.87#/org/a11y/atspi/accessible/1234",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::A11y {
+                command: A11yCommand::Focus { element },
+            } => {
+                assert_eq!(element.bus_name, ":1.87");
+                assert_eq!(element.object_path, "/org/a11y/atspi/accessible/1234");
+            }
+            _ => panic!("expected A11y(Focus)"),
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_a11y_element_ref() {
+        assert!(Cli::try_parse_from(["wgaf", "a11y", "focus", "no-hash-here"]).is_err());
+    }
+
+    #[test]
+    fn parses_a11y_click_with_action() {
+        let cli = Cli::try_parse_from([
+            "wgaf",
+            "a11y",
+            "click",
+            ":1.87#/org/a11y/atspi/accessible/1234",
+            "--action",
+            "press",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::A11y {
+                command: A11yCommand::Click { element, action },
+            } => {
+                assert_eq!(element.to_string(), ":1.87#/org/a11y/atspi/accessible/1234");
+                assert_eq!(action, "press");
+            }
+            _ => panic!("expected A11y(Click)"),
+        }
+    }
+
+    #[test]
+    fn parses_a11y_set_text() {
+        let cli = Cli::try_parse_from([
+            "wgaf",
+            "a11y",
+            "set-text",
+            ":1.87#/org/a11y/atspi/accessible/1234",
+            "hello world",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::A11y {
+                command: A11yCommand::SetText { element, text },
+            } => {
+                assert_eq!(element.bus_name, ":1.87");
+                assert_eq!(text, "hello world");
+            }
+            _ => panic!("expected A11y(SetText)"),
+        }
     }
 }

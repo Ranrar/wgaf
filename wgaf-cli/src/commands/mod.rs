@@ -1,3 +1,4 @@
+pub mod accessibility;
 pub mod input;
 pub mod window;
 
@@ -43,6 +44,14 @@ pub(crate) fn describe_dbus_error(err: &zbus::Error) -> Option<String> {
         Some(format!("unknown key{detail}"))
     } else if name.as_str() == wgaf_common::INPUT_ERROR_INVALID_BUTTON {
         Some(format!("invalid mouse button{detail}"))
+    } else if name.as_str() == wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE {
+        Some(format!("AT-SPI accessibility bus unavailable{detail}"))
+    } else if name.as_str() == wgaf_common::ACCESSIBILITY_ERROR_APP_NOT_FOUND {
+        Some(format!("accessible application not found{detail}"))
+    } else if name.as_str() == wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND {
+        Some(format!("accessible element not found{detail}"))
+    } else if name.as_str() == wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED {
+        Some(format!("action not supported{detail}"))
     } else {
         None
     }

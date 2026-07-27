@@ -14,6 +14,7 @@
 //! serializes for `--json` output.
 
 use serde::{Deserialize, Serialize};
+use zbus::zvariant::Type;
 
 pub mod dict;
 
@@ -114,6 +115,50 @@ pub const EXTENSION_ERROR_WINDOW_NOT_FOUND: &str =
     "org.gnome.Shell.Extensions.Wgaf.Error.WindowNotFound";
 
 // ---------------------------------------------------------------------------
+// Daemon's own public accessibility-automation D-Bus API
+// (org.wgaf.Accessibility1) — Phase 5. Served on the same bus name/
+// connection as `org.wgaf.Daemon1`/`org.wgaf.Windows1`/`org.wgaf.Input1`
+// above, at a sibling object path. Like Input1 (and unlike Windows1), there
+// is no GNOME Shell Extension hop — the daemon talks directly to the
+// separate AT-SPI accessibility bus (`org.a11y.Bus`, a distinct bus from the
+// session bus, reached via `atspi::AccessibilityConnection`) since GJS/Mutter
+// has no role in AT-SPI at all.
+// ---------------------------------------------------------------------------
+
+/// Object path the daemon's accessibility-automation interface is served at.
+pub const ACCESSIBILITY_OBJECT_PATH: &str = "/org/wgaf/Accessibility";
+
+/// Versioned interface name for the daemon's own accessibility-automation API.
+pub const ACCESSIBILITY_INTERFACE_NAME: &str = "org.wgaf.Accessibility1";
+
+/// D-Bus error name returned when the daemon could not connect to the AT-SPI
+/// accessibility bus at all (e.g. accessibility is not enabled for the
+/// session, or `org.a11y.Bus` isn't reachable). Distinct from
+/// [`ACCESSIBILITY_ERROR_APP_NOT_FOUND`]/[`ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND`]:
+/// this means the whole a11y stack is unavailable, not just one lookup.
+pub const ACCESSIBILITY_ERROR_BUS_UNAVAILABLE: &str =
+    "org.wgaf.Accessibility1.Error.BusUnavailable";
+
+/// D-Bus error name returned when `FindElements`/`GetTree` is given an `app`
+/// filter that doesn't match any currently-registered accessible
+/// application's name.
+pub const ACCESSIBILITY_ERROR_APP_NOT_FOUND: &str = "org.wgaf.Accessibility1.Error.AppNotFound";
+
+/// D-Bus error name returned when an [`ElementRef`] passed to
+/// `GetElementInfo`/`InvokeAction`/`SetText`/`FocusElement` no longer
+/// corresponds to a live accessible object (the application exited, or the
+/// widget was destroyed after it was found).
+pub const ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND: &str =
+    "org.wgaf.Accessibility1.Error.ElementNotFound";
+
+/// D-Bus error name returned when `InvokeAction`/`SetText`/`FocusElement` is
+/// called on an element that doesn't implement the AT-SPI interface the
+/// operation requires (`Action`, `EditableText`, or `Component`
+/// respectively).
+pub const ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED: &str =
+    "org.wgaf.Accessibility1.Error.ActionNotSupported";
+
+// ---------------------------------------------------------------------------
 // Shared DTOs
 // ---------------------------------------------------------------------------
 //
@@ -152,6 +197,124 @@ pub struct WorkspaceRecord {
     pub index: i32,
     pub active: bool,
     pub n_windows: i32,
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility DTOs (Phase 5).
+//
+// Unlike `WindowRecord`/`WorkspaceRecord` above, these derive `zvariant::Type`
+// directly and are used as-is on `org.wgaf.Accessibility1`'s method
+// signatures — no separate `a{sv}`-shaped "wire" struct in `dict.rs`. That
+// split existed for Windows1/the extension bridge because the *extension*
+// side (GJs) already emits `a{sv}` GVariant dicts of its own accord
+// (`windowRecordToVariantDict`), and `a{sv}`'s `Variant`-wrapping isn't
+// JSON-compatible (see this module's top doc comment). Here there is no
+// external emitter to match — `wgaf-daemon` is the sole author of both the
+// D-Bus server and (via `wgaf-cli`) the only client — so a plain
+// `#[derive(Serialize, Deserialize, Type)]` struct is used directly: zvariant
+// encodes it as an ordinary positional D-Bus struct (e.g. `(ssss)`), while
+// plain `serde_json` still serializes/deserializes it as an ordinary JSON
+// object with named fields. Confirmed by this phase's round-trip tests
+// below.
+
+/// A stable reference to one AT-SPI accessible object.
+///
+/// This is AT-SPI's own native object-reference scheme — the `(so)`
+/// bus-name/object-path tuple every `org.a11y.atspi.Accessible` method
+/// already deals in (e.g. `GetChildren() -> a(so)`) — not an invented id
+/// scheme. `bus_name` is the owning application's D-Bus *unique* connection
+/// name (e.g. `:1.87`), stable for the lifetime of that application process,
+/// which is also the lifetime of its accessible tree; `object_path` is the
+/// object's path within that application (e.g.
+/// `/org/a11y/atspi/accessible/1234`).
+///
+/// CLI serialization: `wgaf-cli` renders/parses this as a single
+/// `bus_name#object_path` string (see `wgaf-cli/src/commands/accessibility.rs`)
+/// — `#` cannot appear in either a D-Bus unique name or an object path, so
+/// there's no ambiguity splitting on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ElementRef {
+    pub bus_name: String,
+    pub object_path: String,
+}
+
+impl std::fmt::Display for ElementRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{}", self.bus_name, self.object_path)
+    }
+}
+
+/// Error returned by [`ElementRef`]'s `FromStr` impl when a CLI-supplied
+/// `bus_name#object_path` string is missing its `#` separator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseElementRefError;
+
+impl std::fmt::Display for ParseElementRefError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid element reference: expected `bus_name#object_path` (e.g. \
+             `:1.87#/org/a11y/atspi/accessible/1234`, as printed by `wgaf a11y list-apps`/`find`/`tree`)"
+        )
+    }
+}
+
+impl std::error::Error for ParseElementRefError {}
+
+impl std::str::FromStr for ElementRef {
+    type Err = ParseElementRefError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (bus_name, object_path) = s.split_once('#').ok_or(ParseElementRefError)?;
+        if bus_name.is_empty() || object_path.is_empty() {
+            return Err(ParseElementRefError);
+        }
+        Ok(ElementRef {
+            bus_name: bus_name.to_string(),
+            object_path: object_path.to_string(),
+        })
+    }
+}
+
+/// A registered accessible application, as returned by
+/// `org.wgaf.Accessibility1.ListApps`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppRecord {
+    pub element: ElementRef,
+    pub name: String,
+}
+
+/// Summary information about one accessible element, as returned by
+/// `FindElements`/`GetElementInfo`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ElementRecord {
+    pub element: ElementRef,
+    pub name: String,
+    pub role: String,
+    pub description: String,
+    pub child_count: i32,
+    /// AT-SPI state names (e.g. `Focused`, `Enabled`, `Visible`), `Debug`-formatted
+    /// from `atspi::State` — a human-readable diagnostic list, not a stable
+    /// wire contract of its own.
+    pub states: Vec<String>,
+}
+
+/// One node in a `GetTree` traversal: [`ElementRecord`]'s fields plus
+/// `depth`, the node's nesting level relative to the application's root
+/// object (the root itself is `depth = 0`). `GetTree` returns these as a
+/// flat, depth-first-ordered list rather than a recursive structure — a
+/// genuinely recursive D-Bus struct type isn't practical to encode with
+/// zvariant's static signature computation, and a flat list with a depth
+/// column is trivial for `wgaf-cli` to render as an indented tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct TreeNode {
+    pub element: ElementRef,
+    pub name: String,
+    pub role: String,
+    pub description: String,
+    pub child_count: i32,
+    pub states: Vec<String>,
+    pub depth: u32,
 }
 
 #[cfg(test)]
@@ -228,5 +391,111 @@ mod tests {
         for key in ["index", "active", "n_windows"] {
             assert!(obj.contains_key(key), "missing expected field `{key}`");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessibility DTOs (Phase 5)
+    // -----------------------------------------------------------------------
+
+    fn sample_element_ref() -> ElementRef {
+        ElementRef {
+            bus_name: ":1.87".to_string(),
+            object_path: "/org/a11y/atspi/accessible/1234".to_string(),
+        }
+    }
+
+    fn sample_element_record() -> ElementRecord {
+        ElementRecord {
+            element: sample_element_ref(),
+            name: "Save".to_string(),
+            role: "push button".to_string(),
+            description: String::new(),
+            child_count: 0,
+            states: vec!["Enabled".to_string(), "Visible".to_string()],
+        }
+    }
+
+    #[test]
+    fn element_ref_display_then_parse_round_trips() {
+        let element = sample_element_ref();
+        let text = element.to_string();
+        assert_eq!(text, ":1.87#/org/a11y/atspi/accessible/1234");
+        let back: ElementRef = text.parse().expect("parse");
+        assert_eq!(element, back);
+    }
+
+    #[test]
+    fn element_ref_parse_rejects_missing_separator() {
+        assert!("no-hash-here".parse::<ElementRef>().is_err());
+    }
+
+    #[test]
+    fn element_ref_parse_rejects_empty_halves() {
+        assert!(
+            "#/org/a11y/atspi/accessible/1234"
+                .parse::<ElementRef>()
+                .is_err()
+        );
+        assert!(":1.87#".parse::<ElementRef>().is_err());
+    }
+
+    #[test]
+    fn element_ref_json_round_trips_as_plain_object() {
+        // The whole point of using a plain `Type` derive instead of the
+        // `a{sv}`-dict derive (see this module's doc comment on the
+        // accessibility DTOs) is that this ALSO works as ordinary JSON, not
+        // a Variant-wrapped map — assert that directly.
+        let element = sample_element_ref();
+        let value = serde_json::to_value(&element).expect("serialize");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "bus_name": ":1.87",
+                "object_path": "/org/a11y/atspi/accessible/1234",
+            })
+        );
+        let back: ElementRef = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(element, back);
+    }
+
+    #[test]
+    fn element_ref_encodes_as_a_dbus_struct_not_a_dict() {
+        use zbus::zvariant::{Endian, serialized::Context, to_bytes};
+
+        // A plain positional struct signature (`(ss)`), not `a{sv}` — this is
+        // what lets the same derive round-trip through serde_json too.
+        assert_eq!(ElementRef::SIGNATURE.to_string(), "(ss)");
+
+        let element = sample_element_ref();
+        let ctx = Context::new_dbus(Endian::Little, 0);
+        let encoded = to_bytes(ctx, &element).expect("encode (ss)");
+        let (decoded, _): (ElementRef, usize) = encoded
+            .deserialize()
+            .expect("decode (ss) back into ElementRef");
+        assert_eq!(decoded, element);
+    }
+
+    #[test]
+    fn element_record_json_round_trips() {
+        let record = sample_element_record();
+        let json = serde_json::to_string(&record).expect("serialize");
+        let back: ElementRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(record, back);
+    }
+
+    #[test]
+    fn tree_node_json_round_trips() {
+        let node = TreeNode {
+            element: sample_element_ref(),
+            name: "Save".to_string(),
+            role: "push button".to_string(),
+            description: String::new(),
+            child_count: 0,
+            states: vec!["Enabled".to_string()],
+            depth: 2,
+        };
+        let json = serde_json::to_string(&node).expect("serialize");
+        let back: TreeNode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(node, back);
     }
 }
