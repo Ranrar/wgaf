@@ -290,9 +290,10 @@ mod tests {
             .expect("session bus builder")
             .name(bus_name)
             .expect("valid bus name")
-            .serve_at("/org/freedesktop/Notifications", NotificationsStub {
-                response,
-            })
+            .serve_at(
+                "/org/freedesktop/Notifications",
+                NotificationsStub { response },
+            )
             .expect("serve stub notification service")
             .build()
             .await

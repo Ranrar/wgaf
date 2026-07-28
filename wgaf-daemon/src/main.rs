@@ -154,13 +154,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // call time rather than blocking daemon startup, so input automation
     // and future AT-SPI features can still come up independently.
     let extension_connection = zbus::Connection::session().await?;
-    let window_manager = Arc::new(windows::WindowManager::connect_to(
-        extension_connection,
-        &config.extension_bus_name,
-        wgaf_common::EXTENSION_OBJECT_PATH,
-        wgaf_common::EXTENSION_INTERFACE_NAME,
-    )
-    .await?);
+    let window_manager = Arc::new(
+        windows::WindowManager::connect_to(
+            extension_connection,
+            &config.extension_bus_name,
+            wgaf_common::EXTENSION_OBJECT_PATH,
+            wgaf_common::EXTENSION_INTERFACE_NAME,
+        )
+        .await?,
+    );
 
     // `InputBackend::new` does not touch `/dev/uinput` — like
     // `WindowManager::connect_to` above, the actual resource (the virtual

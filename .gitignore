@@ -2,3 +2,4 @@
 .vscode
 .claude
 extension/*.shell-extension.zip
+.github/workflows/ci.yml

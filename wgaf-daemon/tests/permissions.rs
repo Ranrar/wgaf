@@ -246,7 +246,8 @@ fn run_daemon_expecting_exit(config_path: &std::path::Path, extra: &[&str]) -> (
 /// Writes a minimal config in its own directory, so the `permissions.toml`
 /// sibling lookup resolves somewhere private to this test.
 fn config_in_private_dir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("wgaf-required-policy-{tag}-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("wgaf-required-policy-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create private config dir");
     let config_path = dir.join("config.toml");
     std::fs::write(
@@ -372,8 +373,7 @@ fn daemon_refuses_to_start_when_the_config_file_is_missing() {
     // settings the daemon runs under should be visible on disk, not a silent
     // fallback. Its stakes are lower than the policy file's, but a writable
     // config still decides which bus names the daemon talks to.
-    let dir =
-        std::env::temp_dir().join(format!("wgaf-required-config-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("wgaf-required-config-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create private config dir");
     let config_path = dir.join("config.toml");
 
@@ -385,7 +385,10 @@ fn daemon_refuses_to_start_when_the_config_file_is_missing() {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(!output.status.success(), "a missing config file must be fatal");
+    assert!(
+        !output.status.success(),
+        "a missing config file must be fatal"
+    );
     assert!(
         stderr.contains("no configuration file found"),
         "the error must say what is wrong; got: {stderr}"
@@ -406,8 +409,11 @@ fn an_empty_config_file_is_valid_and_selects_the_defaults() {
     let dir = std::env::temp_dir().join(format!("wgaf-empty-config-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create private config dir");
     std::fs::write(dir.join("config.toml"), "").expect("write empty config");
-    std::fs::set_permissions(dir.join("config.toml"), std::fs::Permissions::from_mode(0o600))
-        .expect("tighten config");
+    std::fs::set_permissions(
+        dir.join("config.toml"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("tighten config");
     std::fs::write(dir.join("permissions.toml"), "[capabilities]\n").expect("write policy");
     std::fs::set_permissions(
         dir.join("permissions.toml"),

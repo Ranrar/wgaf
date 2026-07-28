@@ -109,7 +109,10 @@ pub fn print_status(s: &wgaf_common::DaemonStatus) {
     } else {
         format!("{}, no device created yet", s.input_device_name)
     };
-    println!("{} Input (/dev/uinput)    ({device})", marker(s.uinput_accessible));
+    println!(
+        "{} Input (/dev/uinput)    ({device})",
+        marker(s.uinput_accessible)
+    );
     if !s.uinput_detail.is_empty() {
         println!("       {}", s.uinput_detail);
     }

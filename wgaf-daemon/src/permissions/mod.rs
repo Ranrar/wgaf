@@ -143,8 +143,10 @@ impl PermissionGate {
             .prompt_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut decisions: Vec<(Capability, bool)> =
-            cache.iter().map(|(cap, allowed)| (*cap, *allowed)).collect();
+        let mut decisions: Vec<(Capability, bool)> = cache
+            .iter()
+            .map(|(cap, allowed)| (*cap, *allowed))
+            .collect();
         drop(cache);
         decisions.sort_by_key(|(capability, _)| capability.as_str());
         decisions

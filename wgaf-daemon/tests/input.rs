@@ -92,8 +92,10 @@ fn spawn_daemon(daemon_bus_name: &str, device_name: &str, nonce: &str) -> Daemon
     // explicit way to say "allow everything". Given its own unique path
     // rather than relying on the config sibling, because every test config
     // lives directly in the temp dir and would otherwise share one file.
-    let permissions_path =
-        std::env::temp_dir().join(format!("wgaf-input-permissions-{}.toml", std::process::id()));
+    let permissions_path = std::env::temp_dir().join(format!(
+        "wgaf-input-permissions-{}.toml",
+        std::process::id()
+    ));
     std::fs::write(&permissions_path, "[capabilities]\n").expect("failed to write test policy");
     // Explicit mode: the daemon rejects a group/world-writable policy file,
     // and `fs::write` honours the umask (002 on many distros -> 0664).

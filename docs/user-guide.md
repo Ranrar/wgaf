@@ -133,10 +133,11 @@ printf '[capabilities]\n' > ~/.config/wgaf/permissions.toml
 chmod 600 ~/.config/wgaf/config.toml ~/.config/wgaf/permissions.toml
 ```
 
-`make install` places a commented-out template of each, if you don't already
-have one. They're commented out on purpose: an uncommented setting is frozen
-at whatever you wrote, while a commented one keeps tracking the current
-default. Uncomment only what you want to change.
+`make install` places a template of each, if you don't already have one. They
+list every setting and capability at its default value, so you can see the
+whole picture and edit any line in place. Note that a written value is frozen
+at whatever you wrote — comment a line out to go back to tracking the current
+default.
 
 Not sure which files are actually in use? Ask:
 

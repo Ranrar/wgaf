@@ -212,9 +212,10 @@ wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
 | `permissions.toml` | What wgaf is allowed to do |
 
 `make install` sets both up for you, with the right ownership and mode, and
-never overwrites files you already have. The templates it installs are
-entirely commented out, so they change nothing until you uncomment something —
-leave a line commented and it keeps tracking the current default.
+never overwrites files you already have. The templates it installs spell out
+every setting and capability at its default value, so you can see and edit the
+whole surface in place — they change nothing until you edit something. Comment
+a line out and it goes back to tracking the built-in default.
 
 With plain `cargo install`, create them once:
 

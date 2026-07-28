@@ -1,34 +1,16 @@
-# Root Makefile for wgaf — GNOME Wayland Automation Framework.
+# Build and install wgaf. See README.md for setup and usage.
 #
-# A convenience wrapper around `cargo install --path` for the wgaf-daemon/
-# wgaf binaries, plus the extra one-time steps a `cargo install`-only
-# workflow doesn't cover: installing the systemd user unit and installing/
-# enabling the GNOME Shell Extension (whose own install/enable/uninstall
-# logic already lives in extension/Makefile — this Makefile just invokes
-# that, so one `make install` here does the whole job).
-#
-# This is dev-iteration/self-build install tooling, matching
-# extension/Makefile's own scope note — NOT a distro (.deb/.rpm) packaging
-# pipeline. Full distro packaging is intentionally out of scope until there
-# is a tagged release to package.
-#
-# Usage:
-#   make build      - cargo build --release --workspace
-#   make install    - `cargo install --path` for wgaf-daemon/wgaf-cli, install
-#                      the systemd user unit, install+enable the GNOME Shell
-#                      Extension, print the /dev/uinput setup steps
+#   make build      - build everything
+#   make install    - install the binaries, config files, systemd user unit,
+#                     and GNOME Shell Extension, then print the remaining
+#                     /dev/uinput setup steps
 #   make uninstall  - reverse all of the above
-#   make man        - generate man pages and install them to
-#                      ~/.local/share/man/man1/ (optional, not part of
-#                      `install` — see wgaf-cli/src/main.rs's
-#                      `generate_man_pages` test)
-#   make clean      - cargo clean
+#   make man        - install man pages (optional)
+#   make clean      - remove build artifacts
 #
-# Assumes the default `cargo install` target directory (`~/.cargo/bin`,
-# i.e. `$CARGO_INSTALL_ROOT` unset) — packaging/systemd/wgaf-daemon.service's
-# `ExecStart=%h/.cargo/bin/wgaf-daemon` assumes the same. If you've set
-# `CARGO_INSTALL_ROOT`/`CARGO_HOME` to something else, edit that unit's
-# `ExecStart` to match before installing it.
+# Installs to ~/.cargo/bin. If you've set CARGO_INSTALL_ROOT or CARGO_HOME
+# elsewhere, edit ExecStart in packaging/systemd/wgaf-daemon.service to match
+# before installing.
 
 XDG_CONFIG_HOME ?= $(HOME)/.config
 XDG_DATA_HOME ?= $(HOME)/.local/share
@@ -44,18 +26,9 @@ MAN_DIR := $(XDG_DATA_HOME)/man/man1
 build:
 	cargo build --release --workspace
 
-# Installs commented-out template config files, and never overwrites an
-# existing one — your edits are safe across reinstalls. Tests for the
-# file first rather than relying on `cp -n`, which exits 0 whether it copied
-# or skipped (so it cannot tell you which happened) and warns about
-# non-portable behaviour on current coreutils.
-#
-# The templates deliberately set nothing: every setting is commented out and
-# the [capabilities] table is empty, so a freshly installed pair behaves
-# exactly as if neither file existed. That is what makes shipping them safe.
-# Writing out the current defaults instead would freeze them on disk, and a
-# later version that changed a default would silently not apply to anyone who
-# had ever run `make install`.
+# Installs the template config files, never overwriting an existing one — your
+# edits survive reinstalls. Tests for the file rather than using `cp -n`, which
+# can't report whether it copied or skipped.
 config-install:
 	@mkdir -p $(WGAF_CONFIG_DIR)
 	@for f in config.toml permissions.toml; do \
@@ -66,12 +39,9 @@ config-install:
 				echo "Installed $(WGAF_CONFIG_DIR)/$$f"; \
 		fi; \
 	done
-	@# The daemon refuses to start if either file is writable by group or
-	@# others — anyone who can write them decides what the daemon may do (the
-	@# policy file directly, the config file via the bus names it points at).
-	@# `cp` honours the umask, which is 002 on many distros (giving 0664), so
-	@# set the mode explicitly rather than inheriting whatever the user happens
-	@# to have. Applied every run, so a file loosened by hand is tightened again.
+	@# Set explicitly rather than inheriting the umask (002 on many distros
+	@# gives 0664). The daemon refuses to start on a group/world-writable
+	@# config or policy file. Re-applied every run.
 	@chmod 600 $(WGAF_CONFIG_DIR)/config.toml $(WGAF_CONFIG_DIR)/permissions.toml
 	@echo "Set mode 600 on both files (required: they must not be group/world-writable)"
 

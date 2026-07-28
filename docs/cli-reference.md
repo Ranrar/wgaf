@@ -43,8 +43,8 @@ Either path can be pointed elsewhere when starting the daemon:
 | `--log-level <LEVEL>` | Override `config.toml`'s `log_level` for this run. |
 
 `wgaf status` reports which files are actually in effect — see below. `make
-install` puts commented-out templates of both in place without overwriting
-anything you already have.
+install` puts a template of each in place without overwriting anything you
+already have.
 
 ---
 

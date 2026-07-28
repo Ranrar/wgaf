@@ -151,11 +151,8 @@ async fn status_does_not_create_the_uinput_device() {
     // read-only query — visible system-wide in `/proc/bus/input/devices`, and
     // enough to disturb `tests/input.rs`, which asserts on that file.
     let device_name = format!("wgaf status probe test {}", std::process::id());
-    let (_guard, _bus_name, status) = spawn_daemon(
-        "NoDev",
-        &format!("input_device_name = \"{device_name}\"\n"),
-    )
-    .await;
+    let (_guard, _bus_name, status) =
+        spawn_daemon("NoDev", &format!("input_device_name = \"{device_name}\"\n")).await;
 
     assert!(
         !status.input_device_created,
@@ -182,10 +179,8 @@ async fn status_surfaces_configured_restrictions_and_hides_a_file_that_does_not_
     );
 
     let bus_name = format!("org.wgaf.Daemon.TestPerm{}", std::process::id());
-    let config_path = std::env::temp_dir().join(format!(
-        "wgaf-status-test-perm-{}.toml",
-        std::process::id()
-    ));
+    let config_path =
+        std::env::temp_dir().join(format!("wgaf-status-test-perm-{}.toml", std::process::id()));
     std::fs::write(
         &config_path,
         format!("bus_name = \"{bus_name}\"\nlog_level = \"error\"\n"),
@@ -224,7 +219,10 @@ async fn status_surfaces_configured_restrictions_and_hides_a_file_that_does_not_
     // list has to unambiguously mean "nothing is restricted".
     assert_eq!(
         status.permissions_restricted,
-        vec!["CloseWindow=Prompt".to_string(), "TypeText=Deny".to_string()],
+        vec![
+            "CloseWindow=Prompt".to_string(),
+            "TypeText=Deny".to_string()
+        ],
         "Status must report which capabilities are restricted, and from where — \
          until this existed, a user refused by policy could not see either"
     );

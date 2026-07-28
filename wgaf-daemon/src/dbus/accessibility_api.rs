@@ -44,7 +44,9 @@ impl From<AccessibilityError> for AccessibilityApiError {
             AccessibilityError::BusUnavailable { .. } => Self::BusUnavailable(err.to_string()),
             AccessibilityError::AppNotFound(_) => Self::AppNotFound(err.to_string()),
             AccessibilityError::ElementNotFound(_) => Self::ElementNotFound(err.to_string()),
-            AccessibilityError::InvalidElementRef { .. } => Self::InvalidElementRef(err.to_string()),
+            AccessibilityError::InvalidElementRef { .. } => {
+                Self::InvalidElementRef(err.to_string())
+            }
             AccessibilityError::ActionNotSupported(_) => Self::ActionNotSupported(err.to_string()),
             AccessibilityError::Atspi(_) | AccessibilityError::DBus(_) => {
                 Self::ZBus(zbus::Error::Failure(err.to_string()))

@@ -9,7 +9,6 @@
 //! `--json` therefore just wraps a `{"ok": true, "message": ...}` status,
 //! emitted by the shared `crate::output::print_ok`.
 
-
 use super::{connect, map_err};
 
 pub async fn type_text(

@@ -217,7 +217,10 @@ mod tests {
             rendered,
             "D-Bus error talking to the accessibility bus: Invalid bus name"
         );
-        assert!(!rendered.contains("MethodError"), "must not leak Debug output");
+        assert!(
+            !rendered.contains("MethodError"),
+            "must not leak Debug output"
+        );
     }
 
     /// A description-less reply is legal on D-Bus. Ours fall back to the
