@@ -32,17 +32,50 @@
 
 XDG_CONFIG_HOME ?= $(HOME)/.config
 XDG_DATA_HOME ?= $(HOME)/.local/share
+WGAF_CONFIG_DIR := $(XDG_CONFIG_HOME)/wgaf
 SYSTEMD_USER_DIR := $(XDG_CONFIG_HOME)/systemd/user
 SYSTEMD_UNIT := packaging/systemd/wgaf-daemon.service
 MAN_DIR := $(XDG_DATA_HOME)/man/man1
 
 .PHONY: build install uninstall man clean \
-	cargo-install cargo-uninstall systemd-install systemd-uninstall
+	cargo-install cargo-uninstall systemd-install systemd-uninstall \
+	config-install
 
 build:
 	cargo build --release --workspace
 
-install: cargo-install systemd-install
+# Installs commented-out template config files, and never overwrites an
+# existing one — your edits are safe across reinstalls. Tests for the
+# file first rather than relying on `cp -n`, which exits 0 whether it copied
+# or skipped (so it cannot tell you which happened) and warns about
+# non-portable behaviour on current coreutils.
+#
+# The templates deliberately set nothing: every setting is commented out and
+# the [capabilities] table is empty, so a freshly installed pair behaves
+# exactly as if neither file existed. That is what makes shipping them safe.
+# Writing out the current defaults instead would freeze them on disk, and a
+# later version that changed a default would silently not apply to anyone who
+# had ever run `make install`.
+config-install:
+	@mkdir -p $(WGAF_CONFIG_DIR)
+	@for f in config.toml permissions.toml; do \
+		if [ -e "$(WGAF_CONFIG_DIR)/$$f" ]; then \
+			echo "Kept existing $(WGAF_CONFIG_DIR)/$$f"; \
+		else \
+			cp "packaging/$$f" "$(WGAF_CONFIG_DIR)/$$f" && \
+				echo "Installed $(WGAF_CONFIG_DIR)/$$f"; \
+		fi; \
+	done
+	@# The daemon refuses to start if either file is writable by group or
+	@# others — anyone who can write them decides what the daemon may do (the
+	@# policy file directly, the config file via the bus names it points at).
+	@# `cp` honours the umask, which is 002 on many distros (giving 0664), so
+	@# set the mode explicitly rather than inheriting whatever the user happens
+	@# to have. Applied every run, so a file loosened by hand is tightened again.
+	@chmod 600 $(WGAF_CONFIG_DIR)/config.toml $(WGAF_CONFIG_DIR)/permissions.toml
+	@echo "Set mode 600 on both files (required: they must not be group/world-writable)"
+
+install: cargo-install systemd-install config-install
 	$(MAKE) -C extension install
 	$(MAKE) -C extension enable
 	@echo

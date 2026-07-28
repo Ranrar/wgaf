@@ -1,0 +1,37 @@
+# wgaf-daemon configuration.
+#
+# The daemon expects this file to be present, owned by you, and mode 600. An
+# empty file is perfectly valid and selects every default below.
+#
+# Installed to ~/.config/wgaf/config.toml by `make install`, which never
+# overwrites an existing file.
+#
+# EVERY SETTING BELOW IS COMMENTED OUT ON PURPOSE. The daemon has built-in
+# defaults for all of them, and this file deliberately sets nothing, so it
+# behaves exactly as if it did not exist. That is not an oversight — it is the
+# point:
+#
+#   - Uncommenting a line pins that value forever. If a future version of wgaf
+#     changes a default, you will keep the old one and there will be nothing
+#     here to tell you why.
+#   - Leaving a line commented means you always track the current default.
+#
+# So uncomment only what you actually want to override, and leave the rest
+# alone. The values shown are the current defaults, for reference.
+
+# Well-known D-Bus name the daemon owns on the session bus. Change this only
+# if you need to run more than one daemon at once (the CLI's --bus-name flag
+# is how you then reach a non-default one).
+# bus_name = "org.wgaf.Daemon"
+
+# Log verbosity: trace, debug, info, warn, or error. The --log-level flag
+# overrides this per-run.
+# log_level = "info"
+
+# Bus name the daemon expects the GNOME Shell extension on. Practically only
+# useful for testing against a stub extension.
+# extension_bus_name = "org.gnome.Shell.Extensions.Wgaf"
+
+# Name the daemon's virtual uinput device reports to the kernel, as shown in
+# /proc/bus/input/devices. Mainly useful to tell concurrent daemons apart.
+# input_device_name = "wgaf virtual input device"

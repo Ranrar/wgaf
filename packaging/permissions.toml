@@ -1,0 +1,51 @@
+# wgaf-daemon permission policy.
+#
+# The daemon expects this file to be present, owned by you, and mode 600.
+#
+# Installed to ~/.config/wgaf/permissions.toml by `make install`, which never
+# overwrites an existing file. It must live next to config.toml — the daemon
+# looks for it as a sibling of whatever --config resolves to.
+#
+# The [capabilities] table below is intentionally EMPTY. Any capability not
+# listed defaults to Allow, so an empty table behaves exactly as if this file
+# did not exist. Listing every capability with "Allow" would look equivalent
+# but is not: a future version of wgaf that adds a new capability would find
+# it unlisted here and apply its own (possibly stricter) default, whereas an
+# exhaustive list frozen today would quietly keep granting everything.
+#
+# Add only the capabilities you want to restrict.
+#
+# Each capability takes one of three values:
+#
+#   "Allow"   permitted silently (the default for anything unlisted)
+#   "Deny"    always refused, with org.wgaf.*.Error.PermissionDenied
+#   "Prompt"  ask via a desktop notification on first use, then remember the
+#             answer for the lifetime of this daemon process only. Fails
+#             closed: a timeout (60s), a dismissal, or "Deny" all refuse.
+#
+# Only mutating operations can be restricted. Read-only ones (ListWindows,
+# GetWorkspaces, ListApps, FindElements, GetTree, GetElementInfo) have no
+# capability and are never checked.
+#
+# Run `wgaf status` to see which of these are in effect.
+
+[capabilities]
+
+# --- Window management (org.wgaf.Windows1) ---
+# FocusWindow = "Allow"
+# MoveWindow = "Allow"
+# ResizeWindow = "Allow"
+# CloseWindow = "Prompt"     # closing a window can lose unsaved work
+
+# --- Input synthesis (org.wgaf.Input1) ---
+# TypeText = "Prompt"        # can type into a password field
+# KeyPress = "Allow"
+# KeyRelease = "Allow"
+# MouseMove = "Allow"
+# MouseClick = "Allow"
+# MouseScroll = "Allow"
+
+# --- Accessibility actions (org.wgaf.Accessibility1) ---
+# InvokeAction = "Allow"
+# SetText = "Allow"
+# FocusElement = "Allow"

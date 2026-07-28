@@ -85,10 +85,34 @@ fn spawn_daemon(daemon_bus_name: &str, nonce: &str) -> DaemonGuard {
         format!("bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\n"),
     )
     .expect("failed to write test config");
+    // The daemon requires both files to exist and to not be group/world
+    // writable; `fs::write` honours the umask (002 on many distros -> 0664).
+    std::fs::set_permissions(
+        &config_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("failed to tighten test config permissions");
+
+    // The daemon requires a policy file; an empty [capabilities] table is the
+    // explicit way to say "allow everything". Given its own unique path
+    // rather than relying on the config sibling, because every test config
+    // lives directly in the temp dir and would otherwise share one file.
+    let permissions_path =
+        std::env::temp_dir().join(format!("wgaf-a11y-permissions-{}.toml", std::process::id()));
+    std::fs::write(&permissions_path, "[capabilities]\n").expect("failed to write test policy");
+    // Explicit mode: the daemon rejects a group/world-writable policy file,
+    // and `fs::write` honours the umask (002 on many distros -> 0664).
+    std::fs::set_permissions(
+        &permissions_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("failed to tighten test policy permissions");
 
     let child = Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
         .arg("--config")
         .arg(&config_path)
+        .arg("--permissions")
+        .arg(&permissions_path)
         .spawn()
         .expect("failed to start wgaf-daemon");
     DaemonGuard { child, config_path }

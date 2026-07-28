@@ -14,34 +14,33 @@ automatically instead of by hand.
 
 ## Before you start
 
-Open a terminal and check that the daemon is running:
+Open a terminal and check everything this guide needs:
 
 ```sh
-wgaf ping
+wgaf status
 ```
 
-If that prints `pong`, you're set — skip ahead. If it errors instead,
-start the daemon:
+You want the GNOME Shell Extension line to read `[ ok ]` — this walkthrough
+moves and resizes windows, which goes through the extension. Input and
+Accessibility should be `[ ok ]` too. Any line marked `[fail]` comes with the
+fix printed underneath it.
+
+If `wgaf status` can't reach the daemon at all, start it:
 
 ```sh
 wgaf-daemon &
 ```
 
-The trailing `&` runs it in the background, so your terminal stays free to
-run `wgaf` commands. If you installed via `make install` and enabled the
-systemd service, it's probably already running and `ping` will just work.
+The trailing `&` runs it in the background, so your terminal stays free for
+`wgaf` commands. If you installed via `make install` and enabled the systemd
+service, it's probably already running.
 
-This walkthrough also moves and resizes a window, which requires the GNOME
-Shell Extension to be installed and enabled. Confirm it's enabled:
+Should the daemon exit immediately instead, it will say what it wants — most
+likely its two config files, which `make install` creates for you and
+`cargo install` does not. The [README](../README.md)'s Configuration section
+has the two commands to create them.
 
-```sh
-gnome-extensions info wgaf@wgaf.dev
-```
-
-Look for `State: ENABLED` in the output. If it says `DISABLED`, isn't
-installed, or the command isn't found, set that up first — it's covered in
-the [README](../README.md)'s Install section. The rest of this guide
-assumes both the daemon and the extension are working.
+The rest of this guide assumes the daemon and the extension are both working.
 
 ## Step 1 — Open the app
 

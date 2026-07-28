@@ -108,13 +108,55 @@ wgaf --json window list
 wgaf window list --json
 ```
 
+## Configuration files
+
+The daemon looks for two files automatically, in `$XDG_CONFIG_HOME/wgaf/`
+(usually `~/.config/wgaf/`):
+
+| File | What it does |
+|---|---|
+| `config.toml` | Daemon settings: bus name, log level, device name |
+| `permissions.toml` | Per-capability policy: `Allow` / `Deny` / `Prompt` |
+
+Keep both readable and writable by you alone (mode `600`). If either needs
+attention, the daemon says so on startup with the command to fix it.
+
+Within the policy file, permissions are an opt-in *restriction*: any
+capability you don't mention is allowed, so the file is usually short.
+
+Empty files select the defaults:
+
+```sh
+mkdir -p ~/.config/wgaf
+: > ~/.config/wgaf/config.toml
+printf '[capabilities]\n' > ~/.config/wgaf/permissions.toml
+chmod 600 ~/.config/wgaf/config.toml ~/.config/wgaf/permissions.toml
+```
+
+`make install` places a commented-out template of each, if you don't already
+have one. They're commented out on purpose: an uncommented setting is frozen
+at whatever you wrote, while a commented one keeps tracking the current
+default. Uncomment only what you want to change.
+
+Not sure which files are actually in use? Ask:
+
+```sh
+wgaf status
+```
+
+It names both paths, says whether each exists, and lists any capability that
+isn't at its default — useful when a command was refused and you want to know
+what did the refusing.
+
 ## When a command gets denied
 
 If a capability is set to `Deny` in `permissions.toml`, the command fails
 immediately with "permission denied." If it's set to `Prompt`, a desktop
 notification appears asking Allow/Deny — respond within about a minute, or
-it's treated as denied. See the README's Configuration section for the file
-format.
+it's treated as denied.
+
+`wgaf status` shows which capabilities are restricted and which file the
+policy came from. See the README's Configuration section for the file format.
 
 ## Putting it together
 

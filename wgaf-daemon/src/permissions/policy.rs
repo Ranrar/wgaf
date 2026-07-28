@@ -8,9 +8,19 @@
 //! opt-in *restriction* an operator configures (deny/prompt specific
 //! capabilities), never an opt-in *unlock* the operator must grant before
 //! anything works. Concretely: [`PolicyMap::get`] returns [`PolicyValue::Allow`]
-//! for any capability not explicitly listed in the loaded file, and
-//! [`PolicyMap::load`] returns an all-default (all-`Allow`) map, not an
-//! error, when `permissions.toml` doesn't exist at all.
+//! for any capability not explicitly listed in the loaded file.
+//!
+//! **But the file itself is required.** Default-allow applies *within* a
+//! policy file, not to its absence. [`PolicyMap::load_required`] — what the
+//! daemon actually uses — fails if `permissions.toml` is missing, owned by
+//! another account, or group/world-writable, and the daemon refuses to start.
+//! Treating a missing file as "allow everything" made the whole mechanism
+//! fail-open: deleting the file silently removed every restriction the user
+//! had configured, and a file lost to a bad sync or a stray `rm` was
+//! indistinguishable from a deliberate decision. Allowing everything is still
+//! available — it just has to be stated, with an empty `[capabilities]`
+//! table, or by passing `--permissions-optional`. [`PolicyMap::load`] keeps
+//! the old lenient behaviour for that flag and for tests.
 //!
 //! **Same format as `config.toml`, not a new one.** Uses plain TOML (via
 //! `toml::from_str`, the same crate/entry-point `crate::config::Config::load`
@@ -96,6 +106,8 @@ pub enum PolicyValue {
     Prompt,
 }
 
+use crate::secure_file::SecureFileError;
+
 /// The parsed `permissions.toml` policy map: capability -> policy value,
 /// for whichever capabilities the file's `[capabilities]` table mentions.
 /// Any capability not present defaults to [`PolicyValue::Allow`] (see
@@ -154,6 +166,46 @@ impl PolicyMap {
             }
             _ => Ok(Self::default()),
         }
+    }
+
+    /// Loads the policy, **requiring** the file to exist and to be
+    /// trustworthy. This is what the daemon actually uses at startup; plain
+    /// [`Self::load`] remains for tests and for the explicit
+    /// `--permissions-optional` escape hatch.
+    ///
+    /// Why absence is fatal rather than defaulting to `Allow`: a security
+    /// control whose absence is permissive is fail-open. Under the old
+    /// behaviour, `rm ~/.config/wgaf/permissions.toml` silently removed every
+    /// restriction the user had deliberately configured — no error, no
+    /// warning, and `wgaf type` quietly working again after having been
+    /// denied. A lost file (bad sync, restored home directory, stray `rm`)
+    /// must never be indistinguishable from a considered decision to allow
+    /// everything. Saying "allow everything" is still perfectly possible; it
+    /// just has to be *said*, with a file containing an empty
+    /// `[capabilities]` table.
+    ///
+    /// Ownership and mode are checked for the same reason the policy is
+    /// required at all: a file another account can rewrite is not a policy,
+    /// it is a suggestion. `ssh` refuses to use a private key on the same
+    /// grounds.
+    pub fn load_required(path: &Path) -> Result<Self, SecureFileError> {
+        let text = crate::secure_file::read_trusted(
+            path,
+            "permission policy",
+            "permissions.toml",
+            format!(
+                "printf '[capabilities]\\n' > {}\n    chmod 600 {}\n\n\
+                 An empty [capabilities] table allows every capability. Or pass \
+                 --permissions-optional to run without this file.",
+                path.display(),
+                path.display()
+            ),
+        )?;
+        toml::from_str(&text).map_err(|source| SecureFileError::Malformed {
+            kind: "permission policy",
+            path: path.display().to_string(),
+            reason: source.to_string(),
+        })
     }
 }
 

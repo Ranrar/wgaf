@@ -35,6 +35,9 @@ impl Default for Config {
 
 impl Config {
     /// Loads config from `path` if given and it exists, falling back to defaults otherwise.
+    ///
+    /// Retained for tests and for `--config-optional`; the daemon itself uses
+    /// [`Self::load_required`].
     pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         match path {
             Some(path) if path.exists() => {
@@ -43,6 +46,33 @@ impl Config {
             }
             _ => Ok(Self::default()),
         }
+    }
+
+    /// Loads config, **requiring** the file to exist and to be trustworthy —
+    /// see [`crate::secure_file`] for the rules and the reasoning.
+    ///
+    /// An empty file is perfectly valid and yields every default; the point is
+    /// that "use the defaults" becomes something you can see on disk rather
+    /// than a silent fallback, and that a file only this user can write is the
+    /// one deciding which bus names the daemon talks to.
+    pub fn load_required(path: &Path) -> Result<Self, crate::secure_file::SecureFileError> {
+        let text = crate::secure_file::read_trusted(
+            path,
+            "configuration",
+            "config.toml",
+            format!(
+                ": > {}\n    chmod 600 {}\n\n\
+                 An empty file gives every built-in default. Or pass --config-optional \
+                 to run without one.",
+                path.display(),
+                path.display()
+            ),
+        )?;
+        toml::from_str(&text).map_err(|source| crate::secure_file::SecureFileError::Malformed {
+            kind: "configuration",
+            path: path.display().to_string(),
+            reason: source.to_string(),
+        })
     }
 }
 

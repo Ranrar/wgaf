@@ -56,6 +56,28 @@ async fn daemon_loads_config_from_xdg_default_path_when_config_flag_omitted() {
         format!("bus_name = \"{bus_name}\"\nlog_level = \"error\"\n"),
     )
     .expect("write config.toml at the default XDG location");
+    // The daemon requires both files to exist and to not be group/world
+    // writable; `fs::write` honours the umask (002 on many distros -> 0664).
+    std::fs::set_permissions(
+        &config_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("failed to tighten test config permissions");
+
+    // The daemon requires a policy file as a sibling of the resolved config;
+    // an empty [capabilities] table means "allow everything", stated
+    // explicitly rather than implied by absence. This also exercises the
+    // sibling lookup working off the *default* config path.
+    let permissions_path = config_dir.join("permissions.toml");
+    std::fs::write(&permissions_path, "[capabilities]\n")
+        .expect("write permissions.toml alongside it");
+    // Explicit mode: the daemon rejects a group/world-writable policy file,
+    // and `fs::write` honours the umask (002 on many distros -> 0664).
+    std::fs::set_permissions(
+        &permissions_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("failed to tighten test policy permissions");
 
     // Deliberately no `--config` flag: the whole point of this test is that
     // the daemon finds the file on its own via $XDG_CONFIG_HOME.

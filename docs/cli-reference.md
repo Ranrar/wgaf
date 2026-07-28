@@ -21,6 +21,31 @@ Shell completions: `wgaf completions <bash|zsh|fish|elvish|powershell>` prints
 a completion script to stdout — see the main README for how to install it for
 your shell.
 
+## Daemon configuration
+
+`wgaf-daemon` finds its configuration on its own — no flags required. It looks
+for `config.toml` in `$XDG_CONFIG_HOME/wgaf/` (falling back to
+`~/.config/wgaf/` when `$XDG_CONFIG_HOME` is unset or empty), and for
+`permissions.toml` as a sibling of whichever `config.toml` it resolved.
+
+Both files are expected to be present, owned by the user the daemon runs as,
+and mode `600`; the daemon reports what to fix on startup if not. Empty files
+select the defaults — for the policy, a file containing just `[capabilities]`.
+
+Either path can be pointed elsewhere when starting the daemon:
+
+| Daemon flag | Effect |
+|---|---|
+| `--config <PATH>` | Use this `config.toml` instead of the resolved default. |
+| `--permissions <PATH>` | Use this policy file instead of the `config.toml` sibling. |
+| `--config-optional` | Run with no config file, using built-in defaults. Prefer an empty file, which states the same thing but leaves a record. |
+| `--permissions-optional` | Run with no policy file, allowing every capability. Logs a warning. Prefer an empty `[capabilities]` file. |
+| `--log-level <LEVEL>` | Override `config.toml`'s `log_level` for this run. |
+
+`wgaf status` reports which files are actually in effect — see below. `make
+install` puts commented-out templates of both in place without overwriting
+anything you already have.
+
 ---
 
 ## `wgaf ping`
@@ -83,7 +108,8 @@ Notes on reading the output:
   connection, or changes any state. It only reports.
 - Config and permissions paths are shown whether or not the files exist, with
   absent ones marked — so this doubles as the answer to "where do those files
-  go?".
+  go?". You will only see one marked absent if the daemon was started with
+  `--config-optional` or `--permissions-optional`.
 - Only the `--json` output is a stable, parseable interface; the human-readable
   layout may change between versions.
 
@@ -175,6 +201,12 @@ absolute-coordinate authority.
 Moves the pointer relative to its current position. Either value may be
 negative.
 
+**Not pixel-exact.** `libinput` applies pointer acceleration to relative
+motion, so the pointer does not necessarily end up exactly `dx`/`dy` pixels
+away — a fast large movement travels further than a slow one covering the same
+requested distance. Don't rely on it to land on a precise coordinate; prefer
+`wgaf a11y` to act on an element directly.
+
 ### `wgaf mouse click <button>`
 
 Clicks (press then release) a mouse button: `left`, `right`, or `middle`.
@@ -262,6 +294,10 @@ than a raw D-Bus error dump, for example:
   running for this session.
 - `accessible application not found` / `accessible element not found` — the
   `--app` name or element reference doesn't resolve to anything live.
+- `invalid element reference` — the element reference isn't well-formed
+  `bus_name#object_path` at all (a typo or copy-paste error), as opposed to
+  `accessible element not found` above, which means it was well-formed but the
+  element it pointed to is gone.
 - `action not supported` — the element doesn't implement the action/interface
   you asked for (e.g. `set-text` on a read-only field).
 - `permission denied` — the capability is set to `Deny` (or `Prompt` and the

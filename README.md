@@ -203,11 +203,53 @@ targets.) Man pages are optional — `make man` generates and installs them.
 
 ## Configuration
 
-`wgaf-daemon` reads two optional TOML files from `$XDG_CONFIG_HOME/wgaf/`
-(defaults to `~/.config/wgaf/`): `config.toml` (daemon settings) and its
-sibling `permissions.toml` (per-capability policy). Both are entirely
-optional — with neither present, the daemon runs with sane defaults and
-every capability allowed.
+wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
+`$XDG_CONFIG_HOME/wgaf/` if set), which the daemon finds on its own:
+
+| File | Purpose |
+|---|---|
+| `config.toml` | Bus name, log level, device name |
+| `permissions.toml` | What wgaf is allowed to do |
+
+`make install` sets both up for you, with the right ownership and mode, and
+never overwrites files you already have. The templates it installs are
+entirely commented out, so they change nothing until you uncomment something —
+leave a line commented and it keeps tracking the current default.
+
+With plain `cargo install`, create them once:
+
+```sh
+mkdir -p ~/.config/wgaf
+: > ~/.config/wgaf/config.toml
+printf '[capabilities]\n' > ~/.config/wgaf/permissions.toml
+chmod 600 ~/.config/wgaf/config.toml ~/.config/wgaf/permissions.toml
+```
+
+Empty files select the defaults: an empty `config.toml` uses the built-in
+settings, and an empty `[capabilities]` table allows every capability. Keep
+both readable and writable by you alone (mode `600`) — wgaf only runs on
+configuration it can tell is yours, and will say so if something needs
+fixing.
+
+`wgaf status` shows which files are in use, what's restricted, and — if a file
+is missing — where it should go.
+
+<details>
+<summary>Using different paths, or no policy file at all</summary>
+
+```sh
+wgaf-daemon --config /path/to/config.toml --permissions /path/to/permissions.toml
+```
+
+`--permissions` defaults to a `permissions.toml` next to whichever
+`config.toml` was resolved, so moving `--config` moves both.
+
+`--config-optional` and `--permissions-optional` skip the respective file and
+use the built-in defaults (for the policy, that means allowing everything, and
+it logs a warning). The empty files above are preferable — they say the same
+thing but stay visible in your config.
+
+</details>
 
 ### `permissions.toml` — per-capability policy
 
@@ -233,9 +275,11 @@ With the above, `wgaf type "secret"` is refused outright, and
 `wgaf window close 7` raises a desktop notification and waits for your
 answer.
 
-Any capability not listed defaults to `Allow` — this is a personal
-automation tool, so permissions are an opt-in *restriction* you configure,
-never an opt-in *unlock* you must grant before anything works.
+Any capability not listed defaults to `Allow` — this is a personal automation
+tool, so permissions are an opt-in *restriction* you configure, never an
+*unlock* you must grant before anything works. Only the file itself is
+mandatory; what you put in it is up to you, and an empty `[capabilities]`
+table restricts nothing.
 
 ## Uninstall
 

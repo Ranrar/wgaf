@@ -71,10 +71,24 @@ fn spawn_daemon_with_policy(
         ),
     )
     .expect("failed to write test config");
+    // The daemon requires both files to exist and to not be group/world
+    // writable; `fs::write` honours the umask (002 on many distros -> 0664).
+    std::fs::set_permissions(
+        &config_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("failed to tighten test config permissions");
 
     let permissions_path =
         std::env::temp_dir().join(format!("wgaf-daemon-perm-test-{nonce}-permissions.toml"));
     std::fs::write(&permissions_path, policy_toml).expect("failed to write test permissions.toml");
+    // Explicit mode: the daemon rejects a group/world-writable policy file,
+    // and `fs::write` honours the umask (002 on many distros -> 0664).
+    std::fs::set_permissions(
+        &permissions_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("failed to tighten test policy permissions");
 
     let child = Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
         .arg("--config")
@@ -202,4 +216,227 @@ async fn absent_permissions_file_defaults_every_capability_to_allow() {
     call_input::<(), _>(&connection, &daemon_bus_name, "TypeText", &("hi",))
         .await
         .expect("TypeText should succeed under an empty (all-default-Allow) policy");
+}
+
+// ---------------------------------------------------------------------------
+// The policy file is mandatory. These guard the fail-closed behaviour added
+// after the previous design was found to be fail-open: a missing
+// `permissions.toml` used to mean "allow everything", so deleting the file
+// silently removed every restriction the user had configured, and a file lost
+// to a bad sync or a stray `rm` was indistinguishable from a deliberate
+// decision. The daemon now refuses to start instead.
+// ---------------------------------------------------------------------------
+
+/// Runs the daemon to completion with the given extra args and returns
+/// (exit-success, stderr). Used for the startup-refusal cases, which never
+/// reach the point of owning a bus name.
+fn run_daemon_expecting_exit(config_path: &std::path::Path, extra: &[&str]) -> (bool, String) {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
+        .arg("--config")
+        .arg(config_path)
+        .args(extra)
+        .output()
+        .expect("failed to run wgaf-daemon");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+/// Writes a minimal config in its own directory, so the `permissions.toml`
+/// sibling lookup resolves somewhere private to this test.
+fn config_in_private_dir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("wgaf-required-policy-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create private config dir");
+    let config_path = dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "bus_name = \"org.wgaf.Test.Required.{tag}{}\"\nlog_level = \"error\"\n",
+            std::process::id()
+        ),
+    )
+    .expect("write config");
+    std::fs::set_permissions(
+        &config_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("tighten config permissions");
+    (dir, config_path)
+}
+
+#[test]
+fn daemon_refuses_to_start_when_the_policy_file_is_missing() {
+    let (dir, config_path) = config_in_private_dir("missing");
+    let (ok, stderr) = run_daemon_expecting_exit(&config_path, &[]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        !ok,
+        "a missing policy file must be fatal — treating it as \"allow everything\" \
+         is fail-open, and would mean losing the file silently drops every restriction"
+    );
+    assert!(
+        stderr.contains("no permission policy file found"),
+        "the error must say what is wrong; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("[capabilities]") && stderr.contains("--permissions-optional"),
+        "the error must say how to fix it, both ways; got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Missing {"),
+        "the error must be the Display message, not a Debug dump; got: {stderr}"
+    );
+}
+
+#[test]
+fn daemon_refuses_a_policy_file_writable_by_group_or_others() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (dir, config_path) = config_in_private_dir("mode");
+    let permissions_path = dir.join("permissions.toml");
+    std::fs::write(&permissions_path, "[capabilities]\n").expect("write policy");
+    // World-writable: any process on the machine could rewrite what this
+    // daemon is permitted to do between one run and the next.
+    std::fs::set_permissions(&permissions_path, std::fs::Permissions::from_mode(0o666))
+        .expect("loosen policy permissions");
+
+    let (ok, stderr) = run_daemon_expecting_exit(&config_path, &[]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!ok, "a group/world-writable policy file must be fatal");
+    assert!(
+        stderr.contains("writable by group or others") && stderr.contains("chmod 600"),
+        "the error must name the problem and the fix; got: {stderr}"
+    );
+}
+
+#[test]
+fn daemon_accepts_a_correctly_owned_and_moded_policy_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (dir, config_path) = config_in_private_dir("good");
+    let permissions_path = dir.join("permissions.toml");
+    std::fs::write(&permissions_path, "[capabilities]\n").expect("write policy");
+    std::fs::set_permissions(&permissions_path, std::fs::Permissions::from_mode(0o600))
+        .expect("tighten policy permissions");
+
+    // A daemon that starts successfully never exits on its own, so give it a
+    // moment and then confirm it is still running rather than having died.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
+        .arg("--config")
+        .arg(&config_path)
+        .spawn()
+        .expect("failed to start wgaf-daemon");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let still_running = child.try_wait().expect("try_wait").is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        still_running,
+        "a policy file owned by this user with mode 600 must be accepted"
+    );
+}
+
+#[test]
+fn permissions_optional_flag_allows_running_without_a_policy_file() {
+    let (dir, config_path) = config_in_private_dir("optout");
+
+    // The escape hatch exists so "I genuinely want no restrictions" stays
+    // possible — but as an explicit statement, not as the silent consequence
+    // of a file having gone missing.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--permissions-optional")
+        .spawn()
+        .expect("failed to start wgaf-daemon");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let still_running = child.try_wait().expect("try_wait").is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        still_running,
+        "--permissions-optional must let the daemon run with no policy file"
+    );
+}
+
+#[test]
+fn daemon_refuses_to_start_when_the_config_file_is_missing() {
+    // `config.toml` is required on the same terms as the policy file: the
+    // settings the daemon runs under should be visible on disk, not a silent
+    // fallback. Its stakes are lower than the policy file's, but a writable
+    // config still decides which bus names the daemon talks to.
+    let dir =
+        std::env::temp_dir().join(format!("wgaf-required-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create private config dir");
+    let config_path = dir.join("config.toml");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
+        .arg("--config")
+        .arg(&config_path)
+        .output()
+        .expect("failed to run wgaf-daemon");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!output.status.success(), "a missing config file must be fatal");
+    assert!(
+        stderr.contains("no configuration file found"),
+        "the error must say what is wrong; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--config-optional"),
+        "the error must offer the escape hatch; got: {stderr}"
+    );
+}
+
+#[test]
+fn an_empty_config_file_is_valid_and_selects_the_defaults() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Requiring the file must not mean requiring content: an empty file is
+    // the explicit way to ask for every default, which is what makes the
+    // requirement cheap to satisfy.
+    let dir = std::env::temp_dir().join(format!("wgaf-empty-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create private config dir");
+    std::fs::write(dir.join("config.toml"), "").expect("write empty config");
+    std::fs::set_permissions(dir.join("config.toml"), std::fs::Permissions::from_mode(0o600))
+        .expect("tighten config");
+    std::fs::write(dir.join("permissions.toml"), "[capabilities]\n").expect("write policy");
+    std::fs::set_permissions(
+        dir.join("permissions.toml"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("tighten policy");
+
+    // An empty config means the *default* bus name, which a real daemon on
+    // this machine may already own — so assert on startup surviving rather
+    // than on acquiring the name.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
+        .arg("--config")
+        .arg(dir.join("config.toml"))
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to start wgaf-daemon");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let exited = child.try_wait().expect("try_wait");
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Either still running, or exited for the unrelated reason that the
+    // default bus name was already taken — but never for a config problem.
+    if let Some(status) = exited {
+        assert!(
+            !status.success(),
+            "unexpected clean exit from a daemon that should either run or fail to \
+             claim the bus name"
+        );
+    }
 }

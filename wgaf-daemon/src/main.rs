@@ -3,6 +3,7 @@ mod config;
 mod dbus;
 mod input;
 mod permissions;
+mod secure_file;
 mod windows;
 
 use std::path::PathBuf;
@@ -19,23 +20,37 @@ struct Args {
     /// Path to a TOML config file. Defaults to
     /// `$XDG_CONFIG_HOME/wgaf/config.toml` (or `$HOME/.config/wgaf/config.toml`
     /// if `$XDG_CONFIG_HOME` is unset) if not given — see
-    /// `config::default_config_path`. That default file need not exist: a
-    /// missing file (explicit path or default) just means "use built-in
-    /// defaults", not an error.
+    /// `config::default_config_path`.
+    ///
+    /// The file is expected to be present, owned by this user, and mode 600.
+    /// An empty file is valid and selects every built-in default; to run with
+    /// no file at all, pass `--config-optional`.
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Path to a TOML permission-policy file. Same file format as
-    /// `--config` (plain TOML), always expected as a *sibling* of wherever
-    /// `--config`'s file lives (or would live by default — see `--config`'s
-    /// own doc comment) — same "explicit path, or a sensible default" shape
-    /// as `Config::load`, except here the *default* itself is "no file ->
-    /// every capability defaults to Allow" rather than a `Default` struct —
-    /// see `permissions::policy`'s module docs. If omitted, the daemon
-    /// looks for `permissions.toml` next to the resolved `--config` path
-    /// (explicit or default).
+    /// Path to a TOML permission-policy file. Same file format as `--config`
+    /// (plain TOML). If omitted, the daemon looks for `permissions.toml` next
+    /// to the resolved `--config` path (explicit or default).
+    ///
+    /// The file is expected to be present, owned by this user, and mode 600.
+    /// To allow every capability, write one containing an empty
+    /// `[capabilities]` table, or pass `--permissions-optional`.
     #[arg(long)]
     permissions: Option<PathBuf>,
+
+    /// Run without a `config.toml`, using the built-in defaults.
+    ///
+    /// Prefer creating an empty file, which selects the same defaults but
+    /// stays visible in your config.
+    #[arg(long)]
+    config_optional: bool,
+
+    /// Run without a permission policy file, allowing every capability.
+    ///
+    /// Prefer writing a file with an empty `[capabilities]` table, which
+    /// allows everything just the same but stays visible in your config.
+    #[arg(long)]
+    permissions_optional: bool,
 
     /// Override the configured log level (trace, debug, info, warn, error).
     #[arg(long)]
@@ -43,7 +58,19 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    // Errors are printed here rather than returned from `main`, because
+    // Rust's `Termination` impl for `Result` formats them with `Debug`, not
+    // `Display` — which would print `Missing { path: "..." }` instead of the
+    // multi-line, actionable guidance `secure_file::SecureFileError` carries.
+    // The CLI had the same defect; see `wgaf-cli/src/main.rs`.
+    if let Err(err) = run().await {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // ADDED: resolve a real default `--config` location
@@ -56,7 +83,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `$XDG_CONFIG_HOME` nor `$HOME` is usable.
     let config_path = args.config.clone().or_else(config::default_config_path);
 
-    let mut config = Config::load(config_path.as_deref())?;
+    // Both configuration files are required (see `secure_file`'s module docs
+    // for why absence is fatal rather than defaulting silently). Note this
+    // runs before tracing is initialized, so a failure here surfaces through
+    // `main`'s `eprintln!` rather than the log — which is what we want for a
+    // startup refusal the user must read.
+    let mut config = match (&config_path, args.config_optional) {
+        (Some(path), false) => Config::load_required(path)?,
+        // `--config-optional`, or no resolvable location at all (neither
+        // $XDG_CONFIG_HOME nor $HOME usable, so there is nowhere a file could
+        // live in the first place).
+        _ => Config::load(config_path.as_deref())?,
+    };
     if let Some(log_level) = args.log_level {
         config.log_level = log_level;
     }
@@ -78,21 +116,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // resolved `--config` path (same directory) — `config_path`, not
     // `args.config`, so this now finds `permissions.toml` next to the new
     // XDG default `config.toml` location automatically, without needing an
-    // explicit `--config` to anchor the sibling lookup. `PolicyMap::load`
-    // treats a missing/nonexistent path as "every capability defaults to
-    // Allow", not an error — see `permissions::policy`'s module docs.
+    // explicit `--config` to anchor the sibling lookup.
     let permissions_path = args.permissions.or_else(|| {
         config_path
             .as_ref()
             .and_then(|c| c.parent())
             .map(|dir| dir.join("permissions.toml"))
     });
-    let policy = permissions::PolicyMap::load(permissions_path.as_deref())?;
+    // The policy file is expected unless explicitly waived — see
+    // `secure_file`'s module docs.
+    let policy = match (&permissions_path, args.permissions_optional) {
+        (Some(path), false) => permissions::PolicyMap::load_required(path)?,
+        // `--permissions-optional`, or no resolvable location at all (neither
+        // $XDG_CONFIG_HOME nor $HOME usable, so there is nowhere a file could
+        // even live).
+        _ => permissions::PolicyMap::load(permissions_path.as_deref())?,
+    };
     let permission_gate = Arc::new(permissions::PermissionGate::new(policy));
-    tracing::info!(
-        permissions_path = ?permissions_path,
-        "loaded permission policy (unmentioned capabilities default to Allow)"
-    );
+    if args.permissions_optional {
+        tracing::warn!(
+            "running with --permissions-optional: every capability is ALLOWED and \
+             no policy file is being enforced"
+        );
+    } else {
+        tracing::info!(
+            permissions_path = ?permissions_path,
+            "loaded permission policy (unmentioned capabilities default to Allow)"
+        );
+    }
 
     // A separate session-bus connection used only as a client of the GNOME
     // Shell Extension bridge — independent from the connection the daemon
@@ -103,19 +154,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // call time rather than blocking daemon startup, so input automation
     // and future AT-SPI features can still come up independently.
     let extension_connection = zbus::Connection::session().await?;
-    // `Arc` because `dbus::Daemon` also holds a handle: `Status` reports on
-    // every subsystem, so it needs to reach the same instances the
-    // per-subsystem interfaces own — the way `PermissionGate` was already
-    // shared across all three.
-    let window_manager = Arc::new(
-        windows::WindowManager::connect_to(
-            extension_connection,
-            &config.extension_bus_name,
-            wgaf_common::EXTENSION_OBJECT_PATH,
-            wgaf_common::EXTENSION_INTERFACE_NAME,
-        )
-        .await?,
-    );
+    let window_manager = Arc::new(windows::WindowManager::connect_to(
+        extension_connection,
+        &config.extension_bus_name,
+        wgaf_common::EXTENSION_OBJECT_PATH,
+        wgaf_common::EXTENSION_INTERFACE_NAME,
+    )
+    .await?);
 
     // `InputBackend::new` does not touch `/dev/uinput` — like
     // `WindowManager::connect_to` above, the actual resource (the virtual
@@ -140,12 +185,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             wgaf_common::OBJECT_PATH,
             dbus::Daemon::new(
                 config.bus_name.clone(),
-                // Both are *resolved* locations that need not exist. `Status`
-                // reports the path either way, with a separate presence flag:
-                // the path of a file nobody wrote is exactly what someone
-                // asking "where does config go?" needs, while reporting it
-                // without the flag would imply a config is in effect when
-                // none is.
+                // Both of these are *resolved* locations that need not exist
+                // (a missing file means "use defaults", not an error — see
+                // `Config::load`/`PolicyMap::load`). `Status` reports the
+                // path either way, with a separate presence flag: the path of
+                // a file nobody wrote is exactly what someone asking "where
+                // does config go?" needs, while reporting it *without* the
+                // flag would imply a config is in effect when none is.
                 config_path.clone(),
                 permissions_path.clone(),
                 Arc::clone(&window_manager),
