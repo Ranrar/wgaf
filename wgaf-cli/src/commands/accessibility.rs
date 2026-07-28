@@ -8,22 +8,7 @@
 use wgaf_common::{AppRecord, ElementRecord, ElementRef, TreeNode};
 use zbus::Connection;
 
-use super::describe_dbus_error;
-
-async fn connect() -> zbus::Result<Connection> {
-    Connection::session().await
-}
-
-/// Turns a `zbus::Error` into a boxed error, substituting the daemon's named
-/// `org.wgaf.Accessibility1` error (bus-unavailable / app-not-found /
-/// element-not-found / action-not-supported) for a short human-readable
-/// message where recognized.
-fn map_err(err: zbus::Error) -> Box<dyn std::error::Error> {
-    match describe_dbus_error(&err) {
-        Some(msg) => msg.into(),
-        None => Box::new(err),
-    }
-}
+use super::{connect, map_err};
 
 async fn call<R, A>(
     connection: &Connection,

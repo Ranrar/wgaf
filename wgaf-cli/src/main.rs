@@ -249,7 +249,20 @@ struct WindowId {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    // Errors are printed here rather than returned from `main`, because
+    // Rust's `Termination` impl for `Result` formats the error with `Debug`,
+    // not `Display` — which wrapped every message in quotes (`Error: "unknown
+    // key ..."`) and would print the raw struct for any error type that isn't
+    // a plain string. `commands::describe_dbus_error` works hard to produce a
+    // readable sentence; handing it to `Debug` undid that.
+    if let Err(err) = run().await {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let json = cli.json;
     // ADDED: `--bus-name` defaults to the daemon's own default rather than

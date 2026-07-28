@@ -6,23 +6,8 @@
 
 use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
 use wgaf_common::{WindowRecord, WorkspaceRecord};
-use zbus::Connection;
 
-use super::describe_dbus_error;
-
-async fn connect() -> zbus::Result<Connection> {
-    Connection::session().await
-}
-
-/// Turns a `zbus::Error` into a boxed error, substituting the daemon's named
-/// `org.wgaf.Windows1` error (window-not-found / extension-unavailable) for
-/// a short human-readable message where recognized.
-fn map_err(err: zbus::Error) -> Box<dyn std::error::Error> {
-    match describe_dbus_error(&err) {
-        Some(msg) => msg.into(),
-        None => Box::new(err),
-    }
-}
+use super::{connect, map_err};
 
 pub async fn list(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;

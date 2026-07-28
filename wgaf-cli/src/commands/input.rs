@@ -9,23 +9,8 @@
 //! `--json` therefore just wraps a `{"ok": true, "message": ...}` status,
 //! emitted by the shared `crate::output::print_ok`.
 
-use zbus::Connection;
 
-use super::describe_dbus_error;
-
-async fn connect() -> zbus::Result<Connection> {
-    Connection::session().await
-}
-
-/// Turns a `zbus::Error` into a boxed error, substituting the daemon's named
-/// `org.wgaf.Input1` error (device-unavailable / unknown-key / invalid-button)
-/// for a short human-readable message where recognized.
-fn map_err(err: zbus::Error) -> Box<dyn std::error::Error> {
-    match describe_dbus_error(&err) {
-        Some(msg) => msg.into(),
-        None => Box::new(err),
-    }
-}
+use super::{connect, map_err};
 
 pub async fn type_text(
     bus_name: &str,
