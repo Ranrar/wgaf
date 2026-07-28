@@ -142,6 +142,33 @@ impl InputBackend {
         Ok(Arc::clone(device))
     }
 
+    /// Reports whether `/dev/uinput` is usable right now, **without**
+    /// creating the device — see [`device::probe_access`]. Used by
+    /// `org.wgaf.Daemon1.Status`.
+    ///
+    /// Deliberately not routed through [`Self::device`]: that would populate
+    /// the `OnceCell` and register a real kernel device, turning a read-only
+    /// status query into an action with visible system-wide effects.
+    pub async fn probe_device_access(&self) -> Result<(), InputError> {
+        tokio::task::spawn_blocking(device::probe_access)
+            .await
+            .expect("uinput probe task panicked")
+    }
+
+    /// Whether the virtual device has actually been created this run.
+    ///
+    /// An *activity* signal, not a health one — `false` just means nothing
+    /// has synthesized input yet. Reads the `OnceCell` without initializing
+    /// it, so calling this never creates the device.
+    pub fn device_created(&self) -> bool {
+        self.device.initialized()
+    }
+
+    /// The name this backend's virtual device reports to the kernel.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
     pub async fn type_text(&self, text: &str) -> Result<(), InputError> {
         if text.chars().count() > MAX_TYPE_TEXT_LEN {
             return Err(InputError::TextTooLong {

@@ -248,6 +248,12 @@ place — `make uninstall` never touches those.
 
 ## Troubleshooting
 
+**Start with `wgaf status`.** It checks the GNOME Shell extension bridge,
+`/dev/uinput` access, and the accessibility bus in one go, and prints what to
+fix for any that aren't working — usually faster than guessing which of the
+sections below applies. It exits non-zero if anything is unavailable, and
+`wgaf status --json` is the most useful thing to attach to a bug report.
+
 **"GNOME Shell Extension bridge unavailable"** even though the extension is
 enabled — check for a duplicate `wgaf-daemon` process holding the D-Bus
 name. A stale instance wins the name race and makes a freshly started one

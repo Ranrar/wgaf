@@ -119,6 +119,25 @@ impl PolicyMap {
             .unwrap_or(PolicyValue::Allow)
     }
 
+    /// Every capability whose configured value is not the `Allow` default,
+    /// sorted by capability name so the output is stable between calls.
+    ///
+    /// Exists for `org.wgaf.Daemon1.Status`, which reports what the daemon is
+    /// actually enforcing. Returning only the non-default entries keeps the
+    /// report short and makes the common case unmistakable: an empty list
+    /// means nothing is restricted. Listing all 13 capabilities with mostly
+    /// `Allow` would bury the one or two that matter.
+    pub fn restrictions(&self) -> Vec<(Capability, PolicyValue)> {
+        let mut restricted: Vec<(Capability, PolicyValue)> = self
+            .capabilities
+            .iter()
+            .filter(|(_, value)| **value != PolicyValue::Allow)
+            .map(|(capability, value)| (*capability, *value))
+            .collect();
+        restricted.sort_by_key(|(capability, _)| capability.as_str());
+        restricted
+    }
+
     /// Loads the policy map from `path` if given and it exists. **A missing
     /// path (or no path given at all) is not an error** — it returns
     /// [`PolicyMap::default`], an empty map under which every capability

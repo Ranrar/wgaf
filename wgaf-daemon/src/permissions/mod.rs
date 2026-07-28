@@ -124,6 +124,32 @@ impl PermissionGate {
         }
     }
 
+    /// Capabilities restricted away from the `Allow` default, for
+    /// `org.wgaf.Daemon1.Status` — see [`PolicyMap::restrictions`].
+    ///
+    /// Surfacing this closes a real gap in shipped behaviour: until now a
+    /// user whose call was refused by `permissions.toml` had no way to see
+    /// *which* file that came from or *what else* was restricted, since the
+    /// path may be an XDG default they never chose explicitly.
+    pub fn restrictions(&self) -> Vec<(Capability, PolicyValue)> {
+        self.policy.restrictions()
+    }
+
+    /// Interactive `Prompt` decisions resolved so far this run, sorted by
+    /// capability name. In-memory only and lost on restart, which is itself
+    /// worth being able to see.
+    pub fn prompt_decisions(&self) -> Vec<(Capability, bool)> {
+        let cache = self
+            .prompt_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut decisions: Vec<(Capability, bool)> =
+            cache.iter().map(|(cap, allowed)| (*cap, *allowed)).collect();
+        drop(cache);
+        decisions.sort_by_key(|(capability, _)| capability.as_str());
+        decisions
+    }
+
     /// Checks whether `capability` is currently permitted for the caller
     /// identified by `header`, on `connection` (the same connection the
     /// calling D-Bus method arrived on — used both to resolve the caller's

@@ -59,12 +59,12 @@ impl From<PermissionError> for InputApiError {
 }
 
 pub struct InputApi {
-    backend: InputBackend,
+    backend: Arc<InputBackend>,
     permissions: Arc<PermissionGate>,
 }
 
 impl InputApi {
-    pub fn new(backend: InputBackend, permissions: Arc<PermissionGate>) -> Self {
+    pub fn new(backend: Arc<InputBackend>, permissions: Arc<PermissionGate>) -> Self {
         Self {
             backend,
             permissions,

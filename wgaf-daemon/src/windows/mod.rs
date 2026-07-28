@@ -181,6 +181,30 @@ impl WindowManager {
         }
     }
 
+    /// Freshly checks whether the extension bridge is reachable, for
+    /// `org.wgaf.Daemon1.Status`.
+    ///
+    /// Deliberately bypasses [`Self::ensure_extension_available`]'s
+    /// `verified` cache. That cache stores success permanently — correct for
+    /// method calls, where re-introspecting on every request would be waste,
+    /// but wrong for a status query: once the extension had been used
+    /// successfully, status would keep reporting "available" forever, even
+    /// after the user disabled the extension. Reporting stale health is worse
+    /// than not reporting it.
+    ///
+    /// Populating the cache on a *successful* fresh check would be harmless,
+    /// but this does not bother: the check is two D-Bus round trips, and
+    /// keeping the probe free of side effects entirely is easier to keep true
+    /// than a rule about which side effects are acceptable.
+    pub async fn probe_available(&self) -> Result<(), WindowsError> {
+        self.check_extension_version().await
+    }
+
+    /// The bus name this manager expects the extension to own.
+    pub fn extension_bus_name(&self) -> &str {
+        &self.extension_bus_name
+    }
+
     pub async fn list_windows(&self) -> Result<Vec<WindowRecord>, WindowsError> {
         self.ensure_extension_available().await?;
         let dicts = self.proxy.list_windows().await?;

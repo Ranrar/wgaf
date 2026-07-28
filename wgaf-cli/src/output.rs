@@ -58,6 +58,102 @@ pub fn print_ok_response(json: bool, response: &str) {
     }
 }
 
+/// Marker prefixing each subsystem line in `wgaf status`.
+///
+/// Plain ASCII rather than coloured output or Unicode symbols: this is the
+/// command people paste into bug reports and pipe through `grep`, and it must
+/// survive both intact.
+fn marker(ok: bool) -> &'static str {
+    if ok { "[ ok ]" } else { "[fail]" }
+}
+
+/// Renders [`wgaf_common::DaemonStatus`] for a human.
+///
+/// Ordered so the parts most likely to be *wrong* come first and carry the
+/// daemon's own guidance inline — a new user running this is usually asking
+/// "why doesn't it work?", and the answer should be on screen without
+/// needing a second command. The daemon's `_detail` text is printed verbatim;
+/// it is written to be actionable (which udev rule, which extension to
+/// enable) and the CLI has nothing to add to it.
+///
+/// Only the `--json` shape is a stable interface. This layout may change.
+pub fn print_status(s: &wgaf_common::DaemonStatus) {
+    println!(
+        "wgaf {} — pid {}, up {}s, on {}",
+        s.daemon_version, s.daemon_pid, s.daemon_uptime_seconds, s.daemon_bus_name
+    );
+    if !s.config_path.is_empty() {
+        // An absent file is normal, not a fault — but naming the location is
+        // exactly what someone asking "where does config go?" needs, so the
+        // path is always shown and its presence spelled out.
+        let note = if s.config_present {
+            ""
+        } else {
+            " (not present — built-in defaults apply)"
+        };
+        println!("config: {}{note}", s.config_path);
+    }
+    println!();
+
+    println!(
+        "{} GNOME Shell Extension  ({})",
+        marker(s.extension_available),
+        s.extension_bus_name
+    );
+    if !s.extension_detail.is_empty() {
+        println!("       {}", s.extension_detail);
+    }
+
+    let device = if s.input_device_created {
+        format!("{}, device active", s.input_device_name)
+    } else {
+        format!("{}, no device created yet", s.input_device_name)
+    };
+    println!("{} Input (/dev/uinput)    ({device})", marker(s.uinput_accessible));
+    if !s.uinput_detail.is_empty() {
+        println!("       {}", s.uinput_detail);
+    }
+
+    let a11y = if s.accessibility_connected {
+        "connected"
+    } else {
+        "not connected yet"
+    };
+    println!(
+        "{} Accessibility (AT-SPI) ({a11y})",
+        marker(s.accessibility_available)
+    );
+    if !s.accessibility_detail.is_empty() {
+        println!("       {}", s.accessibility_detail);
+    }
+
+    println!();
+    if s.permissions_path.is_empty() {
+        println!("permissions: no policy file — every capability allowed");
+    } else if !s.permissions_present {
+        println!(
+            "permissions: {} (not present — every capability allowed)",
+            s.permissions_path
+        );
+        println!("       create that file to restrict one; see `man wgaf-status`");
+    } else {
+        println!("permissions: {}", s.permissions_path);
+        if s.permissions_restricted.is_empty() {
+            println!("       no capability restricted — every capability allowed");
+        } else {
+            for entry in &s.permissions_restricted {
+                println!("       {entry}");
+            }
+        }
+    }
+    if !s.permissions_prompt_decisions.is_empty() {
+        println!("prompted this run (not persisted):");
+        for entry in &s.permissions_prompt_decisions {
+            println!("       {entry}");
+        }
+    }
+}
+
 /// Pretty-prints `value` as JSON — the `--json` arm of every command that
 /// returns real records rather than a bare success.
 ///

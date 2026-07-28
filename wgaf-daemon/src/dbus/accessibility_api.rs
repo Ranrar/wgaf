@@ -65,12 +65,12 @@ impl From<PermissionError> for AccessibilityApiError {
 }
 
 pub struct AccessibilityApi {
-    backend: AccessibilityBackend,
+    backend: Arc<AccessibilityBackend>,
     permissions: Arc<PermissionGate>,
 }
 
 impl AccessibilityApi {
-    pub fn new(backend: AccessibilityBackend, permissions: Arc<PermissionGate>) -> Self {
+    pub fn new(backend: Arc<AccessibilityBackend>, permissions: Arc<PermissionGate>) -> Self {
         Self {
             backend,
             permissions,

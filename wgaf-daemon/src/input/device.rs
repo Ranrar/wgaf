@@ -85,6 +85,25 @@ pub(crate) struct UinputDevice {
     file: File,
 }
 
+/// Reports whether `/dev/uinput` is currently openable for writing, without
+/// creating anything.
+///
+/// This is the health probe behind `org.wgaf.Daemon1.Status`, and the
+/// distinction from [`UinputDevice::create`] is the whole point: it opens the
+/// control device and immediately drops the handle, issuing **no ioctls at
+/// all**. No `UI_DEV_CREATE` means no virtual device appears in
+/// `/proc/bus/input/devices`, so asking "could input synthesis work?" never
+/// becomes "input synthesis has now started". A status query that registers a
+/// kernel device as a side effect would also perturb
+/// `wgaf-daemon/tests/input.rs`, which asserts on exactly that file.
+pub(crate) fn probe_access() -> Result<(), InputError> {
+    OpenOptions::new()
+        .write(true)
+        .open(UINPUT_PATH)
+        .map(|_| ())
+        .map_err(|e| device_unavailable(UINPUT_PATH, &e))
+}
+
 impl UinputDevice {
     /// Opens `/dev/uinput`, registers every key/button/axis in
     /// [`crate::input::codes::ALL_KEYS`] plus the relative axes this daemon

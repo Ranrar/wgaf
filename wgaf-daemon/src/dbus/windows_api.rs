@@ -60,12 +60,12 @@ impl From<PermissionError> for WindowsApiError {
 }
 
 pub struct WindowsApi {
-    manager: WindowManager,
+    manager: Arc<WindowManager>,
     permissions: Arc<PermissionGate>,
 }
 
 impl WindowsApi {
-    pub fn new(manager: WindowManager, permissions: Arc<PermissionGate>) -> Self {
+    pub fn new(manager: Arc<WindowManager>, permissions: Arc<PermissionGate>) -> Self {
         Self {
             manager,
             permissions,

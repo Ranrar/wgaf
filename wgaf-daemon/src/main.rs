@@ -103,13 +103,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // call time rather than blocking daemon startup, so input automation
     // and future AT-SPI features can still come up independently.
     let extension_connection = zbus::Connection::session().await?;
-    let window_manager = windows::WindowManager::connect_to(
-        extension_connection,
-        &config.extension_bus_name,
-        wgaf_common::EXTENSION_OBJECT_PATH,
-        wgaf_common::EXTENSION_INTERFACE_NAME,
-    )
-    .await?;
+    // `Arc` because `dbus::Daemon` also holds a handle: `Status` reports on
+    // every subsystem, so it needs to reach the same instances the
+    // per-subsystem interfaces own — the way `PermissionGate` was already
+    // shared across all three.
+    let window_manager = Arc::new(
+        windows::WindowManager::connect_to(
+            extension_connection,
+            &config.extension_bus_name,
+            wgaf_common::EXTENSION_OBJECT_PATH,
+            wgaf_common::EXTENSION_INTERFACE_NAME,
+        )
+        .await?,
+    );
 
     // `InputBackend::new` does not touch `/dev/uinput` — like
     // `WindowManager::connect_to` above, the actual resource (the virtual
@@ -117,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // permissions problem here never prevents the daemon from starting or
     // from serving `org.wgaf.Windows1`. See `input::InputBackend`'s doc
     // comments.
-    let input_backend = input::InputBackend::new(config.input_device_name.clone());
+    let input_backend = Arc::new(input::InputBackend::new(config.input_device_name.clone()));
 
     // `AccessibilityBackend::new` does not touch the AT-SPI bus — like
     // `WindowManager::connect_to`/`InputBackend::new` above, the actual
@@ -126,11 +132,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // for this session never prevents the daemon from starting or from
     // serving the other interfaces. See `accessibility::AccessibilityBackend`'s
     // doc comments.
-    let accessibility_backend = accessibility::AccessibilityBackend::new();
+    let accessibility_backend = Arc::new(accessibility::AccessibilityBackend::new());
 
     let _connection = zbus::connection::Builder::session()?
         .name(config.bus_name.as_str())?
-        .serve_at(wgaf_common::OBJECT_PATH, dbus::Daemon)?
+        .serve_at(
+            wgaf_common::OBJECT_PATH,
+            dbus::Daemon::new(
+                config.bus_name.clone(),
+                // Both are *resolved* locations that need not exist. `Status`
+                // reports the path either way, with a separate presence flag:
+                // the path of a file nobody wrote is exactly what someone
+                // asking "where does config go?" needs, while reporting it
+                // without the flag would imply a config is in effect when
+                // none is.
+                config_path.clone(),
+                permissions_path.clone(),
+                Arc::clone(&window_manager),
+                Arc::clone(&input_backend),
+                Arc::clone(&accessibility_backend),
+                Arc::clone(&permission_gate),
+            ),
+        )?
         .serve_at(
             wgaf_common::WINDOWS_OBJECT_PATH,
             dbus::windows_api::WindowsApi::new(window_manager, Arc::clone(&permission_gate)),

@@ -10,6 +10,17 @@ Make sure `wgaf-daemon` is running (`wgaf-daemon &`, or installed as a
 systemd service — see the README). Window commands additionally need the
 GNOME Shell extension installed and enabled, also covered there.
 
+To check all of that at once, run:
+
+```sh
+wgaf status
+```
+
+It reports whether the extension bridge, `/dev/uinput`, and the accessibility
+bus are each usable, and prints what to do about any that aren't. It also
+shows which capabilities your `permissions.toml` restricts, if any. Running it
+changes nothing.
+
 ## Working with windows
 
 See what's open, and note the id of the one you want:

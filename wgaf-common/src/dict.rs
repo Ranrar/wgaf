@@ -19,8 +19,93 @@
 //! `extension/dbusInterface.js`'s `windowRecordToVariantDict`/
 //! `workspaceRecordToVariantDict` exactly.
 
-use crate::{WindowRecord, WorkspaceRecord};
+use crate::{DaemonStatus, WindowRecord, WorkspaceRecord};
 use zbus::zvariant::{DeserializeDict, SerializeDict, Type};
+
+/// `a{sv}` wire form of [`DaemonStatus`], for `org.wgaf.Daemon1.Status`.
+///
+/// Field names must stay in step with `DaemonStatus`'s — a rename on either
+/// side silently changes the D-Bus contract, which is why
+/// `daemon_status_dict_field_names_match_the_dto` asserts them against each
+/// other rather than trusting review.
+#[derive(Debug, Clone, SerializeDict, DeserializeDict, Type)]
+#[zvariant(signature = "a{sv}")]
+pub struct DaemonStatusDict {
+    daemon_version: String,
+    daemon_bus_name: String,
+    daemon_pid: u32,
+    daemon_uptime_seconds: u64,
+    config_path: String,
+    config_present: bool,
+    extension_available: bool,
+    extension_bus_name: String,
+    extension_detail: String,
+    uinput_accessible: bool,
+    uinput_detail: String,
+    input_device_name: String,
+    input_device_created: bool,
+    accessibility_available: bool,
+    accessibility_detail: String,
+    accessibility_connected: bool,
+    permissions_path: String,
+    permissions_present: bool,
+    permissions_restricted: Vec<String>,
+    permissions_prompt_decisions: Vec<String>,
+}
+
+impl From<DaemonStatus> for DaemonStatusDict {
+    fn from(s: DaemonStatus) -> Self {
+        DaemonStatusDict {
+            daemon_version: s.daemon_version,
+            daemon_bus_name: s.daemon_bus_name,
+            daemon_pid: s.daemon_pid,
+            daemon_uptime_seconds: s.daemon_uptime_seconds,
+            config_path: s.config_path,
+            config_present: s.config_present,
+            extension_available: s.extension_available,
+            extension_bus_name: s.extension_bus_name,
+            extension_detail: s.extension_detail,
+            uinput_accessible: s.uinput_accessible,
+            uinput_detail: s.uinput_detail,
+            input_device_name: s.input_device_name,
+            input_device_created: s.input_device_created,
+            accessibility_available: s.accessibility_available,
+            accessibility_detail: s.accessibility_detail,
+            accessibility_connected: s.accessibility_connected,
+            permissions_path: s.permissions_path,
+            permissions_present: s.permissions_present,
+            permissions_restricted: s.permissions_restricted,
+            permissions_prompt_decisions: s.permissions_prompt_decisions,
+        }
+    }
+}
+
+impl From<DaemonStatusDict> for DaemonStatus {
+    fn from(d: DaemonStatusDict) -> Self {
+        DaemonStatus {
+            daemon_version: d.daemon_version,
+            daemon_bus_name: d.daemon_bus_name,
+            daemon_pid: d.daemon_pid,
+            daemon_uptime_seconds: d.daemon_uptime_seconds,
+            config_path: d.config_path,
+            config_present: d.config_present,
+            extension_available: d.extension_available,
+            extension_bus_name: d.extension_bus_name,
+            extension_detail: d.extension_detail,
+            uinput_accessible: d.uinput_accessible,
+            uinput_detail: d.uinput_detail,
+            input_device_name: d.input_device_name,
+            input_device_created: d.input_device_created,
+            accessibility_available: d.accessibility_available,
+            accessibility_detail: d.accessibility_detail,
+            accessibility_connected: d.accessibility_connected,
+            permissions_path: d.permissions_path,
+            permissions_present: d.permissions_present,
+            permissions_restricted: d.permissions_restricted,
+            permissions_prompt_decisions: d.permissions_prompt_decisions,
+        }
+    }
+}
 
 #[derive(Debug, Clone, SerializeDict, DeserializeDict, Type)]
 #[zvariant(signature = "a{sv}")]
@@ -102,6 +187,95 @@ impl From<WorkspaceRecord> for WorkspaceRecordDict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DaemonStatusDict` and `DaemonStatus` must carry the same field names:
+    /// the dict defines the `org.wgaf.Daemon1.Status` D-Bus contract, the DTO
+    /// defines `wgaf status --json`'s output, and a rename on one side alone
+    /// would silently break whichever consumer reads the other. Compares the
+    /// two encodings rather than restating a hand-written list, so adding a
+    /// field to one and forgetting the other fails here.
+    #[test]
+    fn daemon_status_dict_field_names_match_the_dto() {
+        let status = crate::DaemonStatus {
+            daemon_version: "0.7.0".to_string(),
+            daemon_bus_name: crate::BUS_NAME.to_string(),
+            daemon_pid: 1234,
+            daemon_uptime_seconds: 42,
+            config_path: "/tmp/config.toml".to_string(),
+            config_present: true,
+            extension_available: false,
+            extension_bus_name: crate::EXTENSION_BUS_NAME.to_string(),
+            extension_detail: "not enabled".to_string(),
+            uinput_accessible: true,
+            uinput_detail: String::new(),
+            input_device_name: "wgaf virtual input device".to_string(),
+            input_device_created: false,
+            accessibility_available: true,
+            accessibility_detail: String::new(),
+            accessibility_connected: false,
+            permissions_path: "/tmp/permissions.toml".to_string(),
+            permissions_present: false,
+            permissions_restricted: vec!["TypeText=Deny".to_string()],
+            permissions_prompt_decisions: vec![],
+        };
+
+        let dto_keys: Vec<String> = serde_json::to_value(&status)
+            .expect("serialize DTO")
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect();
+
+        // Round-tripping through the dict and back must preserve every value,
+        // which can only hold if both sides name their fields identically.
+        let dict: DaemonStatusDict = status.clone().into();
+        let back: crate::DaemonStatus = dict.into();
+        assert_eq!(status, back, "dict round-trip lost or reordered a field");
+
+        for key in [
+            "daemon_version",
+            "daemon_bus_name",
+            "daemon_pid",
+            "daemon_uptime_seconds",
+            "config_path",
+            "config_present",
+            "extension_available",
+            "extension_bus_name",
+            "extension_detail",
+            "uinput_accessible",
+            "uinput_detail",
+            "input_device_name",
+            "input_device_created",
+            "accessibility_available",
+            "accessibility_detail",
+            "accessibility_connected",
+            "permissions_path",
+            "permissions_present",
+            "permissions_restricted",
+            "permissions_prompt_decisions",
+        ] {
+            assert!(
+                dto_keys.iter().any(|k| k == key),
+                "DaemonStatus lost the `{key}` field — this is a breaking \
+                 change to `wgaf status --json`"
+            );
+        }
+        assert_eq!(
+            dto_keys.len(),
+            20,
+            "a field was added to DaemonStatus without being added to the \
+             assertion above (and probably without being added to \
+             DaemonStatusDict either)"
+        );
+    }
+
+    /// The status payload must encode as a plain `a{sv}`, the signature
+    /// `org.wgaf.Daemon1.Status` advertises.
+    #[test]
+    fn daemon_status_dict_encodes_as_a_dbus_dict() {
+        assert_eq!(DaemonStatusDict::SIGNATURE.to_string(), "a{sv}");
+    }
     use zbus::zvariant::{Endian, serialized::Context, to_bytes};
 
     fn sample_dict() -> WindowRecordDict {

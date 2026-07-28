@@ -34,6 +34,61 @@ wgaf ping
 
 ---
 
+## `wgaf status`
+
+Reports whether each subsystem is set up correctly, and what permission policy
+the daemon is enforcing. Where `wgaf ping` only proves the daemon answers,
+`status` checks the three things that actually have to be configured — the
+GNOME Shell Extension bridge, `/dev/uinput` access, and the AT-SPI
+accessibility bus — and prints the daemon's own guidance for whichever is not
+working.
+
+Start here when something isn't behaving, and include its output in bug
+reports.
+
+```sh
+wgaf status
+```
+
+```text
+wgaf 0.7.0 — pid 34804, up 1s, on org.wgaf.Daemon
+config: /home/you/.config/wgaf/config.toml
+
+[fail] GNOME Shell Extension  (org.gnome.Shell.Extensions.Wgaf)
+       GNOME Shell Extension bridge unavailable: no owner for the extension's
+       D-Bus name — the wgaf GNOME Shell Extension is not installed or not
+       enabled ...
+[ ok ] Input (/dev/uinput)    (wgaf virtual input device, no device created yet)
+[ ok ] Accessibility (AT-SPI) (not connected yet)
+
+permissions: /home/you/.config/wgaf/permissions.toml
+       no capability restricted — every capability allowed
+```
+
+**Exit code** is `0` when every subsystem is available and `1` when any is
+unavailable, so it can gate a setup script:
+
+```sh
+if wgaf status >/dev/null; then echo "ready"; fi
+```
+
+Notes on reading the output:
+
+- *"no device created yet"* and *"not connected yet"* are **not** problems.
+  They report whether the daemon currently holds a virtual input device or an
+  open accessibility connection, which it creates lazily on first use. They are
+  activity indicators, not health ones — the `[ ok ]`/`[fail]` marker is what
+  tells you whether the subsystem works.
+- Running `wgaf status` never creates the virtual input device, opens a cached
+  connection, or changes any state. It only reports.
+- Config and permissions paths are shown whether or not the files exist, with
+  absent ones marked — so this doubles as the answer to "where do those files
+  go?".
+- Only the `--json` output is a stable, parseable interface; the human-readable
+  layout may change between versions.
+
+---
+
 ## `wgaf window ...`
 
 Window management, backed by the daemon's `org.wgaf.Windows1` interface (and,

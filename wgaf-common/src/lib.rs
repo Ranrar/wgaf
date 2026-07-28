@@ -206,6 +206,96 @@ pub const ACCESSIBILITY_ERROR_PERMISSION_DENIED: &str =
 // same data, even though the wire encoding between the two hops is handled
 // by wgaf-daemon's private dict types, not these structs directly.
 
+/// The daemon's self-report: which subsystems are usable right now, and what
+/// policy it is enforcing. Returned by `org.wgaf.Daemon1.Status` and rendered
+/// by `wgaf status`.
+///
+/// Two design rules this type exists to serve, both of which are easy to
+/// violate later:
+///
+/// 1. **Reporting must not change anything.** Every field here is answerable
+///    without creating the `uinput` device, opening a cached AT-SPI
+///    connection, or populating any availability cache. A status query that
+///    initializes the thing it reports on is not a status query.
+/// 2. **Nothing here is a secret.** The interface is deliberately ungated —
+///    a transparency mechanism that policy can switch off defeats its own
+///    purpose — so it must never carry anything a caller could not already
+///    learn by attempting the operations it describes. Paths and policy are
+///    the user's own configuration; do not add tokens, keys, or window
+///    titles.
+///
+/// The layout is flat with subsystem-prefixed keys rather than nested
+/// sub-objects, matching [`WindowRecord`]/[`WorkspaceRecord`]'s existing
+/// shape and keeping the `a{sv}` encoding (see [`crate::dict`]) simple. The
+/// `_detail` fields carry the daemon's own actionable error text when the
+/// corresponding `_available` flag is false, and are empty otherwise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    /// Daemon crate version (`CARGO_PKG_VERSION`).
+    pub daemon_version: String,
+    /// Well-known bus name this daemon actually owns.
+    pub daemon_bus_name: String,
+    /// The daemon's process id — the same identity its audit log records.
+    pub daemon_pid: u32,
+    /// Seconds since the daemon finished starting up.
+    pub daemon_uptime_seconds: u64,
+    /// The config file location in effect — the explicit `--config` path, or
+    /// the resolved XDG default. Always populated, **whether or not the file
+    /// exists**: when it does not, this is where to create one, which is the
+    /// single most useful thing to tell someone asking "where does config
+    /// go?". Pair with [`Self::config_present`] to tell the cases apart.
+    pub config_path: String,
+    /// Whether a file was actually read from [`Self::config_path`]. A missing
+    /// file is not an error — the built-in defaults apply — but reporting the
+    /// path without this flag would imply a config is in effect when none is.
+    pub config_present: bool,
+
+    /// Whether the GNOME Shell Extension bridge is reachable *right now*
+    /// (freshly checked, never read from the availability cache).
+    pub extension_available: bool,
+    /// Bus name the extension is expected on.
+    pub extension_bus_name: String,
+    /// On failure, the same actionable text `ExtensionUnavailable` carries.
+    pub extension_detail: String,
+
+    /// Whether `/dev/uinput` is currently openable for writing. Answered by
+    /// opening and immediately closing it, issuing no ioctls — so this never
+    /// creates a virtual device as a side effect of asking.
+    pub uinput_accessible: bool,
+    /// On failure, the udev-rule/`input`-group guidance from
+    /// `InputError::DeviceUnavailable`.
+    pub uinput_detail: String,
+    /// Name the daemon's virtual device reports to the kernel.
+    pub input_device_name: String,
+    /// Whether the daemon currently holds a live virtual input device. This
+    /// is an *activity* signal, not a health one: false simply means nothing
+    /// has synthesized input yet this run.
+    pub input_device_created: bool,
+
+    /// Whether the AT-SPI accessibility bus is reachable right now.
+    pub accessibility_available: bool,
+    /// On failure, the "accessibility may not be enabled for this session"
+    /// guidance from `AccessibilityError::BusUnavailable`.
+    pub accessibility_detail: String,
+    /// Whether the daemon currently holds an open AT-SPI connection —
+    /// again activity, not health.
+    pub accessibility_connected: bool,
+
+    /// The policy file location in effect, always populated on the same terms
+    /// as [`Self::config_path`] — including when absent, so a user wanting to
+    /// restrict a capability is told exactly where to write it.
+    pub permissions_path: String,
+    /// Whether a policy file was actually read. When false every capability
+    /// defaults to `Allow` and [`Self::permissions_restricted`] is empty.
+    pub permissions_present: bool,
+    /// Capabilities whose configured value is *not* the `Allow` default,
+    /// formatted `Capability=Value`. Empty means nothing is restricted.
+    pub permissions_restricted: Vec<String>,
+    /// Interactive `Prompt` decisions cached for this daemon run, formatted
+    /// `Capability=allowed`/`Capability=denied`. Lost on restart, by design.
+    pub permissions_prompt_decisions: Vec<String>,
+}
+
 /// A single window, as reported by the GNOME Shell Extension's
 /// `ListWindows`/`WindowCreated` and mirrored by the daemon's own
 /// `org.wgaf.Windows1.ListWindows`.

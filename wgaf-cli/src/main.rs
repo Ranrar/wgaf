@@ -27,6 +27,18 @@ enum Command {
     /// Check that the daemon is running and responding.
     Ping,
 
+    /// Report whether every subsystem is set up correctly, and what
+    /// permission policy the daemon is enforcing.
+    ///
+    /// Unlike `ping` (which only proves the daemon answers), this checks the
+    /// GNOME Shell Extension bridge, `/dev/uinput` access, and the AT-SPI
+    /// accessibility bus, and prints the daemon's own guidance for whichever
+    /// of them is not working. Start here when something is not behaving.
+    ///
+    /// Exits non-zero if any subsystem is unavailable, so it can gate a
+    /// setup script.
+    Status,
+
     /// Window management commands (list/focus/move/resize/close, plus
     /// workspace listing), backed by the daemon's `org.wgaf.Windows1`
     /// D-Bus interface.
@@ -256,13 +268,28 @@ async fn main() {
     // key ..."`) and would print the raw struct for any error type that isn't
     // a plain string. `commands::describe_dbus_error` works hard to produce a
     // readable sentence; handing it to `Debug` undid that.
-    if let Err(err) = run().await {
-        eprintln!("error: {err}");
-        std::process::exit(1);
+    match run().await {
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+        // `wgaf status` reports an unhealthy subsystem by exiting non-zero
+        // while still printing its full report, so it can gate a setup script
+        // (`if wgaf status; then ...`). That is distinct from the error case
+        // above: the command succeeded, the system it described did not.
+        Ok(Outcome::Unhealthy) => std::process::exit(1),
+        Ok(Outcome::Ok) => {}
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// Whether the command's *subject* was healthy, as opposed to whether the
+/// command itself succeeded. Only `wgaf status` can report `Unhealthy`.
+enum Outcome {
+    Ok,
+    Unhealthy,
+}
+
+async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let json = cli.json;
     // ADDED: `--bus-name` defaults to the daemon's own default rather than
@@ -277,6 +304,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Ping => commands::ping(bus_name, json).await?,
+        Command::Status => {
+            return Ok(if commands::status(bus_name, json).await? {
+                Outcome::Ok
+            } else {
+                Outcome::Unhealthy
+            });
+        }
         Command::Window { command } => match command {
             WindowCommand::List => commands::window::list(bus_name, json).await?,
             WindowCommand::Focus(WindowId { id }) => {
@@ -358,7 +392,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    Ok(())
+    Ok(Outcome::Ok)
 }
 
 #[cfg(test)]
@@ -377,6 +411,24 @@ mod tests {
         let cli = Cli::try_parse_from(["wgaf", "ping"]).expect("should parse");
         assert!(matches!(cli.command, Command::Ping));
         assert!(!cli.json);
+    }
+
+    #[test]
+    fn parses_status() {
+        let cli = Cli::try_parse_from(["wgaf", "status"]).expect("should parse");
+        assert!(matches!(cli.command, Command::Status));
+        assert!(!cli.json);
+    }
+
+    #[test]
+    fn parses_status_with_json_and_bus_name() {
+        // `status` is the command most likely to be scripted or pasted into a
+        // bug report, so both global flags have to work on it.
+        let cli = Cli::try_parse_from(["wgaf", "status", "--json", "--bus-name", "org.example.X"])
+            .expect("should parse");
+        assert!(matches!(cli.command, Command::Status));
+        assert!(cli.json);
+        assert_eq!(cli.bus_name.as_deref(), Some("org.example.X"));
     }
 
     #[test]

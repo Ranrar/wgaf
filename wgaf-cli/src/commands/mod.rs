@@ -29,6 +29,40 @@ pub async fn ping(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+/// `wgaf status` — the daemon's self-report, rendered for a human (or as
+/// JSON).
+///
+/// Returns `Ok(false)` when some subsystem is unavailable, so `main` can exit
+/// non-zero without treating it as a CLI error: an unhealthy subsystem is a
+/// successful *report*, not a failed command, and conflating the two would
+/// make `wgaf status` print its own error text instead of the daemon's
+/// actionable guidance.
+pub async fn status(bus_name: &str, json: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    let connection = connect().await?;
+    let reply = connection
+        .call_method(
+            Some(bus_name),
+            wgaf_common::OBJECT_PATH,
+            Some(wgaf_common::INTERFACE_NAME),
+            "Status",
+            &(),
+        )
+        .await
+        .map_err(map_err)?;
+    let dict: wgaf_common::dict::DaemonStatusDict = reply.body().deserialize()?;
+    let status: wgaf_common::DaemonStatus = dict.into();
+
+    let healthy =
+        status.extension_available && status.uinput_accessible && status.accessibility_available;
+
+    if json {
+        crate::output::print_json(&status)?;
+    } else {
+        crate::output::print_status(&status);
+    }
+    Ok(healthy)
+}
+
 /// Short fallback label for each of the daemon's named D-Bus errors, used
 /// **only** when a reply carries no description at all.
 ///

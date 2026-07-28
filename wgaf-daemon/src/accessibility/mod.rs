@@ -144,6 +144,26 @@ impl AccessibilityBackend {
         self.connection.get_or_try_init(connection::connect).await
     }
 
+    /// Freshly checks whether the AT-SPI bus is reachable, for
+    /// `org.wgaf.Daemon1.Status`.
+    ///
+    /// Opens its own throwaway connection rather than going through
+    /// [`Self::connection`], for the same reason `WindowManager::probe_available`
+    /// bypasses its cache: the `OnceCell` holds a successful connection for
+    /// the daemon's lifetime, so consulting it would report "available" long
+    /// after the a11y stack had gone away. The throwaway connection is
+    /// dropped immediately.
+    pub async fn probe_bus(&self) -> Result<(), AccessibilityError> {
+        connection::connect().await.map(|_| ())
+    }
+
+    /// Whether an AT-SPI connection is currently held. Activity, not health —
+    /// `false` merely means no accessibility call has been made yet this run.
+    /// Reads the `OnceCell` without initializing it.
+    pub fn is_connected(&self) -> bool {
+        self.connection.initialized()
+    }
+
     /// Enumerates every currently-registered accessible application (the AT-SPI
     /// registry's root object's children).
     pub async fn list_apps(&self) -> Result<Vec<AppRecord>, AccessibilityError> {
