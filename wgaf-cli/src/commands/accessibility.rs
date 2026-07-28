@@ -25,14 +25,6 @@ fn map_err(err: zbus::Error) -> Box<dyn std::error::Error> {
     }
 }
 
-fn print_ok(json: bool, message: &str) {
-    if json {
-        println!("{}", serde_json::json!({ "ok": true, "message": message }));
-    } else {
-        println!("{message}");
-    }
-}
-
 async fn call<R, A>(
     connection: &Connection,
     bus_name: &str,
@@ -62,7 +54,7 @@ pub async fn list_apps(bus_name: &str, json: bool) -> Result<(), Box<dyn std::er
         .map_err(map_err)?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&apps)?);
+        crate::output::print_json(&apps)?;
     } else if apps.is_empty() {
         println!("No accessible applications registered.");
     } else {
@@ -94,7 +86,7 @@ pub async fn find(
     .map_err(map_err)?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&elements)?);
+        crate::output::print_json(&elements)?;
     } else if elements.is_empty() {
         println!("No matching elements found.");
     } else {
@@ -120,7 +112,7 @@ pub async fn tree(
         .map_err(map_err)?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&nodes)?);
+        crate::output::print_json(&nodes)?;
     } else if nodes.is_empty() {
         println!("No elements found.");
     } else {
@@ -143,7 +135,7 @@ pub async fn get_element_info(
         .map_err(map_err)?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&info)?);
+        crate::output::print_json(&info)?;
     } else {
         println!("name:        {}", info.name);
         println!("role:        {}", info.role);
@@ -170,7 +162,7 @@ pub async fn click(
     )
     .await
     .map_err(map_err)?;
-    print_ok(json, &format!("invoked action on {element}"));
+    crate::output::print_ok(json, &format!("invoked action on {element}"));
     Ok(())
 }
 
@@ -184,7 +176,7 @@ pub async fn set_text(
     call::<(), _>(&connection, bus_name, "SetText", &(element.clone(), text))
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("set text on {element}"));
+    crate::output::print_ok(json, &format!("set text on {element}"));
     Ok(())
 }
 
@@ -197,6 +189,6 @@ pub async fn focus(
     call::<(), _>(&connection, bus_name, "FocusElement", &(element.clone(),))
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("focused {element}"));
+    crate::output::print_ok(json, &format!("focused {element}"));
     Ok(())
 }

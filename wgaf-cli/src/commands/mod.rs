@@ -20,14 +20,7 @@ pub async fn ping(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::
     // `--help` (including this one), but this command silently ignored it
     // and always printed plain text — found during the Phase 7 --help
     // consistency pass. Every other command family already honors it.
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({ "ok": true, "response": response })
-        );
-    } else {
-        println!("{response}");
-    }
+    crate::output::print_ok_response(json, &response);
     Ok(())
 }
 

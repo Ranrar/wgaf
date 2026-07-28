@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `wgaf-cli`: added `wgaf-cli/src/output.rs` as the single place defining what `--json` emits. `print_ok` was previously duplicated verbatim in `commands/window.rs`, `commands/input.rs`, and `commands/accessibility.rs`, with `commands::ping` carrying a fourth inline variant, and the pretty-printed record arm (`serde_json::to_string_pretty`) repeated at six call sites. The JSON these produce is a machine-readable interface, so it needs one definition that changes deliberately rather than four that can drift. Pure refactor — every output shape is byte-identical, including `ping`'s divergent `{"ok": true, "response": ...}` key, which is preserved as-is and documented as a wart to resolve when the JSON contract is next versioned deliberately.
+
 ## [0.7.0] - 2026-07-28
 
 ### Added

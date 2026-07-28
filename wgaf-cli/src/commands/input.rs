@@ -7,7 +7,7 @@
 //! Every one of these calls is fire-and-forget from the CLI's perspective
 //! (the daemon's `org.wgaf.Input1` methods all return `()` on success) —
 //! `--json` therefore just wraps a `{"ok": true, "message": ...}` status,
-//! same shape `commands::window::print_ok` already uses.
+//! emitted by the shared `crate::output::print_ok`.
 
 use zbus::Connection;
 
@@ -27,14 +27,6 @@ fn map_err(err: zbus::Error) -> Box<dyn std::error::Error> {
     }
 }
 
-fn print_ok(json: bool, message: &str) {
-    if json {
-        println!("{}", serde_json::json!({ "ok": true, "message": message }));
-    } else {
-        println!("{message}");
-    }
-}
-
 pub async fn type_text(
     bus_name: &str,
     text: &str,
@@ -51,7 +43,7 @@ pub async fn type_text(
         )
         .await
         .map_err(map_err)?;
-    print_ok(
+    crate::output::print_ok(
         json,
         &format!("typed {} character(s)", text.chars().count()),
     );
@@ -74,7 +66,7 @@ pub async fn key_press(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("pressed key `{key}`"));
+    crate::output::print_ok(json, &format!("pressed key `{key}`"));
     Ok(())
 }
 
@@ -94,7 +86,7 @@ pub async fn key_release(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("released key `{key}`"));
+    crate::output::print_ok(json, &format!("released key `{key}`"));
     Ok(())
 }
 
@@ -115,7 +107,7 @@ pub async fn mouse_move(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("moved mouse by ({dx}, {dy})"));
+    crate::output::print_ok(json, &format!("moved mouse by ({dx}, {dy})"));
     Ok(())
 }
 
@@ -135,7 +127,7 @@ pub async fn mouse_click(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("clicked {button} mouse button"));
+    crate::output::print_ok(json, &format!("clicked {button} mouse button"));
     Ok(())
 }
 
@@ -156,6 +148,6 @@ pub async fn mouse_scroll(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("scrolled by ({dx}, {dy})"));
+    crate::output::print_ok(json, &format!("scrolled by ({dx}, {dy})"));
     Ok(())
 }

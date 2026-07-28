@@ -24,14 +24,6 @@ fn map_err(err: zbus::Error) -> Box<dyn std::error::Error> {
     }
 }
 
-fn print_ok(json: bool, message: &str) {
-    if json {
-        println!("{}", serde_json::json!({ "ok": true, "message": message }));
-    } else {
-        println!("{message}");
-    }
-}
-
 pub async fn list(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let connection = connect().await?;
     let reply = connection
@@ -48,7 +40,7 @@ pub async fn list(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::
     let windows: Vec<WindowRecord> = dicts.into_iter().map(Into::into).collect();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&windows)?);
+        crate::output::print_json(&windows)?;
     } else if windows.is_empty() {
         println!("No windows.");
     } else {
@@ -80,7 +72,7 @@ pub async fn focus(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn st
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("focused window {id}"));
+    crate::output::print_ok(json, &format!("focused window {id}"));
     Ok(())
 }
 
@@ -102,7 +94,7 @@ pub async fn move_window(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("moved window {id} to ({x}, {y})"));
+    crate::output::print_ok(json, &format!("moved window {id} to ({x}, {y})"));
     Ok(())
 }
 
@@ -124,7 +116,7 @@ pub async fn resize(
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("resized window {id} to {width}x{height}"));
+    crate::output::print_ok(json, &format!("resized window {id} to {width}x{height}"));
     Ok(())
 }
 
@@ -140,7 +132,7 @@ pub async fn close(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn st
         )
         .await
         .map_err(map_err)?;
-    print_ok(json, &format!("closed window {id}"));
+    crate::output::print_ok(json, &format!("closed window {id}"));
     Ok(())
 }
 
@@ -160,7 +152,7 @@ pub async fn workspaces(bus_name: &str, json: bool) -> Result<(), Box<dyn std::e
     let workspaces: Vec<WorkspaceRecord> = dicts.into_iter().map(Into::into).collect();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&workspaces)?);
+        crate::output::print_json(&workspaces)?;
     } else if workspaces.is_empty() {
         println!("No workspaces.");
     } else {
