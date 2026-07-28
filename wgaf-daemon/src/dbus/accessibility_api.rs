@@ -31,6 +31,7 @@ enum AccessibilityApiError {
     BusUnavailable(String),
     AppNotFound(String),
     ElementNotFound(String),
+    InvalidElementRef(String),
     ActionNotSupported(String),
     /// The call was refused by `permissions.toml`'s policy (or the
     /// caller declined an interactive `Prompt`) — see `crate::permissions`.
@@ -43,6 +44,7 @@ impl From<AccessibilityError> for AccessibilityApiError {
             AccessibilityError::BusUnavailable { .. } => Self::BusUnavailable(err.to_string()),
             AccessibilityError::AppNotFound(_) => Self::AppNotFound(err.to_string()),
             AccessibilityError::ElementNotFound(_) => Self::ElementNotFound(err.to_string()),
+            AccessibilityError::InvalidElementRef { .. } => Self::InvalidElementRef(err.to_string()),
             AccessibilityError::ActionNotSupported(_) => Self::ActionNotSupported(err.to_string()),
             AccessibilityError::Atspi(_) | AccessibilityError::DBus(_) => {
                 Self::ZBus(zbus::Error::Failure(err.to_string()))
@@ -183,6 +185,7 @@ mod tests {
         let bus_unavailable = AccessibilityApiError::BusUnavailable("unavailable".to_string());
         let app_not_found = AccessibilityApiError::AppNotFound("not found".to_string());
         let element_not_found = AccessibilityApiError::ElementNotFound("gone".to_string());
+        let invalid_element_ref = AccessibilityApiError::InvalidElementRef("malformed".to_string());
         let action_not_supported =
             AccessibilityApiError::ActionNotSupported("unsupported".to_string());
         let permission_denied = AccessibilityApiError::PermissionDenied("denied".to_string());
@@ -197,6 +200,10 @@ mod tests {
         assert_eq!(
             element_not_found.name().as_str(),
             wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND
+        );
+        assert_eq!(
+            invalid_element_ref.name().as_str(),
+            wgaf_common::ACCESSIBILITY_ERROR_INVALID_ELEMENT_REF
         );
         assert_eq!(
             action_not_supported.name().as_str(),

@@ -169,6 +169,19 @@ pub const ACCESSIBILITY_ERROR_APP_NOT_FOUND: &str = "org.wgaf.Accessibility1.Err
 pub const ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND: &str =
     "org.wgaf.Accessibility1.Error.ElementNotFound";
 
+/// D-Bus error name returned when an [`ElementRef`] is not a well-formed
+/// D-Bus `(bus name, object path)` pair at all — e.g. `wgaf a11y info
+/// 'nosuch#/x'`, where `nosuch` is not a valid bus name.
+///
+/// Deliberately distinct from [`ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND`],
+/// because the two call for different remedies: a *malformed* reference is a
+/// caller mistake to be fixed at the call site, while a *stale* one was valid
+/// when it was issued and simply needs re-querying via `FindElements`.
+/// Collapsing them would tell a user to re-run a query that was never going
+/// to help.
+pub const ACCESSIBILITY_ERROR_INVALID_ELEMENT_REF: &str =
+    "org.wgaf.Accessibility1.Error.InvalidElementRef";
+
 /// D-Bus error name returned when `InvokeAction`/`SetText`/`FocusElement` is
 /// called on an element that doesn't implement the AT-SPI interface the
 /// operation requires (`Action`, `EditableText`, or `Component`

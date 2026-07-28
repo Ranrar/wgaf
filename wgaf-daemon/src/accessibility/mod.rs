@@ -84,6 +84,18 @@ pub enum AccessibilityError {
     #[error("accessible element not found (likely gone/destroyed): {0}")]
     ElementNotFound(String),
 
+    /// An [`ElementRef`] is not a well-formed D-Bus `(bus name, object path)`
+    /// pair, so no lookup was ever attempted. A caller-input mistake, not a
+    /// timing problem — kept distinct from [`Self::ElementNotFound`] because
+    /// the remedy differs: fix the reference, rather than re-run the query
+    /// that produced it.
+    #[error(
+        "invalid element reference `{element}`: {reason} — expected \
+         `<bus-name>#<object-path>`, e.g. `:1.42#/org/a11y/atspi/accessible/1`, \
+         as printed by `wgaf a11y find`"
+    )]
+    InvalidElementRef { element: String, reason: String },
+
     /// `InvokeAction`/`SetText`/`FocusElement` was attempted on an element
     /// that doesn't implement the AT-SPI interface the operation needs, has
     /// no matching action, or reported failure performing it.
@@ -298,9 +310,24 @@ async fn accessible_proxy_for<'a>(
     // `ObjectPath` don't tie the proxy's lifetime to `element`'s — matches
     // `windows::proxy::ShellExtensionProxy`'s existing
     // `.destination(bus_name.to_string())` convention.
+    // Validate the two halves separately, before the builder, so a malformed
+    // reference is reported as the caller-input mistake it is
+    // (`InvalidElementRef`, a named D-Bus error) rather than escaping as a
+    // bare `zbus::Error` that the API layer would flatten into a generic
+    // failure — which is what used to reach the CLI as an unreadable
+    // `MethodError(...)` debug dump.
+    let invalid = |reason: String| AccessibilityError::InvalidElementRef {
+        element: element.to_string(),
+        reason,
+    };
+    let destination = zbus::names::BusName::try_from(element.bus_name.clone())
+        .map_err(|e| invalid(e.to_string()))?;
+    let path = zbus::zvariant::ObjectPath::try_from(element.object_path.clone())
+        .map_err(|e| invalid(e.to_string()))?;
+
     Ok(atspi::proxy::accessible::AccessibleProxy::builder(conn)
-        .destination(element.bus_name.clone())?
-        .path(element.object_path.clone())?
+        .destination(destination)?
+        .path(path)?
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await?)
