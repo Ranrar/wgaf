@@ -64,15 +64,19 @@ const MAX_FIND_RESULTS: usize = 1000;
 /// Errors surfaced by the daemon's accessibility-automation layer.
 #[derive(Debug, Error)]
 pub enum AccessibilityError {
-    /// Could not connect to the AT-SPI accessibility bus at all — typically
-    /// means accessibility isn't enabled/running for this session, not a
-    /// code bug. Not cached as permanent: the next call retries (mirrors
+    /// Could not connect to the AT-SPI accessibility bus at all — usually an
+    /// environment problem rather than a code bug. Not cached as permanent:
+    /// the next call retries (mirrors
     /// `input::InputError::DeviceUnavailable`/`windows::WindowsError::ExtensionUnavailable`'s
     /// "recover without a daemon restart" precedent).
-    #[error(
-        "AT-SPI accessibility bus unavailable: {reason} — accessibility may not be enabled for \
-         this session"
-    )]
+    ///
+    /// **`reason` carries the whole explanation, including the remedy.** This
+    /// variant deliberately appends no hint of its own: it is raised for
+    /// several distinct causes — no accessibility bus at all, a stale address
+    /// left behind by one that exited, an unreachable session bus — and a
+    /// single trailing guess is wrong for most of them. `connection::diagnose`
+    /// works out which case applies and words it accordingly.
+    #[error("AT-SPI accessibility bus unavailable: {reason}")]
     BusUnavailable { reason: String },
 
     /// `FindElements`/`GetTree`'s `app` filter matched no currently

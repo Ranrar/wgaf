@@ -307,8 +307,10 @@ than a raw D-Bus error dump, for example:
   command would have waited more than half a minute, which means something is
   stuck in a loop. Note that merely going over the speed limit does *not*
   produce an error; it slows commands down instead.
-- `AT-SPI accessibility bus unavailable` — the accessibility stack isn't
-  running for this session.
+- `AT-SPI accessibility bus unavailable` — the accessibility bus couldn't be
+  reached. The message says which of the possible causes applies — the
+  accessibility service isn't available at all, or it's still advertising a bus
+  that has since exited — and what to do about it, since the remedies differ.
 - `accessible application not found` / `accessible element not found` — the
   `--app` name or element reference doesn't resolve to anything live.
 - `invalid element reference` — the element reference isn't well-formed

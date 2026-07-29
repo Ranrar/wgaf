@@ -293,8 +293,10 @@ pub struct DaemonStatus {
 
     /// Whether the AT-SPI accessibility bus is reachable right now.
     pub accessibility_available: bool,
-    /// On failure, the "accessibility may not be enabled for this session"
-    /// guidance from `AccessibilityError::BusUnavailable`.
+    /// On failure, the guidance from `AccessibilityError::BusUnavailable` —
+    /// which names the specific cause (no accessibility bus, a stale address
+    /// left by one that exited, an unreachable session bus) and its remedy,
+    /// rather than a single generic hint.
     pub accessibility_detail: String,
     /// Whether the daemon currently holds an open AT-SPI connection —
     /// again activity, not health.
