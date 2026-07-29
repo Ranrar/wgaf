@@ -53,7 +53,8 @@ const MAX_TREE_DEPTH: u32 = 64;
 /// whole-tree search `FindElements` does internally) will visit — some
 /// accessible trees (a browser's DOM, an Electron app's) can be enormous;
 /// this bounds the work a single call can do, mirroring
-/// `input::MAX_TYPE_TEXT_LEN`'s "sane hard cap, not a policy decision" role.
+/// `input::DEFAULT_MAX_TYPE_TEXT_CHARS`'s "sane hard cap, not a policy
+/// decision" role.
 const MAX_TREE_NODES: usize = 5000;
 /// `FindElements`'s result count when the caller passes `max_results <= 0`.
 const DEFAULT_FIND_RESULTS: usize = 100;

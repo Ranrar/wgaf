@@ -21,14 +21,26 @@ use crate::permissions::{Capability, PermissionError, PermissionGate};
 #[zbus(prefix = "org.wgaf.Input1.Error")]
 enum InputApiError {
     /// Catch-all for D-Bus-level failures not otherwise translated below
-    /// (includes `InputError::TextTooLong`/`InputError::Io`, which don't
-    /// warrant their own named D-Bus error — callers see them as a generic
-    /// failure description, same as any other `zbus::Error::Failure`).
+    /// (includes `InputError::Io`, which doesn't warrant its own named D-Bus
+    /// error — callers see it as a generic failure description, same as any
+    /// other `zbus::Error::Failure`).
     #[zbus(error)]
     ZBus(zbus::Error),
     DeviceUnavailable(String),
     UnknownKey(String),
     InvalidButton(String),
+    /// `TypeText` exceeded `config.toml`'s `input_max_type_text_chars`.
+    ///
+    /// Named rather than folded into [`Self::ZBus`] because the limit is
+    /// configurable: a user who lowers it meets this as an ordinary outcome,
+    /// not an exceptional one, and a script should be able to branch on it
+    /// without string-matching the description.
+    TextTooLong(String),
+    /// A runaway caller flooded synthetic input past the point where
+    /// throttling it was still the right answer — see
+    /// `crate::input::rate_limit`. Merely exceeding the budget produces no
+    /// error at all; the call is slowed instead.
+    RateLimited(String),
     /// The call was refused by `permissions.toml`'s policy (or the
     /// caller declined an interactive `Prompt`) — see `crate::permissions`.
     PermissionDenied(String),
@@ -40,9 +52,9 @@ impl From<InputError> for InputApiError {
             InputError::DeviceUnavailable { .. } => Self::DeviceUnavailable(err.to_string()),
             InputError::UnknownKey(_) => Self::UnknownKey(err.to_string()),
             InputError::InvalidButton(_) => Self::InvalidButton(err.to_string()),
-            InputError::TextTooLong { .. } | InputError::Io(_) => {
-                Self::ZBus(zbus::Error::Failure(err.to_string()))
-            }
+            InputError::RateLimited { .. } => Self::RateLimited(err.to_string()),
+            InputError::TextTooLong { .. } => Self::TextTooLong(err.to_string()),
+            InputError::Io(_) => Self::ZBus(zbus::Error::Failure(err.to_string())),
         }
     }
 }
@@ -177,6 +189,8 @@ mod tests {
         let unknown_key = InputApiError::UnknownKey("unknown".to_string());
         let invalid_button = InputApiError::InvalidButton("invalid".to_string());
         let permission_denied = InputApiError::PermissionDenied("denied".to_string());
+        let rate_limited = InputApiError::RateLimited("limited".to_string());
+        let text_too_long = InputApiError::TextTooLong("too long".to_string());
         assert_eq!(
             device_unavailable.name().as_str(),
             wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE
@@ -193,5 +207,44 @@ mod tests {
             permission_denied.name().as_str(),
             wgaf_common::INPUT_ERROR_PERMISSION_DENIED
         );
+        assert_eq!(
+            rate_limited.name().as_str(),
+            wgaf_common::INPUT_ERROR_RATE_LIMITED
+        );
+        assert_eq!(
+            text_too_long.name().as_str(),
+            wgaf_common::INPUT_ERROR_TEXT_TOO_LONG
+        );
+    }
+
+    /// Every `InputError` that is not a plain I/O failure must map to a
+    /// **named** D-Bus error, not the `ZBus` catch-all.
+    ///
+    /// Guards the direction the per-variant assertions above cannot: adding an
+    /// `InputError` variant and folding it into `ZBus` out of momentum. That
+    /// is exactly how `TextTooLong` spent five phases as a generic failure
+    /// while its siblings were named, and how `RateLimited` could have.
+    #[test]
+    fn every_non_io_input_error_maps_to_a_named_dbus_error() {
+        let cases = [
+            InputError::DeviceUnavailable {
+                path: "/dev/uinput".to_string(),
+                reason: "denied".to_string(),
+            },
+            InputError::UnknownKey("nope".to_string()),
+            InputError::InvalidButton("nope".to_string()),
+            InputError::TextTooLong { len: 10, max: 5 },
+            InputError::RateLimited { seconds: 42.0 },
+        ];
+
+        for err in cases {
+            let rendered = err.to_string();
+            let api_error = InputApiError::from(err);
+            assert!(
+                !matches!(api_error, InputApiError::ZBus(_)),
+                "`{rendered}` fell through to the ZBus catch-all instead of \
+                 getting a named D-Bus error"
+            );
+        }
     }
 }

@@ -100,6 +100,25 @@ pub const INPUT_ERROR_UNKNOWN_KEY: &str = "org.wgaf.Input1.Error.UnknownKey";
 /// than `left`, `right`, or `middle`.
 pub const INPUT_ERROR_INVALID_BUTTON: &str = "org.wgaf.Input1.Error.InvalidButton";
 
+/// D-Bus error name returned when `TypeText` is given more characters than
+/// `config.toml`'s `input_max_type_text_chars` allows.
+///
+/// Named rather than generic because the limit is the user's to choose: a
+/// caller that sets it to 256 will meet this routinely, and a script should be
+/// able to branch on "too long" without string-matching a description. See
+/// `wgaf-daemon/src/input/mod.rs`.
+pub const INPUT_ERROR_TEXT_TOO_LONG: &str = "org.wgaf.Input1.Error.TextTooLong";
+
+/// D-Bus error name returned when so much synthetic input is queued that the
+/// call would have waited past the daemon's runaway threshold.
+///
+/// **Not the ordinary over-budget response.** Exceeding
+/// `config.toml`'s `input_max_events_per_second` normally just slows a call
+/// down, so a legitimate long script still completes; this error means the
+/// backlog got large enough to indicate a caller stuck in a loop. See
+/// `wgaf-daemon/src/input/rate_limit.rs`.
+pub const INPUT_ERROR_RATE_LIMITED: &str = "org.wgaf.Input1.Error.RateLimited";
+
 /// D-Bus error name returned by `org.wgaf.Input1`'s mutating methods
 /// (`TypeText`/`KeyPress`/`KeyRelease`/`MouseMove`/`MouseClick`/
 /// `MouseScroll`) when the permission policy (`permissions.toml`)

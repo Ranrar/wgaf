@@ -86,6 +86,8 @@ fn error_name_label(name: &str) -> Option<&'static str> {
         wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE => Some("input device unavailable"),
         wgaf_common::INPUT_ERROR_UNKNOWN_KEY => Some("unknown key"),
         wgaf_common::INPUT_ERROR_INVALID_BUTTON => Some("invalid mouse button"),
+        wgaf_common::INPUT_ERROR_TEXT_TOO_LONG => Some("text too long"),
+        wgaf_common::INPUT_ERROR_RATE_LIMITED => Some("input rate limit exceeded"),
         wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE => {
             Some("AT-SPI accessibility bus unavailable")
         }
@@ -191,6 +193,8 @@ mod tests {
             wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE,
             wgaf_common::INPUT_ERROR_UNKNOWN_KEY,
             wgaf_common::INPUT_ERROR_INVALID_BUTTON,
+            wgaf_common::INPUT_ERROR_TEXT_TOO_LONG,
+            wgaf_common::INPUT_ERROR_RATE_LIMITED,
             wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE,
             wgaf_common::ACCESSIBILITY_ERROR_APP_NOT_FOUND,
             wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND,
@@ -202,6 +206,72 @@ mod tests {
             let daemon_text = format!("{label}: the specifics");
             assert_eq!(render_method_error(name, Some(&daemon_text)), daemon_text);
         }
+    }
+
+    /// `wgaf-common`'s source, scanned by the drift test below.
+    ///
+    /// Read as text rather than imported because Rust offers no way to
+    /// enumerate a module's constants — the same constraint that made the
+    /// extension-interface drift test parse `dbusInterface.js`.
+    const COMMON_SOURCE: &str = include_str!("../../../wgaf-common/src/lib.rs");
+
+    /// Every named D-Bus error the daemon can send **must** be recognized by
+    /// [`error_name_label`].
+    ///
+    /// This is the test that was missing. The hand-maintained list in
+    /// `no_named_error_restates_its_own_label` only covers names someone
+    /// remembered to add to it, so `INPUT_ERROR_RATE_LIMITED` was introduced,
+    /// exported, drift-asserted daemon-side, and still absent from the CLI's
+    /// table — with nothing failing. A description-less reply would have
+    /// printed the raw dotted error name at a user.
+    ///
+    /// Scanning `wgaf-common`'s source means a new `*_ERROR_*` constant fails
+    /// this until the CLI decides what to call it, rather than being noticed
+    /// whenever someone next reads the table.
+    #[test]
+    fn every_daemon_error_constant_is_recognized_by_the_cli() {
+        let mut checked = 0;
+
+        // Split on the declaration keyword and read each one up to its `;`,
+        // rather than scanning line by line: six of these constants wrap onto
+        // a continuation line, and a line-based scan skipped them silently.
+        for decl in COMMON_SOURCE.split("pub const ").skip(1) {
+            let Some((decl, _)) = decl.split_once(';') else {
+                continue;
+            };
+            // No trailing space in the separator: a wrapped declaration puts a
+            // newline after the `=`, not a space.
+            let Some((const_name, value_part)) = decl.split_once(": &str =") else {
+                continue;
+            };
+            if !const_name.contains("_ERROR_") {
+                continue;
+            }
+            // The extension's own error names travel daemon-inward only:
+            // `translate_window_error` converts them into `org.wgaf.Windows1`
+            // errors, so the CLI never sees one and must not claim to know it.
+            if const_name.starts_with("EXTENSION_") {
+                continue;
+            }
+
+            let value = value_part.trim().trim_matches('"').to_string();
+            assert!(
+                error_name_label(&value).is_some(),
+                "`{const_name}` (\"{value}\") is a named D-Bus error the daemon can send, \
+                 but `error_name_label` does not recognize it — add an arm, or the CLI will \
+                 print the raw error name for a description-less reply"
+            );
+            checked += 1;
+        }
+
+        // Guards the scan itself: a refactor that moves or reformats these
+        // constants would otherwise turn this test into a silent no-op.
+        assert_eq!(
+            checked, 15,
+            "expected 15 daemon error-name constants, found {checked}. If an error was \
+             genuinely added or removed, update this number; if not, the scan has stopped \
+             matching how `wgaf-common` declares them and is silently passing."
+        );
     }
 
     /// Regression test for the raw-`Debug`-dump issue: an error name the CLI

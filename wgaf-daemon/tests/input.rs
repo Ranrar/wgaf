@@ -69,6 +69,17 @@ impl Drop for DaemonGuard {
 /// test-private, unique `input_device_name` (see module docs for why the
 /// latter matters).
 fn spawn_daemon(daemon_bus_name: &str, device_name: &str, nonce: &str) -> DaemonGuard {
+    spawn_daemon_with_config(daemon_bus_name, device_name, nonce, "")
+}
+
+/// As [`spawn_daemon`], plus `extra_config` appended verbatim to the
+/// generated `config.toml` — for tests that need a non-default setting.
+fn spawn_daemon_with_config(
+    daemon_bus_name: &str,
+    device_name: &str,
+    nonce: &str,
+    extra_config: &str,
+) -> DaemonGuard {
     let config_path = std::env::temp_dir().join(format!("wgaf-daemon-input-test-{nonce}.toml"));
     // `extension_bus_name` is deliberately left at the default — these tests
     // never touch `org.wgaf.Windows1`, so it doesn't matter whether the
@@ -76,7 +87,7 @@ fn spawn_daemon(daemon_bus_name: &str, device_name: &str, nonce: &str) -> Daemon
     std::fs::write(
         &config_path,
         format!(
-            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\n"
+            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\n{extra_config}"
         ),
     )
     .expect("failed to write test config");
@@ -327,4 +338,124 @@ async fn invalid_mouse_button_reports_invalid_button_error() {
         }
         other => panic!("expected a MethodError, got {other:?}"),
     }
+}
+
+/// The runaway ceiling: a call whose backlog exceeds `MAX_THROTTLE_DELAY` is
+/// refused with a named error rather than throttled.
+///
+/// **This test needs no `/dev/uinput`, deliberately.** The rate-limit check
+/// in `InputBackend::run` happens *before* the device is resolved, so the
+/// refusal never touches the kernel. It lives here for topical reasons rather
+/// than environmental ones — if this suite is ever split by environment (see
+/// the S4 preconditions issue), this test belongs on the device-free side.
+///
+/// It is also deterministic and instant: at one event per second, a
+/// 4096-character `TypeText` is 8,192 events, so the projected wait is over
+/// two hours and the refusal is immediate. Nothing here sleeps or races.
+#[tokio::test]
+async fn a_runaway_flood_is_refused_with_the_rate_limited_error() {
+    let pid = std::process::id();
+    let daemon_bus_name = format!("org.wgaf.Test.Input.RateLimit{pid}");
+    let device_name = format!("wgaf test device ratelimit {pid}");
+
+    let _daemon = spawn_daemon_with_config(
+        &daemon_bus_name,
+        &device_name,
+        &format!("ratelimit{pid}"),
+        "input_max_events_per_second = 1\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let text: String = std::iter::repeat_n('a', 4096).collect();
+    let err = call_input::<(), _>(&connection, &daemon_bus_name, "TypeText", &(text,))
+        .await
+        .expect_err("a flood far beyond the budget should be refused, not queued");
+
+    match err {
+        zbus::Error::MethodError(name, _, _) => {
+            assert_eq!(name.as_str(), wgaf_common::INPUT_ERROR_RATE_LIMITED);
+        }
+        other => panic!("expected a MethodError, got {other:?}"),
+    }
+
+    // Refusing must not have created the device — the limiter sits in front
+    // of device resolution, and a refused call should leave no trace.
+    assert!(
+        find_device_block(&device_name).is_none(),
+        "a rate-limited call must not have created the uinput device"
+    );
+}
+
+/// A rate of `0` switches the limiter off entirely, so the documented escape
+/// hatch in `config.toml` actually works.
+#[tokio::test]
+async fn a_rate_of_zero_disables_the_limiter() {
+    let pid = std::process::id();
+    let daemon_bus_name = format!("org.wgaf.Test.Input.NoLimit{pid}");
+    let device_name = format!("wgaf test device nolimit {pid}");
+
+    let _daemon = spawn_daemon_with_config(
+        &daemon_bus_name,
+        &device_name,
+        &format!("nolimit{pid}"),
+        "input_max_events_per_second = 0\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    // The same call the previous test refuses at a rate of 1. This one needs
+    // a real device, since with the limiter disabled it proceeds to synthesis.
+    let text: String = std::iter::repeat_n('a', 4096).collect();
+    call_input::<(), _>(&connection, &daemon_bus_name, "TypeText", &(text,))
+        .await
+        .expect("with the limiter disabled, a large TypeText should be accepted");
+}
+
+/// `input_max_type_text_chars` actually caps a single `TypeText`, and the
+/// error names the configured limit rather than the built-in default.
+///
+/// Like the rate-limit refusal, this needs no `/dev/uinput`: the length check
+/// runs before the limiter and before the device is resolved.
+#[tokio::test]
+async fn type_text_is_capped_by_the_configured_character_limit() {
+    let pid = std::process::id();
+    let daemon_bus_name = format!("org.wgaf.Test.Input.TextCap{pid}");
+    let device_name = format!("wgaf test device textcap {pid}");
+
+    let _daemon = spawn_daemon_with_config(
+        &daemon_bus_name,
+        &device_name,
+        &format!("textcap{pid}"),
+        "input_max_type_text_chars = 10\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    // Ten is fine; eleven is not. Testing the boundary rather than a wildly
+    // oversized string, so an off-by-one in the comparison is caught.
+    let err = call_input::<(), _>(&connection, &daemon_bus_name, "TypeText", &("12345678901",))
+        .await
+        .expect_err("text over the configured cap should be refused");
+
+    let zbus::Error::MethodError(name, description, _) = err else {
+        panic!("expected a MethodError");
+    };
+    assert_eq!(
+        name.as_str(),
+        wgaf_common::INPUT_ERROR_TEXT_TOO_LONG,
+        "over-length text must report a named error a script can branch on, \
+         not a generic failure"
+    );
+    let description = description.unwrap_or_default();
+    assert!(
+        description.contains("max 10"),
+        "the error should name the configured limit, not the built-in default: {description}"
+    );
+    assert!(
+        description.contains("input_max_type_text_chars"),
+        "the error should name the setting to change: {description}"
+    );
+
+    assert!(
+        find_device_block(&device_name).is_none(),
+        "an over-length call must not have created the uinput device"
+    );
 }

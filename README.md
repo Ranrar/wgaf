@@ -208,7 +208,7 @@ wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
 
 | File | Purpose |
 |---|---|
-| `config.toml` | Bus name, log level, device name |
+| `config.toml` | Bus name, log level, device name, input safety limits |
 | `permissions.toml` | What wgaf is allowed to do |
 
 `make install` sets both up for you, with the right ownership and mode, and
@@ -251,6 +251,26 @@ it logs a warning). The empty files above are preferable — they say the same
 thing but stay visible in your config.
 
 </details>
+
+### Input safety limits
+
+Two settings in `config.toml` bound how much synthetic input wgaf will produce:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `input_max_events_per_second` | `3000` | Sustained keystrokes and clicks per second. Going over **slows commands down rather than failing them**, so a long automation still finishes. `0` turns the limit off. |
+| `input_max_type_text_chars` | `4096` | Most characters one `wgaf type` may send. Longer text is **refused outright** — nothing is typed. Careful: `0` here means nothing may be typed, *not* "no limit". |
+
+Both exist for one situation: a script with a loop bug, or a paste far longer
+than you meant. Without them the flood competes with your own keyboard and
+mouse, and taking back control of the desktop is genuinely hard.
+
+The defaults are generous — far beyond anything normal automation needs — so
+you are unlikely to meet either by accident. Lower them if you want a tighter
+guard.
+
+The [user guide](docs/user-guide.md#if-automation-suddenly-runs-slowly) covers
+both in more detail.
 
 ### `permissions.toml` — per-capability policy
 

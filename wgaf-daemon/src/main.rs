@@ -170,7 +170,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // permissions problem here never prevents the daemon from starting or
     // from serving `org.wgaf.Windows1`. See `input::InputBackend`'s doc
     // comments.
-    let input_backend = Arc::new(input::InputBackend::new(config.input_device_name.clone()));
+    let input_backend = Arc::new(input::InputBackend::new(
+        config.input_device_name.clone(),
+        input::InputLimits {
+            max_events_per_second: config.input_max_events_per_second,
+            max_type_text_chars: config.input_max_type_text_chars,
+        },
+    ));
 
     // `AccessibilityBackend::new` does not touch the AT-SPI bus — like
     // `WindowManager::connect_to`/`InputBackend::new` above, the actual

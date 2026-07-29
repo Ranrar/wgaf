@@ -11,3 +11,18 @@ extension_bus_name = "org.gnome.Shell.Extensions.Wgaf"
 
 # What the virtual uinput device reports to the kernel.
 input_device_name = "wgaf virtual input device"
+
+# A safety net for runaway scripts, in keystrokes and clicks per second.
+# Going over it slows commands down rather than failing them, so a long
+# automation still finishes. Raise it if legitimate work feels throttled;
+# set it to 0 to turn the limit off.
+input_max_events_per_second = 3000
+
+# The most characters one `wgaf type` command may send. Anything longer is
+# refused outright, so an oversized paste fails instead of being typed into
+# whatever window happens to be focused. Lower it if you want a tighter guard.
+#
+# Careful: 0 here means "nothing may be typed at all", NOT "no limit" — the
+# opposite of the setting above. That is on purpose, so a mistaken 0 fails
+# safe rather than removing the guard.
+input_max_type_text_chars = 4096

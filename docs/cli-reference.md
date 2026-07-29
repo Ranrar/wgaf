@@ -172,6 +172,16 @@ one).
 wgaf type "hello world"
 ```
 
+Capped at 4096 characters per command by default. Longer text is refused
+outright — nothing is typed — with a message naming the limit. Change it with
+`input_max_type_text_chars` in `config.toml`; lower it if you would rather an
+oversized paste fail than be typed into whichever window has focus. See
+["Limiting how much one command can type"](user-guide.md#limiting-how-much-one-command-can-type).
+
+Typing is also subject to the overall input speed limit, which paces commands
+against each other rather than capping any one of them. See ["If automation
+suddenly runs slowly"](user-guide.md#if-automation-suddenly-runs-slowly).
+
 ---
 
 ## `wgaf key press|release <key>`
@@ -290,6 +300,13 @@ than a raw D-Bus error dump, for example:
   installed/enabled, or the daemon can't reach it.
 - `input device unavailable` — `/dev/uinput` isn't accessible (permissions).
 - `unknown key` / `invalid mouse button` — bad argument to `key`/`mouse click`.
+- `text too long` — the text given to `wgaf type` is over
+  `input_max_type_text_chars`. Nothing was typed. The message names the limit
+  in force.
+- `input rate limit exceeded` — so much synthetic input is queued that this
+  command would have waited more than half a minute, which means something is
+  stuck in a loop. Note that merely going over the speed limit does *not*
+  produce an error; it slows commands down instead.
 - `AT-SPI accessibility bus unavailable` — the accessibility stack isn't
   running for this session.
 - `accessible application not found` / `accessible element not found` — the

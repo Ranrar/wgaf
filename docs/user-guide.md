@@ -69,6 +69,11 @@ wgaf mouse click left
 wgaf mouse scroll 0 -5
 ```
 
+Two safety limits apply to everything in this section — one on how fast input
+is produced, one on how much a single `wgaf type` may send. Both are generous
+by default and you are unlikely to meet either by accident. See ["If automation
+suddenly runs slowly"](#if-automation-suddenly-runs-slowly) below.
+
 ## Finding and clicking things by name
 
 Instead of clicking at a screen position, look up the app and find the
@@ -115,7 +120,7 @@ The daemon looks for two files automatically, in `$XDG_CONFIG_HOME/wgaf/`
 
 | File | What it does |
 |---|---|
-| `config.toml` | Daemon settings: bus name, log level, device name |
+| `config.toml` | Daemon settings: bus name, log level, device name, input speed limit |
 | `permissions.toml` | Per-capability policy: `Allow` / `Deny` / `Prompt` |
 
 Keep both readable and writable by you alone (mode `600`). If either needs
@@ -148,6 +153,65 @@ wgaf status
 It names both paths, says whether each exists, and lists any capability that
 isn't at its default — useful when a command was refused and you want to know
 what did the refusing.
+
+## If automation suddenly runs slowly
+
+There is a speed limit on typing and clicking, set by
+`input_max_events_per_second` in `config.toml` and counted in individual
+keystrokes and clicks per second. The default of 3000 is far faster than any
+real automation needs — a fast typist manages about 40.
+
+It exists for one situation: a script with a loop bug that types or clicks
+without stopping. Without a limit, the flood competes with your own keyboard
+and mouse, and taking back control of the desktop becomes genuinely hard.
+
+Going over the limit **slows commands down rather than failing them**, so a
+long, legitimate automation still finishes — just paced. The daemon logs a
+warning the first time this happens, so the reason is on the record.
+
+If a script floods so badly that a command would have to wait more than half a
+minute, that command fails instead, with a message saying the rate limit was
+exceeded. At that point something is genuinely stuck in a loop, and waiting
+would not help.
+
+To raise the limit, or turn it off entirely:
+
+```toml
+# in ~/.config/wgaf/config.toml
+input_max_events_per_second = 10000   # faster
+input_max_events_per_second = 0       # no limit at all
+```
+
+Restart the daemon after changing it.
+
+## Limiting how much one command can type
+
+A separate setting caps a single `wgaf type` command:
+
+```toml
+input_max_type_text_chars = 4096   # the default
+input_max_type_text_chars = 256    # a tighter guard
+```
+
+Anything longer is refused outright — nothing is typed at all, and the error
+names the limit and the setting. Lower it if you would rather an oversized
+paste fail than be typed into whichever window happens to be focused.
+
+**`0` here means nothing may be typed, not "no limit"** — the opposite of the
+speed setting above. That is deliberate, so that a mistaken `0` fails safe
+instead of quietly removing the guard.
+
+This is also the only limit on how much gets typed *in one go*. The speed
+limit paces commands against each other; it does not slow down a single
+command once it starts.
+
+## What these limits are for
+
+Both are safety nets, not security controls.
+
+They protect you from your own scripts — a loop bug, a wrong variable, a paste
+that turned out to be a hundred times longer than you thought. That is a real
+and common way to lose control of a desktop, and these settings genuinely help.
 
 ## When a command gets denied
 

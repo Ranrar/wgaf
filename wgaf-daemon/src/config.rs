@@ -20,6 +20,38 @@ pub struct Config {
     /// constant's doc comment for why (`/proc/bus/input/devices` has no
     /// concept of "which process created this").
     pub input_device_name: String,
+    /// Sustained ceiling on synthesized kernel input events per second, and
+    /// the burst allowance an idle daemon may accumulate. `0` disables the
+    /// limit entirely.
+    ///
+    /// **A safety ceiling, not policy** — which is why it lives here and not
+    /// in `permissions.toml`. It does not decide *who* may synthesize input
+    /// (that is `crate::permissions`); it stops a caller who is already
+    /// allowed to from flooding the desktop so badly that its user cannot
+    /// take back control. A local process that wanted to bypass it could open
+    /// `/dev/uinput` itself, so treating it as a security boundary would be a
+    /// mistake.
+    ///
+    /// Exceeding it slows calls down rather than failing them, so a
+    /// legitimate long-running script still completes. See
+    /// `crate::input::rate_limit`.
+    pub input_max_events_per_second: u32,
+    /// Maximum characters a single `TypeText` call may synthesize.
+    ///
+    /// **`0` means nothing may be typed, not "no limit"** — the opposite of
+    /// [`Self::input_max_events_per_second`]'s `0`, deliberately. See
+    /// [`crate::input::InputLimits`] for why the fail-safe reading wins here.
+    ///
+    /// Like the rate, a safety ceiling rather than policy, and like the rate
+    /// it is not a security control: a caller that can issue one `TypeText`
+    /// can issue a hundred. Lowering it makes an oversized paste **fail
+    /// loudly rather than execute**, which guards against accidents and
+    /// opportunistic pastes, not against a determined local attacker — who
+    /// would open `/dev/uinput` directly and never involve wgaf.
+    ///
+    /// It is also the only bound on burst depth: the rate limiter paces
+    /// between calls, not within one.
+    pub input_max_type_text_chars: usize,
 }
 
 impl Default for Config {
@@ -29,6 +61,8 @@ impl Default for Config {
             log_level: "info".to_string(),
             extension_bus_name: wgaf_common::EXTENSION_BUS_NAME.to_string(),
             input_device_name: crate::input::DEFAULT_DEVICE_NAME.to_string(),
+            input_max_events_per_second: crate::input::DEFAULT_MAX_EVENTS_PER_SECOND,
+            input_max_type_text_chars: crate::input::DEFAULT_MAX_TYPE_TEXT_CHARS,
         }
     }
 }
