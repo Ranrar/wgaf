@@ -6,6 +6,8 @@
 #                     /dev/uinput setup steps
 #   make uninstall  - reverse all of the above
 #   make man        - install man pages (optional)
+#   make test-apps  - build the GTK4 applications used by some tests
+#                     (needs GTK4 development packages; nothing else does)
 #   make clean      - remove build artifacts
 #
 # Installs to ~/.cargo/bin. If you've set CARGO_INSTALL_ROOT or CARGO_HOME
@@ -19,7 +21,7 @@ SYSTEMD_USER_DIR := $(XDG_CONFIG_HOME)/systemd/user
 SYSTEMD_UNIT := packaging/systemd/wgaf-daemon.service
 MAN_DIR := $(XDG_DATA_HOME)/man/man1
 
-.PHONY: build install uninstall man clean \
+.PHONY: build install uninstall man test-apps clean \
 	cargo-install cargo-uninstall systemd-install systemd-uninstall \
 	config-install
 
@@ -99,5 +101,15 @@ man:
 	cp target/man/*.1 $(MAN_DIR)/
 	@echo "Man pages installed to $(MAN_DIR) — ensure it's on your MANPATH."
 
+# The applications in tests/apps/ are a workspace of their own, deliberately
+# excluded from the root one: building wgaf itself must never require GTK4
+# development packages, and only these need them. That is why this is a separate
+# step rather than part of 'make build'.
+#
+# On Debian/Ubuntu the requirement is libgtk-4-dev; on Fedora, gtk4-devel.
+test-apps:
+	cargo build --manifest-path tests/apps/Cargo.toml
+
 clean:
 	cargo clean
+	cargo clean --manifest-path tests/apps/Cargo.toml

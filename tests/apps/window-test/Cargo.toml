@@ -1,0 +1,14 @@
+[package]
+name = "window-test"
+description = "A GTK4 application with a known, fixed set of windows, for testing wgaf's window management."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+report = { workspace = true }
+gtk4 = { workspace = true }
+serde = { workspace = true }
+clap = { workspace = true }

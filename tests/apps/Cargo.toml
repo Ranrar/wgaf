@@ -1,0 +1,31 @@
+# Deterministic GTK4 applications that wgaf drives in its tests.
+#
+# This is a workspace of its own, deliberately kept out of the one at the
+# repository root: building wgaf itself must never require GTK4 development
+# packages. Only these applications need them, and only when they are built —
+# `make test-apps`.
+#
+# Because it is separate, it has its own Cargo.lock. Both lockfiles are
+# committed and both are updated by hand.
+
+[workspace]
+resolver = "3"
+members = ["report", "window-test"]
+
+[workspace.package]
+version = "0.7.0"
+edition = "2024"
+license = "MIT"
+authors = ["Kim Skov Rasmussen"]
+publish = false
+
+[workspace.dependencies]
+report = { path = "report" }
+# Rust bindings for GTK 4. The applications are plain GTK4 rather than
+# libadwaita: a fixed, predictable widget tree is worth more here than matching
+# any particular application style, and every extra layer is one more thing
+# that could change a test's expectations without wgaf changing at all.
+gtk4 = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }

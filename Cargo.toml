@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["wgaf-common", "wgaf-daemon", "wgaf-cli"]
+# The GTK4 test applications are a workspace of their own, so that `cargo build`
+# and `cargo test` here need no GTK4 development packages. Build them with
+# `make test-apps`. See tests/apps/README.md.
+exclude = ["tests/apps"]
 
 [workspace.package]
 version = "0.7.0"

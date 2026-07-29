@@ -1,5 +1,6 @@
 /target
+/tests/apps/target
 .vscode
 .claude
 extension/*.shell-extension.zip
-.github/workflows/ci.yml
+.github/workflows/
