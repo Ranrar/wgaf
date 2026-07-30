@@ -175,6 +175,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         input::InputLimits {
             max_events_per_second: config.input_max_events_per_second,
             max_type_text_chars: config.input_max_type_text_chars,
+            device_settle: std::time::Duration::from_millis(config.input_device_settle_ms),
         },
     ));
 

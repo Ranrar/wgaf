@@ -208,7 +208,7 @@ wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
 
 | File | Purpose |
 |---|---|
-| `config.toml` | Bus name, log level, device name, input safety limits |
+| `config.toml` | Bus name, log level, device name, input safety limits, device settle time |
 | `permissions.toml` | What wgaf is allowed to do |
 
 `make install` sets both up for you, with the right ownership and mode, and
@@ -334,6 +334,21 @@ systemctl --user restart wgaf-daemon.service
 step 2 of [first-time setup](#first-time-setup), and confirm the group
 membership actually applied (`id -nG | grep input`); it only takes effect
 after a full log out and back in.
+
+**The first `wgaf type` or `wgaf click` after starting the daemon does
+nothing**, and running it again works — the desktop had not finished picking
+up wgaf's virtual input device yet, so the keystrokes went nowhere. wgaf waits
+300 ms for this on the first command; raise `input_device_settle_ms` in
+`config.toml` if your machine needs longer. You only pay the wait once, on the
+first command after the daemon starts.
+
+## Known issues
+
+- Typed text and clicks go to whatever has keyboard focus at the moment they
+  are sent, and can't be aimed at a particular window — so it's best not to use
+  the desktop while a script is running.
+- `wgaf type` assumes a US keyboard layout, so punctuation can come out
+  differently on other layouts.
 
 ## Documentation
 

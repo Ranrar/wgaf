@@ -202,7 +202,8 @@ pub(crate) fn key_name_to_code(name: &str) -> Option<u16> {
     // Single letters/digits.
     if let Some(c) = single_char(bare) {
         if c.is_ascii_uppercase() {
-            return Some(KEY_A + (c as u16 - b'A' as u16));
+            // Indexed lookup, never arithmetic on `KEY_A` — see [`LETTER_KEYS`].
+            return Some(LETTER_KEYS[(c as u8 - b'A') as usize]);
         }
         if c.is_ascii_digit() {
             return Some(if c == '0' {
@@ -249,6 +250,26 @@ fn single_char(s: &str) -> Option<char> {
     }
 }
 
+/// evdev keycodes for `a` through `z`, in alphabetical order.
+///
+/// **This table cannot be replaced by arithmetic on [`KEY_A`], and once was.**
+/// evdev numbers the letter keys by their position on the physical keyboard,
+/// row by row — `KEY_Q` is 16 because `q` is the top-left letter — so the codes
+/// run `q w e r t y u i o p`, then `a s d f g h j k l`, then `z x c v b n m`,
+/// and are alphabetical nowhere. `KEY_A + (c - b'a')` therefore produced the
+/// right code only for `a` itself: it typed `f` for `d`, `z` for `o`, and for
+/// `y` and `z` it left the letter range entirely and pressed `KEY_RIGHTSHIFT`
+/// and `KEY_KPASTERISK`.
+///
+/// The mistake survived because nothing checked the far side. `tests/input.rs`
+/// reads the synthesized events back from the kernel and compares them against
+/// this same table, so it agreed with the bug; it took `tests/apps/input-test`
+/// reporting the characters an application actually received to expose it.
+const LETTER_KEYS: [u16; 26] = [
+    KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I, KEY_J, KEY_K, KEY_L, KEY_M,
+    KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R, KEY_S, KEY_T, KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z,
+];
+
 /// Maps one ASCII character to `(keycode, needs_shift)` for `TypeText`,
 /// following a US-QWERTY layout — deliberately the same scope limitation
 /// `ydotool` documents for its own `type` command: no Unicode, no
@@ -273,8 +294,9 @@ pub(crate) fn ascii_to_keycode(c: char) -> Option<(u16, bool)> {
             };
             (code, false)
         }
-        b'a'..=b'z' => (KEY_A + (b - b'a') as u16, false),
-        b'A'..=b'Z' => (KEY_A + (b - b'A') as u16, true),
+        // Indexed lookup, never arithmetic on `KEY_A` — see [`LETTER_KEYS`].
+        b'a'..=b'z' => (LETTER_KEYS[(b - b'a') as usize], false),
+        b'A'..=b'Z' => (LETTER_KEYS[(b - b'A') as usize], true),
         b'!' => (KEY_1, true),
         b'"' => (KEY_APOSTROPHE, true),
         b'#' => (KEY_3, true),
@@ -383,5 +405,91 @@ mod tests {
         assert_eq!(ascii_to_keycode('!'), Some((KEY_1, true)));
         assert_eq!(ascii_to_keycode('0'), Some((KEY_0, false)));
         assert_eq!(ascii_to_keycode(')'), Some((KEY_0, true)));
+    }
+
+    /// The regression that `KEY_A + (c - b'a')` was. Pinned against the literal
+    /// values in `<linux/input-event-codes.h>` rather than against this
+    /// module's own constants, so that the assertion is anchored to the kernel
+    /// and not to whatever the code currently believes.
+    ///
+    /// Letters from every row of the keyboard, because the old arithmetic was
+    /// correct only for `a` and drifted further the further from it you went.
+    #[test]
+    fn letters_map_to_their_physical_evdev_positions_not_alphabetical_offsets() {
+        for (c, code) in [
+            ('a', 30),
+            ('b', 48),
+            ('d', 32),
+            ('e', 18),
+            ('h', 35),
+            ('l', 38),
+            ('m', 50),
+            ('o', 24),
+            ('q', 16),
+            ('r', 19),
+            ('w', 17),
+            ('z', 44),
+        ] {
+            assert_eq!(
+                ascii_to_keycode(c),
+                Some((code, false)),
+                "`{c}` must map to evdev code {code}"
+            );
+            assert_eq!(
+                ascii_to_keycode(c.to_ascii_uppercase()),
+                Some((code, true)),
+                "`{}` must map to evdev code {code} with shift",
+                c.to_ascii_uppercase()
+            );
+        }
+    }
+
+    /// `wgaf key press d` had the same defect as `wgaf type d`, from a second
+    /// copy of the same arithmetic in a different function.
+    #[test]
+    fn named_single_letter_keys_map_to_the_same_codes_as_typing_them() {
+        for c in 'a'..='z' {
+            let typed = ascii_to_keycode(c).map(|(code, _)| code);
+            assert_eq!(
+                key_name_to_code(&c.to_string()),
+                typed,
+                "`wgaf key press {c}` and `wgaf type {c}` must press the same key"
+            );
+        }
+    }
+
+    /// The old arithmetic ran off the end of the letters for `y` and `z`,
+    /// pressing a modifier and a keypad key. Nothing may map into those.
+    #[test]
+    fn no_letter_maps_onto_a_modifier_or_keypad_key() {
+        for c in 'a'..='z' {
+            let (code, _) = ascii_to_keycode(c).expect("every letter must map");
+            assert!(
+                !matches!(
+                    code,
+                    KEY_LEFTSHIFT | KEY_RIGHTSHIFT | KEY_LEFTCTRL | KEY_LEFTALT
+                ),
+                "`{c}` maps onto modifier code {code}"
+            );
+            // 55 is `KEY_KPASTERISK`, the first keypad code above the letters.
+            assert!(
+                code < 55,
+                "`{c}` maps to {code}, outside the main key block"
+            );
+        }
+    }
+
+    /// Every letter must map somewhere different; the old arithmetic happened
+    /// to be injective, so this is not what caught it — it is what stops a
+    /// hand-written table from acquiring a typo.
+    #[test]
+    fn every_letter_maps_to_a_distinct_key() {
+        let mut codes: Vec<u16> = ('a'..='z')
+            .map(|c| ascii_to_keycode(c).expect("every letter must map").0)
+            .collect();
+        codes.sort_unstable();
+        let distinct = codes.len();
+        codes.dedup();
+        assert_eq!(codes.len(), distinct, "two letters share a keycode");
     }
 }

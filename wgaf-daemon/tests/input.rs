@@ -84,10 +84,32 @@ fn spawn_daemon_with_config(
     // `extension_bus_name` is deliberately left at the default — these tests
     // never touch `org.wgaf.Windows1`, so it doesn't matter whether the
     // (nonexistent, in this sandbox) extension is reachable.
+    // `input_device_settle_ms = 0` is a **safety setting here, not a
+    // performance one**, and must not be removed without reading this.
+    //
+    // These tests synthesize real keystrokes through a real kernel device.
+    // They verify that synthesis reaches the *kernel*; they do not verify that
+    // anything receives it, and they have no window of their own to aim at. So
+    // if the device is live, every character they type lands in whatever window
+    // currently has focus on the developer's desktop — and one of them types
+    // 4096 characters with the rate limiter switched off.
+    //
+    // The settle wait exists so the first real command is not discarded (see
+    // `input::DEFAULT_DEVICE_SETTLE_MS`). Switching it off restores, for these
+    // tests only, the property that the events go nowhere: the device is
+    // created and written to before udev has published it and the compositor
+    // has opened it. That is exactly what this suite wants and exactly what a
+    // user does not.
+    //
+    // **This is a mitigation, not a guarantee.** It is still a race, so a slow
+    // enough test run could still deliver. The real fix is to run this suite
+    // against a nested compositor rather than the developer's own session; the
+    // day that exists, this line should be reconsidered rather than kept out of
+    // habit.
     std::fs::write(
         &config_path,
         format!(
-            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\n{extra_config}"
+            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\ninput_device_settle_ms = 0\n{extra_config}"
         ),
     )
     .expect("failed to write test config");

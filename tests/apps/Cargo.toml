@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "3"
-members = ["report", "window-test"]
+members = ["report", "window-test", "input-test"]
 
 [workspace.package]
 version = "0.7.0"

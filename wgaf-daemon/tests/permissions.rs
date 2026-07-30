@@ -64,10 +64,15 @@ fn spawn_daemon_with_policy(
     policy_toml: &str,
 ) -> DaemonGuard {
     let config_path = std::env::temp_dir().join(format!("wgaf-daemon-perm-test-{nonce}.toml"));
+    // `input_device_settle_ms = 0` is a safety setting, not a performance one:
+    // these tests synthesize real keystrokes and have no window of their own to
+    // aim at, so a live device would type into whatever the developer has
+    // focused. See the long note on the same line in `tests/input.rs`, which
+    // explains why this is a mitigation rather than a guarantee.
     std::fs::write(
         &config_path,
         format!(
-            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\n"
+            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\ninput_device_settle_ms = 0\n"
         ),
     )
     .expect("failed to write test config");

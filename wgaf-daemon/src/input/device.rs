@@ -21,6 +21,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
+use std::time::Duration;
 
 use crate::input::InputError;
 use crate::input::codes::{ALL_KEYS, EV_KEY, EV_REL, EV_SYN, REL_HWHEEL, REL_WHEEL, REL_X, REL_Y};
@@ -113,7 +114,14 @@ impl UinputDevice {
     /// Blocking/synchronous — callers run this via
     /// `tokio::task::spawn_blocking` (see `mod.rs`), since it's a handful of
     /// `ioctl`s during startup, not a hot path.
-    pub(crate) fn create(device_name: &str) -> Result<Self, InputError> {
+    ///
+    /// Waits `settle` after `UI_DEV_CREATE` before returning, so that the first
+    /// event written to the returned device is not discarded — see
+    /// [`crate::input::DEFAULT_DEVICE_SETTLE_MS`] for why that wait is
+    /// necessary and why it cannot be replaced by a readiness check. The wait
+    /// is a plain blocking sleep because this whole function already runs
+    /// inside `tokio::task::spawn_blocking`.
+    pub(crate) fn create(device_name: &str, settle: Duration) -> Result<Self, InputError> {
         let file = OpenOptions::new()
             .write(true)
             .open(UINPUT_PATH)
@@ -161,6 +169,13 @@ impl UinputDevice {
         };
         ioctl_ptr(fd, UI_DEV_SETUP, &setup).map_err(|e| device_unavailable(UINPUT_PATH, &e))?;
         ioctl_none(fd, UI_DEV_CREATE).map_err(|e| device_unavailable(UINPUT_PATH, &e))?;
+
+        // The device exists now, but nothing has opened it yet. Anything written
+        // before udev has published it and the compositor has picked it up is
+        // accepted by the kernel and delivered to no one.
+        if !settle.is_zero() {
+            std::thread::sleep(settle);
+        }
 
         Ok(Self { file })
     }

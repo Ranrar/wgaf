@@ -52,6 +52,21 @@ pub struct Config {
     /// It is also the only bound on burst depth: the rate limiter paces
     /// between calls, not within one.
     pub input_max_type_text_chars: usize,
+    /// Milliseconds to wait after creating the virtual `uinput` device before
+    /// writing the first event to it.
+    ///
+    /// **Not a limit and not policy** — a correctness wait. Creating the device
+    /// does not make it usable: udev must publish it and the compositor must
+    /// open it, and events written before that are accepted by the kernel and
+    /// delivered to nobody, with no error. Without this, the first input command
+    /// after the daemon started was reliably lost.
+    ///
+    /// Paid once per daemon lifetime, not per call. Raise it if the first
+    /// command is still dropped on a slow or heavily loaded machine; `0`
+    /// disables the wait and restores the old broken behaviour. See
+    /// [`crate::input::DEFAULT_DEVICE_SETTLE_MS`] for the measurements behind
+    /// the default.
+    pub input_device_settle_ms: u64,
 }
 
 impl Default for Config {
@@ -63,6 +78,7 @@ impl Default for Config {
             input_device_name: crate::input::DEFAULT_DEVICE_NAME.to_string(),
             input_max_events_per_second: crate::input::DEFAULT_MAX_EVENTS_PER_SECOND,
             input_max_type_text_chars: crate::input::DEFAULT_MAX_TYPE_TEXT_CHARS,
+            input_device_settle_ms: crate::input::DEFAULT_DEVICE_SETTLE_MS,
         }
     }
 }
@@ -203,5 +219,39 @@ mod tests {
         assert!(!path.exists());
         let config = Config::load(Some(&path)).expect("nonexistent default path is not an error");
         assert_eq!(config.bus_name, wgaf_common::BUS_NAME);
+    }
+
+    /// The settle wait must be **on** by default. A default of `0` would
+    /// reintroduce the silent-loss bug for everyone who never edits
+    /// `config.toml`, which is most users.
+    #[test]
+    fn the_device_settle_wait_is_enabled_by_default() {
+        let config = Config::default();
+        assert_eq!(
+            config.input_device_settle_ms,
+            crate::input::DEFAULT_DEVICE_SETTLE_MS
+        );
+        assert!(
+            config.input_device_settle_ms > 0,
+            "a zero default would silently discard the first input command"
+        );
+    }
+
+    /// `0` has to remain expressible: the input test suites set it deliberately
+    /// so their synthesized keystrokes are not delivered to the developer's
+    /// focused window. A `0` silently coerced to the default would type 4096
+    /// characters into whatever they were looking at.
+    #[test]
+    fn a_zero_device_settle_is_honoured_rather_than_replaced_by_the_default() {
+        let config: Config =
+            toml::from_str("input_device_settle_ms = 0\n").expect("config should parse");
+        assert_eq!(config.input_device_settle_ms, 0);
+    }
+
+    #[test]
+    fn device_settle_is_read_from_the_config_file() {
+        let config: Config =
+            toml::from_str("input_device_settle_ms = 1234\n").expect("config should parse");
+        assert_eq!(config.input_device_settle_ms, 1234);
     }
 }

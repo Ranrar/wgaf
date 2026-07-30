@@ -42,6 +42,48 @@ const AUDIT_TARGET: &str = "wgaf_daemon::input::audit";
 /// test's (or a real production daemon's).
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "wgaf virtual input device";
 
+/// How long to wait after creating the virtual device before writing the first
+/// event to it, when `config.toml` does not say otherwise. Overridable via
+/// `Config::input_device_settle_ms`.
+///
+/// **Creating a `uinput` device does not make it usable.** `UI_DEV_CREATE`
+/// returns as soon as the kernel has the device, but nothing is listening to it
+/// yet: udev has to process the new node and re-broadcast it, and only then does
+/// the compositor open it through libinput. Events written before that reach
+/// nobody. The kernel accepts every one of them, so the daemon has no way to
+/// notice — it reports success for input that was silently discarded.
+///
+/// That is not a theoretical race. Without this wait the **first** input command
+/// after the daemon starts was reliably lost, every time: `wgaf type` reported
+/// typing 34 characters and `tests/apps/input-test` received zero events, while
+/// the very next command worked. It went unnoticed for seven phases because
+/// `tests/input.rs` reads the events back from the kernel, which is the one
+/// place they do arrive.
+///
+/// The delay was measured rather than guessed. On the development machine
+/// `udevadm monitor` puts udev's processing of the new event node **36 ms**
+/// after the kernel's own `add`, and the empirical threshold agrees: a 0 ms wait
+/// loses all input, 50 ms delivers all of it. The default is an order of
+/// magnitude above that, because being slow once per daemon lifetime is cheap
+/// and being wrong is silent.
+///
+/// **This widens the race rather than closing it, and it is a stopgap.** A
+/// duration is the wrong shape for this: nothing verifies the margin held, so
+/// if it is ever too short the original bug returns silently.
+///
+/// It was chosen on the belief that the last hop — the compositor opening the
+/// device — could not be observed from this process. **That belief was wrong**,
+/// and was disproven the same day: the compositor holds the device's own event
+/// node open, under the same user this daemon runs as, so `/proc/<pid>/fd`
+/// makes "someone has picked up our device" a directly checkable condition.
+/// Waiting for that instead of for a clock is the actual fix, and it is filed
+/// in `issues.md` rather than done here. Until then, raise this value if a
+/// loaded or slow machine still drops the first command.
+///
+/// The cost is paid **once per daemon lifetime**, not per call: the device lives
+/// in a `OnceCell` (see [`InputBackend::device`]) and is created at most once.
+pub(crate) const DEFAULT_DEVICE_SETTLE_MS: u64 = 300;
+
 /// Cap on how many characters one `TypeText` call may synthesize, when
 /// `config.toml` does not say otherwise. Overridable via
 /// `Config::input_max_type_text_chars`.
@@ -86,10 +128,14 @@ pub(crate) const DEFAULT_MAX_EVENTS_PER_SECOND: u32 = 3000;
 /// something is stuck in a loop" is true everywhere.
 const MAX_THROTTLE_DELAY: Duration = Duration::from_secs(30);
 
-/// The tunable safety ceilings, resolved from `config.toml` at startup.
+/// The input backend's tunables, resolved from `config.toml` at startup.
 ///
-/// Grouped rather than passed as loose arguments so that adding a limit does
-/// not grow [`InputBackend::new`]'s signature by another anonymous number.
+/// Grouped rather than passed as loose arguments so that adding one does not
+/// grow [`InputBackend::new`]'s signature by another anonymous number.
+///
+/// Most of these are safety ceilings; [`Self::device_settle`] is not one, and
+/// is here because it shares their single source and lifetime rather than
+/// because it shares their purpose.
 #[derive(Debug, Clone, Copy)]
 pub struct InputLimits {
     /// Sustained events per second; `0` disables the rate limiter.
@@ -103,6 +149,11 @@ pub struct InputLimits {
     /// outcome to a user who typed it expecting to switch the guard off. The
     /// fail-safe reading is the one that cannot surprise anybody dangerously.
     pub max_type_text_chars: usize,
+    /// How long to wait after creating the `uinput` device before writing to
+    /// it, so the first command is not silently discarded. Paid once per daemon
+    /// lifetime. See [`DEFAULT_DEVICE_SETTLE_MS`]; `0` disables the wait, which
+    /// is only useful for a test that never expects delivery.
+    pub device_settle: Duration,
 }
 
 /// Errors surfaced by the daemon's input-automation layer.
@@ -236,9 +287,11 @@ impl InputBackend {
             .device
             .get_or_try_init(|| async {
                 let name = self.device_name.clone();
-                let device = tokio::task::spawn_blocking(move || UinputDevice::create(&name))
-                    .await
-                    .expect("uinput device-creation task panicked")?;
+                let settle = self.limits.device_settle;
+                let device =
+                    tokio::task::spawn_blocking(move || UinputDevice::create(&name, settle))
+                        .await
+                        .expect("uinput device-creation task panicked")?;
                 Ok::<_, InputError>(Arc::new(Mutex::new(device)))
             })
             .await?;

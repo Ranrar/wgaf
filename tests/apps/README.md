@@ -11,6 +11,7 @@ own lockfile and a build step of their own.
 | Application | What it is for |
 |---|---|
 | `window-test` | A fixed set of three windows: `wgaf window list`, `focus`, `resize`, `close` |
+| `input-test` | A text entry and a button: `wgaf type`, `key press`/`release`, `mouse click`/`move`/`scroll` |
 
 ## Why these exist
 
@@ -60,6 +61,14 @@ writing a new application, and use it rather than inventing a second shape.
 `app` and `seq` are the envelope every report carries; everything else is the
 application's own state.
 
+`input-test`'s state is shaped for diagnosis rather than convenience. It reports
+the entry's text *and* the raw key events side by side, because an empty event
+log means the input never arrived while a populated log with unexpected text
+means it arrived and the keyboard layout translated it — different faults, and
+only one of them is wgaf's. Its event logs keep the most recent 64 entries, with
+separate uncapped totals, so that a long `wgaf type` cannot produce a report too
+large to read.
+
 **`seq` is how a test knows when something happened.** No file means the
 application has not started. An unchanged `seq` means it started and nothing has
 happened since. An increased `seq` means a new event arrived. Take a baseline
@@ -84,6 +93,23 @@ Some things are not missing features and will not be added:
 - **Which window is focused at startup.** It varies between runs; the compositor
   decides. Assert the change `wgaf window focus` causes, not the state before
   it.
-- **An exact match between reported size and `wgaf window list`'s size.** The
-  application reports its own logical size, while Mutter reports a frame
-  rectangle. They are measurements of different things and need not be equal.
+- **Text that matches what you typed, on a non-US keyboard layout.** `wgaf type`
+  synthesizes US-QWERTY key *positions*, so on another layout the same keystroke
+  produces a different character — `wgaf type ":"` gives `Æ` on a Danish
+  keyboard. That is the documented scope of `wgaf type`, not a fault. Assert on
+  `input-test`'s raw key events, which arrive whatever the layout is, and treat
+  the entry's text as layout-dependent.
+- **A pointer motion matching the distance requested.** libinput applies pointer
+  acceleration to relative motion, so `wgaf mouse move 50 0` does not move the
+  pointer 50 logical pixels. `input-test`'s coordinates prove motion arrived and
+  in which direction; they do not measure the argument.
+- **A click aimed at a particular widget.** wgaf has no absolute pointer
+  positioning yet, so a test cannot put the pointer on the button. `input-test`
+  captures clicks across the whole window for that reason.
+
+One thing that *is* comparable, contrary to what this file previously said:
+**the size an application reports and the size `wgaf window list` reports match
+exactly.** These are client-side-decorated GTK4 windows, so the frame rectangle
+Mutter tracks is the client's own surface. Measured for all three `window-test`
+windows on 2026-07-29. Do not assume it holds for a server-side-decorated
+window, though no test application here produces one.

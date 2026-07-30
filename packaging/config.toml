@@ -12,6 +12,19 @@ extension_bus_name = "org.gnome.Shell.Extensions.Wgaf"
 # What the virtual uinput device reports to the kernel.
 input_device_name = "wgaf virtual input device"
 
+# How long to wait, in milliseconds, after creating the virtual input device
+# before sending the first keystroke or click through it.
+#
+# The wait is needed because the desktop does not start listening to a brand
+# new input device the instant it appears — and anything sent before it does
+# is thrown away with no error. Without this, the very first command after
+# the daemon starts would quietly do nothing.
+#
+# You only pay this once, on the first command after the daemon starts, not
+# on every command. Raise it if that first command still gets lost on a slow
+# or busy machine.
+input_device_settle_ms = 300
+
 # A safety net for runaway scripts, in keystrokes and clicks per second.
 # Going over it slows commands down rather than failing them, so a long
 # automation still finishes. Raise it if legitimate work feels throttled;
