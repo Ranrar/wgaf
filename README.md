@@ -1,6 +1,6 @@
-# wgaf
-
-**W**ayland **G**NOME **A**utomation **F**ramework
+<p align="center">
+  <img src="docs/assets/img/logo.png" alt="wgaf — Wayland GNOME Automation Framework" width="360">
+</p>
 
 Script your GNOME desktop from the terminal — move windows, type into apps,
 click buttons by name, drive any app's UI. If you relied on `xdotool` or

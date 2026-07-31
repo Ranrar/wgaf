@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A project logo at the top of the README, from `docs/assets/img/`. The alt text carries the full name, so nothing is lost where images do not render.
+
 - **`tests/apps/` — GTK4 applications that wgaf drives in its own tests and that report what they actually received.** Tests have so far driven `gtk4-demo`, an application this project does not control: their expectations are facts discovered by hand-scanning its widget tree, which a GTK upgrade can invalidate silently, and they cannot run anywhere it is not installed — which is exactly how CI broke. These applications draw a fixed, known UI, so a failure means wgaf changed rather than the toolkit did.
 
   The rule they exist to enforce is that **an assertion never travels back through the code path under test**: `wgaf type "hello"` is verified by reading the application's own report, never by asking `wgaf a11y info` what the application contains, since one bug in the accessibility layer would otherwise produce a false pass and blame the wrong subsystem. The shared `report` crate is that channel — a JSON file rewritten in full on every observed change, carrying a monotonic `seq` so a test can tell "not started" from "started, nothing has happened" from "a new event arrived". Each report is written to a sibling temporary file and `rename(2)`d into place, so a polling reader sees the previous report or the new one and never a torn document; that property is asserted by a test with a concurrent reader, and verified by mutation — writing in place fails it.
