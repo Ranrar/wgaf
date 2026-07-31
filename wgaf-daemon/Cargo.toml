@@ -17,3 +17,10 @@ thiserror.workspace = true
 libc.workspace = true
 atspi.workspace = true
 futures-util.workspace = true
+
+[dev-dependencies]
+# Only for reading the JSON reports the GTK4 test applications in `tests/apps/`
+# write (see `tests/harness/`). Not a new crate in the build graph — `wgaf-cli`
+# already depends on it — and `[dev-dependencies]` keeps it out of the daemon
+# binary entirely.
+serde_json.workspace = true

@@ -1199,6 +1199,7 @@ dependencies = [
  "futures-util",
  "libc",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "toml",

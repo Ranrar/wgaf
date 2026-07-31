@@ -158,7 +158,7 @@ export class WindowManager {
 
     focusWindow(id) {
         const win = this._requireWindow(id);
-        win.activate(global.get_current_time());
+        win.activate(this._timestamp());
     }
 
     moveWindow(id, x, y) {
@@ -178,7 +178,31 @@ export class WindowManager {
 
     closeWindow(id) {
         const win = this._requireWindow(id);
-        win.delete(global.get_current_time());
+        win.delete(this._timestamp());
+    }
+
+    /** A timestamp Mutter will accept from a D-Bus call.
+     *
+     * `global.get_current_time()` is the usual idiom, and it is the wrong one
+     * here. It returns the timestamp of the event currently being processed,
+     * falling back to the display's last input-event time - and a D-Bus method
+     * call is not an event, so on a session where no input has been handled
+     * recently it yields 0.
+     *
+     * Mutter rejects 0 outright. `meta_display_ping_window()` starts with
+     * `if (serial == 0) { g_warning("Tried to ping window %s with a bad
+     * serial! Not allowed."); return; }`, and `meta_window_delete()` pings the
+     * window to decide whether it is alive - so every CloseWindow issued this
+     * way logged that warning in the compositor's journal and skipped the
+     * liveness check. `activate()` takes the same timestamp for
+     * focus-stealing prevention, where a 0 can mean the request is ignored.
+     *
+     * `get_current_time_roundtrip()` is defined for exactly this case. On
+     * Wayland it returns `g_get_monotonic_time() / 1000`, which is always
+     * non-zero and always fresh.
+     */
+    _timestamp() {
+        return this._display.get_current_time_roundtrip();
     }
 
     _requireWindow(id) {

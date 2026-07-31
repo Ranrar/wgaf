@@ -121,8 +121,16 @@ struct State {
     /// So a test can match these windows to the process it started, and tell
     /// them apart from a stale instance left by an earlier run.
     pid: u32,
-    /// Stated explicitly rather than left for a test to infer from the array's
-    /// length, so "a window vanished" is visible in the report itself.
+    /// How many windows this application **tracks**, which is three for its
+    /// whole life — not how many are still open.
+    ///
+    /// A closed window stays in the array and is reported as `visible: false`,
+    /// so this number never changes. **It is therefore useless as a readiness
+    /// or liveness signal**, and it read as one: the first version of the
+    /// window-management tests waited for `window_count == 3` before driving
+    /// wgaf, which the very first report already satisfies, and so they ran
+    /// while the compositor had mapped one of the three windows. Wait for the
+    /// compositor's own view instead, and read `visible` to see what closed.
     window_count: usize,
     windows: Vec<WindowState>,
 }
@@ -301,12 +309,38 @@ fn watch(window: &Window, windows: &Rc<Vec<RoledWindow>>, reporter: &Rc<RefCell<
 
     // Report the closure itself, so a test can distinguish "the window closed"
     // from "the application died". The default handler still runs afterwards.
+    {
+        let windows = Rc::clone(windows);
+        let reporter = Rc::clone(reporter);
+        window.connect_close_request(move |_| {
+            write_report(&windows, &reporter);
+            gtk4::glib::Propagation::Proceed
+        });
+    }
+
+    // **The signal that actually makes a close observable.** The two above are
+    // not enough, and believing they were cost an afternoon of blaming wgaf.
+    //
+    // `wgaf window close` made the window vanish from the compositor's list
+    // while this application went on reporting it as visible, roughly half the
+    // time and with nothing to distinguish the runs. The close was real —
+    // Mutter only drops a window once the client has destroyed the surface —
+    // and neither watcher above fired for it:
+    //
+    // - `close-request` is emitted for a *request*, and the path a compositor
+    //   close takes does not always go through one.
+    // - `notify::visible` is a **property notification during dispose**, which
+    //   GObject is entitled to swallow while the widget is being torn down.
+    //   Whether it arrives is a race, which is exactly what the intermittency
+    //   looked like.
+    //
+    // `destroy` is emitted unconditionally, so a report always follows a close.
+    // Reading the window's state here is safe: this application holds a
+    // reference to every window for its whole life, so the object is still
+    // alive and `is_visible()` correctly answers `false`.
     let windows = Rc::clone(windows);
     let reporter = Rc::clone(reporter);
-    window.connect_close_request(move |_| {
-        write_report(&windows, &reporter);
-        gtk4::glib::Propagation::Proceed
-    });
+    window.connect_destroy(move |_| write_report(&windows, &reporter));
 }
 
 fn write_report(windows: &Rc<Vec<RoledWindow>>, reporter: &Rc<RefCell<Reporter>>) {

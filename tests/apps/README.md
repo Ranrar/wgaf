@@ -13,6 +13,27 @@ own lockfile and a build step of their own.
 | `window-test` | A fixed set of three windows: `wgaf window list`, `focus`, `resize`, `close` |
 | `input-test` | A text entry and a button: `wgaf type`, `key press`/`release`, `mouse click`/`move`/`scroll` |
 
+## Running the tests that use them
+
+```sh
+make test-desktop
+```
+
+One command: it builds the applications and runs the two suites that drive them
+— `wgaf-daemon/tests/keyboard_coverage.rs` and
+`wgaf-daemon/tests/window_management.rs` — through the shared harness in
+`wgaf-daemon/tests/harness/`.
+
+They run against your live session, which is the point, and it takes a few
+seconds. Two things follow from that. They are `#[ignore]`d, so a plain
+`cargo test` never starts them; and they run single-threaded, because two suites
+sharing one keyboard focus would each read the other's keystrokes.
+
+Anything they need of the machine is checked up front — a Wayland session, a
+writable `/dev/uinput`, the GNOME Shell Extension, a built application — and
+reported as the missing requirement rather than as whatever symptom shows up
+first.
+
 ## Why these exist
 
 Tests used to drive `gtk4-demo`, an application this project does not control.
@@ -68,6 +89,12 @@ means it arrived and the keyboard layout translated it — different faults, and
 only one of them is wgaf's. Its event logs keep the most recent 64 entries, with
 separate uncapped totals, so that a long `wgaf type` cannot produce a report too
 large to read.
+
+**`window_count` counts the windows `window-test` tracks, not the ones still
+open.** It is three from the first report to the last; a closed window stays in
+the array with `visible: false`. It is not a readiness signal and not a liveness
+signal — the first report already has all three, before the compositor has
+mapped any of them.
 
 **`seq` is how a test knows when something happened.** No file means the
 application has not started. An unchanged `seq` means it started and nothing has

@@ -8,6 +8,8 @@
 #   make man        - install man pages (optional)
 #   make test-apps  - build the GTK4 applications used by some tests
 #                     (needs GTK4 development packages; nothing else does)
+#   make test-desktop - run the tests that drive a real desktop
+#                     (opens windows and types on your session — see below)
 #   make clean      - remove build artifacts
 #
 # Installs to ~/.cargo/bin. If you've set CARGO_INSTALL_ROOT or CARGO_HOME
@@ -21,7 +23,7 @@ SYSTEMD_USER_DIR := $(XDG_CONFIG_HOME)/systemd/user
 SYSTEMD_UNIT := packaging/systemd/wgaf-daemon.service
 MAN_DIR := $(XDG_DATA_HOME)/man/man1
 
-.PHONY: build install uninstall man test-apps clean \
+.PHONY: build install uninstall man test-apps test-desktop clean \
 	cargo-install cargo-uninstall systemd-install systemd-uninstall \
 	config-install
 
@@ -109,6 +111,19 @@ man:
 # On Debian/Ubuntu the requirement is libgtk-4-dev; on Fedora, gtk4-devel.
 test-apps:
 	cargo build --manifest-path tests/apps/Cargo.toml
+
+# These tests drive your actual desktop: they open windows, move focus, and
+# type on the keyboard for real. That is the point — it is the only way to
+# check that what wgaf sends is what an application receives — but it means
+# they cannot run while you are using the machine for anything else. Leave the
+# session alone until they finish.
+#
+# They are marked ignored so that an ordinary 'cargo test' never starts them by
+# accident, and run one at a time because two of them driving the keyboard at
+# once would each receive the other's keystrokes.
+test-desktop: test-apps
+	cargo test -p wgaf-daemon --test keyboard_coverage --test window_management \
+		-- --ignored --test-threads=1
 
 clean:
 	cargo clean
