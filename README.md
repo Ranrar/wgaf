@@ -347,8 +347,10 @@ first command after the daemon starts.
 - Typed text and clicks go to whatever has keyboard focus at the moment they
   are sent, and can't be aimed at a particular window — so it's best not to use
   the desktop while a script is running.
-- `wgaf type` assumes a US keyboard layout, so punctuation can come out
-  differently on other layouts.
+- `wgaf type` assumes a US keyboard layout. On other layouts punctuation can
+  come out differently, and characters that need AltGr — `@` and `{` on a
+  Danish keyboard, for instance — can't be typed at all. Being fixed; see
+  [typing on a non-US layout](docs/cli-reference.md#typing-on-a-non-us-layout).
 
 ## Documentation
 

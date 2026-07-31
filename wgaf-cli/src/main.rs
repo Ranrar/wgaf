@@ -55,9 +55,9 @@ enum Command {
     },
 
     /// Low-level single-key press/release, by evdev key name (`a`, `enter`,
-    /// `leftshift`, ...). No ASCII/shift awareness — see `wgaf type` for
-    /// that; combine `key press leftshift` + `key press a` + releases for a
-    /// capital `A`.
+    /// `leftshift`, `up`, `f5`, `altgr`, ...). No ASCII/shift awareness — see
+    /// `wgaf type` for that; combine `key press leftshift` + `key press a` +
+    /// releases for a capital `A`.
     Key {
         #[command(subcommand)]
         command: KeyCommand,
@@ -97,13 +97,15 @@ enum Command {
 enum KeyCommand {
     /// Press (hold down) a key.
     Press {
-        /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`).
+        /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`, `up`,
+        /// `f5`, `altgr`, `kp0`).
         key: String,
     },
 
     /// Release a previously-pressed key.
     Release {
-        /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`).
+        /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`, `up`,
+        /// `f5`, `altgr`, `kp0`).
         key: String,
     },
 }

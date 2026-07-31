@@ -24,7 +24,9 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use crate::input::InputError;
-use crate::input::codes::{ALL_KEYS, EV_KEY, EV_REL, EV_SYN, REL_HWHEEL, REL_WHEEL, REL_X, REL_Y};
+use crate::input::codes::{
+    EV_KEY, EV_REL, EV_SYN, REL_HWHEEL, REL_WHEEL, REL_X, REL_Y, registered_codes,
+};
 
 /// Path to the kernel's `uinput` control device. Not currently
 /// configurable — unlike `Config::extension_bus_name` for the Windows1/
@@ -106,9 +108,9 @@ pub(crate) fn probe_access() -> Result<(), InputError> {
 }
 
 impl UinputDevice {
-    /// Opens `/dev/uinput`, registers every key/button/axis in
-    /// [`crate::input::codes::ALL_KEYS`] plus the relative axes this daemon
-    /// synthesizes, and creates the device reporting `device_name` to the
+    /// Opens `/dev/uinput`, registers every key/button code in
+    /// [`crate::input::codes::registered_codes`] plus the relative axes this
+    /// daemon synthesizes, and creates the device reporting `device_name` to the
     /// kernel (normally [`crate::input::DEFAULT_DEVICE_NAME`], overridable
     /// for test isolation — see that constant's doc comment).
     /// Blocking/synchronous — callers run this via
@@ -131,7 +133,7 @@ impl UinputDevice {
         // EV_KEY + every key/button code we support.
         ioctl_value(fd, UI_SET_EVBIT, EV_KEY as libc::c_ulong)
             .map_err(|e| device_unavailable(UINPUT_PATH, &e))?;
-        for &key in ALL_KEYS {
+        for key in registered_codes() {
             ioctl_value(fd, UI_SET_KEYBIT, key as libc::c_ulong)
                 .map_err(|e| device_unavailable(UINPUT_PATH, &e))?;
         }

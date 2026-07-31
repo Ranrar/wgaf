@@ -182,6 +182,17 @@ Typing is also subject to the overall input speed limit, which paces commands
 against each other rather than capping any one of them. See ["If automation
 suddenly runs slowly"](user-guide.md#if-automation-suddenly-runs-slowly).
 
+### Typing on a non-US layout
+
+**`wgaf type` currently assumes a US keyboard layout.** It sends key
+*positions* and your desktop decides what character each one produces, so on
+any other layout the result differs from what you asked for — and wgaf reports
+success either way.
+
+**This is a known limitation and it is being fixed** — a future version will
+detect your active layout and type against it. Until then, if you are not on a
+US layout, treat `wgaf type` as reliable for letters, digits and spaces, and
+check anything else.
 ---
 
 ## `wgaf key press|release <key>`
@@ -198,6 +209,33 @@ wgaf key release a
 wgaf key release leftshift
 ```
 
+Every key press must be matched by a release. A key left pressed stays pressed
+for the rest of the session, exactly as a physically stuck key would.
+
+### Key names
+
+Names are case-insensitive and the `KEY_` prefix is optional, so `a`, `A`,
+`KEY_A` and `key_a` are the same key.
+
+| Group | Names |
+|---|---|
+| Letters and digits | `a`–`z`, `0`–`9` |
+| Punctuation | `minus` (`dash`), `equal`, `leftbrace`, `rightbrace`, `semicolon`, `apostrophe` (`quote`), `grave` (`backtick`), `backslash`, `comma`, `dot` (`period`), `slash` |
+| Editing | `enter` (`return`), `tab`, `space`, `backspace`, `delete` (`del`), `insert` (`ins`), `escape` (`esc`) |
+| Arrows and navigation | `up`, `down`, `left`, `right`, `home`, `end`, `pageup` (`pgup`), `pagedown` (`pgdn`) |
+| Function keys | `f1`–`f12` |
+| Modifiers | `leftshift` (`shift`), `rightshift`, `leftctrl` (`ctrl`), `rightctrl`, `leftalt` (`alt`), `rightalt` (`altgr`), `leftmeta` (`super`, `win`), `rightmeta`, `capslock` (`caps`) |
+| Keypad | `kp0`–`kp9`, `kpdot`, `kpplus`, `kpminus`, `kpasterisk`, `kpslash`, `kpenter`, `numlock` |
+| Other | `102nd` (the extra `<>` or `\|` key on ISO keyboards), `printscreen`, `scrolllock`, `pause`, `menu` |
+
+An unrecognised name is refused by name rather than ignored.
+
+### Keys and your keyboard layout
+
+A key name refers to a **physical key position**, not to the character printed
+on it, and the names follow a US keyboard. On another layout a key produces
+whatever that position produces there: `wgaf key press 2` with shift held gives
+`"` on a Danish keyboard, not `@`.
 ---
 
 ## `wgaf mouse ...`

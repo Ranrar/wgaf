@@ -61,6 +61,17 @@ wgaf key release a
 wgaf key release leftshift
 ```
 
+`wgaf type` covers text; `wgaf key` covers everything else a keyboard has —
+arrows, `escape`, function keys, `super`, `altgr`, the keypad. That is what
+you need to drive a dialog or a menu:
+
+```sh
+wgaf key press down
+wgaf key release down
+wgaf key press escape
+wgaf key release escape
+```
+
 Move, click, or scroll the mouse:
 
 ```sh
