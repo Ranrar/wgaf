@@ -318,26 +318,54 @@ fn watch(window: &Window, windows: &Rc<Vec<RoledWindow>>, reporter: &Rc<RefCell<
         });
     }
 
-    // **The signal that actually makes a close observable.** The two above are
-    // not enough, and believing they were cost an afternoon of blaming wgaf.
+    // **The signal that actually makes a close observable**, and the one this
+    // application was missing. Getting it wrong cost two sessions of blaming
+    // wgaf for a defect that was never there.
     //
-    // `wgaf window close` made the window vanish from the compositor's list
-    // while this application went on reporting it as visible, roughly half the
-    // time and with nothing to distinguish the runs. The close was real —
-    // Mutter only drops a window once the client has destroyed the surface —
-    // and neither watcher above fired for it:
+    // The symptom: `wgaf window close` made the window vanish from the
+    // compositor's list while this application went on reporting it as
+    // `visible: true`, in 5 runs out of 6. That was recorded as a compositor
+    // defect — "the window is gone and the application was never told" — and it
+    // is not. The application is told, every single time. It simply had no
+    // watcher on any signal that fires once the close has *completed*, so it
+    // never wrote a report describing the state afterwards.
     //
-    // - `close-request` is emitted for a *request*, and the path a compositor
-    //   close takes does not always go through one.
-    // - `notify::visible` is a **property notification during dispose**, which
-    //   GObject is entitled to swallow while the widget is being torn down.
-    //   Whether it arrives is a race, which is exactly what the intermittency
-    //   looked like.
+    // Measured directly, by printing every signal as it arrived (2026-08-01,
+    // 10 consecutive closes):
     //
-    // `destroy` is emitted unconditionally, so a report always follows a close.
-    // Reading the window's state here is safe: this application holds a
-    // reference to every window for its whole life, so the object is still
-    // alive and `is_visible()` correctly answers `false`.
+    // | Signal | Fires on a compositor close? |
+    // |---|---|
+    // | `close-request` | **always** — 10 of 10 |
+    // | `unmap` | **always** — 10 of 10, with `is_visible()` already `false` |
+    // | `unrealize` | always, just after `unmap` |
+    // | `notify::visible` | **never** |
+    // | `destroy` | **never** |
+    //
+    // So the two guesses in the original analysis were both wrong. `destroy` is
+    // not "emitted unconditionally" here — GTK4 hides this window rather than
+    // destroying it, because nothing else holds it open — and `notify::visible`
+    // is not a swallowed-during-dispose race, it is simply not emitted at all.
+    //
+    // The apparent intermittency was an artifact of exactly that gap: the one
+    // run in six that "passed" did so because an unrelated `is-active` change
+    // happened to trigger a report after the close, which then observed the new
+    // state by luck. Nothing about the close itself varied.
+    //
+    // `unmap` is the right signal: it is emitted whenever the window stops
+    // being on screen, it is deterministic, and `is_visible()` already answers
+    // `false` by the time it runs. Reading the window's state here is safe —
+    // this application holds a reference to every window for its whole life, so
+    // the object is alive regardless of what the toolkit did to the surface.
+    {
+        let windows = Rc::clone(windows);
+        let reporter = Rc::clone(reporter);
+        window.connect_unmap(move |_| write_report(&windows, &reporter));
+    }
+
+    // Kept for the case `unmap` does not cover: the window being destroyed
+    // outright rather than hidden, which is what would happen if this
+    // application ever tore one down itself. It does not fire on a compositor
+    // close — see the table above — so it is a safety net, not the mechanism.
     let windows = Rc::clone(windows);
     let reporter = Rc::clone(reporter);
     window.connect_destroy(move |_| write_report(&windows, &reporter));

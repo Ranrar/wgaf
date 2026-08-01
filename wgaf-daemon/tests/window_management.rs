@@ -106,6 +106,8 @@ impl Fixture {
             );
         }
 
+        wait_for_a_clean_slate(&connection, &bus_name).await;
+
         let app = TestApp::spawn("window-test").await;
 
         let fixture = Self {
@@ -136,18 +138,38 @@ impl Fixture {
     /// application's own report. It is a gate, and it fails loudly rather than
     /// silently proceeding, so a genuine enumeration bug still surfaces as a
     /// timeout naming the windows that never appeared.
+    ///
+    /// **A window being listed is not a readiness signal either, and that
+    /// looked like one too.** Mutter reports a window — correct id, title and
+    /// `app_id` — before its frame rectangle exists, and `get_frame_rect()`
+    /// answers `0x0 at (0,0)` until the surface has been committed. Measured,
+    /// not inferred: a probe that gated on titles alone and then listed
+    /// immediately caught all three windows at `0x0` in 2 runs out of 6, with
+    /// every window correct again 100 ms later.
+    ///
+    /// That was half of this suite's flakiness — the other half was a missing
+    /// `unmap` watcher in `window-test`, see the close test. Gating on titles
+    /// let a test read a zero geometry and compare it against the size the
+    /// application reports, which is how
+    /// `list_windows_reports_every_window_the_application_has` failed roughly a
+    /// third of the time with `left: 0, right: 640` — a number that came from
+    /// the compositor, not from any defect in wgaf. So the gate waits for a
+    /// non-zero size as well, which is the point at which the window genuinely
+    /// has one.
     async fn wait_until_every_window_is_mapped(&self) {
         let deadline = tokio::time::Instant::now() + SETTLE;
         loop {
-            let seen: Vec<String> = self
-                .list()
-                .await
-                .into_iter()
-                .map(|window| window.title)
-                .collect();
+            let windows = self.list().await;
+            let seen: Vec<&str> = windows.iter().map(|window| window.title.as_str()).collect();
+            // A window with no size yet is not ready, so it counts as missing
+            // rather than as present-but-odd: the two are the same wait.
             let missing: Vec<&str> = [MAIN_TITLE, SECONDARY_TITLE, DIALOG_TITLE]
                 .into_iter()
-                .filter(|title| !seen.iter().any(|seen| seen == title))
+                .filter(|title| {
+                    !windows
+                        .iter()
+                        .any(|w| w.title == *title && w.width > 0 && w.height > 0)
+                })
                 .collect();
 
             if missing.is_empty() {
@@ -155,8 +177,9 @@ impl Fixture {
             }
             if tokio::time::Instant::now() >= deadline {
                 panic!(
-                    "the compositor never reported {missing:?} within {SETTLE:?}, \
-                     though window-test says it has them. `wgaf window list` saw: {seen:?}"
+                    "the compositor never reported {missing:?} at a non-zero size within \
+                     {SETTLE:?}, though window-test says it has them. \
+                     `wgaf window list` saw: {seen:?}"
                 );
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -164,11 +187,7 @@ impl Fixture {
     }
 
     async fn list(&self) -> Vec<WindowRecord> {
-        let records: Vec<WindowRecordDict> =
-            harness::windows(&self.connection, &self.bus_name, "ListWindows", &())
-                .await
-                .expect("ListWindows failed against the real extension");
-        records.into_iter().map(Into::into).collect()
+        list_windows(&self.connection, &self.bus_name).await
     }
 
     /// The window record for one of `window-test`'s titles, failing with what
@@ -183,6 +202,65 @@ impl Fixture {
                 let seen: Vec<&str> = windows.iter().map(|w| w.title.as_str()).collect();
                 panic!("`wgaf window list` did not report `{title}`. It reported: {seen:?}")
             })
+    }
+}
+
+async fn list_windows(connection: &zbus::Connection, bus_name: &str) -> Vec<WindowRecord> {
+    let records: Vec<WindowRecordDict> = harness::windows(connection, bus_name, "ListWindows", &())
+        .await
+        .expect("ListWindows failed against the real extension");
+    records.into_iter().map(Into::into).collect()
+}
+
+/// Blocks until no `window-test` window is left over from an earlier run.
+///
+/// **Killing the application does not immediately remove its windows.**
+/// `TestApp`'s `Drop` sends a signal and reaps the process, which is as much as
+/// a synchronous `Drop` can do; Mutter unmaps the surfaces afterwards, on its
+/// own schedule. So a run that starts promptly after another one finds the
+/// previous instance's three windows still listed — with valid titles and valid
+/// geometry, which is precisely what makes them indistinguishable from this
+/// run's.
+///
+/// **This is precautionary, and it is worth being clear that it did not fix
+/// anything.** It was added on 2026-08-01 while chasing this suite's
+/// flakiness, on the theory that leftover windows were making tests drive a
+/// dead instance. That theory was wrong — the flakiness was a missing `unmap`
+/// watcher in `window-test` plus a gate that accepted zero geometry, both fixed
+/// separately — and the wait has never once tripped since.
+///
+/// It stays because the hazard it guards is real even though it was not the
+/// one being hunted: every window in this file is found by *title*, and two
+/// instances of `window-test` present identical titles, so a leftover instance
+/// would silently hand a test another process's window id. Cheap when the slate
+/// is already clean, which is the normal case.
+///
+/// It has to happen here rather than in `TestApp`'s `Drop`, because it needs the
+/// bus and a running daemon.
+async fn wait_for_a_clean_slate(connection: &zbus::Connection, bus_name: &str) {
+    let deadline = tokio::time::Instant::now() + SETTLE;
+    loop {
+        let leftover: Vec<String> = list_windows(connection, bus_name)
+            .await
+            .into_iter()
+            .filter(|window| {
+                [MAIN_TITLE, SECONDARY_TITLE, DIALOG_TITLE].contains(&window.title.as_str())
+            })
+            .map(|window| window.title)
+            .collect();
+
+        if leftover.is_empty() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "{leftover:?} were still listed {SETTLE:?} after an earlier run should have \
+                 finished with them. Every window here is found by title, so starting now \
+                 would let this test drive another instance's windows. \
+                 Close any stray `window-test` and re-run."
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -350,26 +428,32 @@ async fn resize_window_changes_the_size_the_application_reports() {
 /// The dialog is the interesting target: it is the transient, the window whose
 /// `app_id` differs from its siblings', and the one a naive filter loses.
 ///
-/// # This test currently fails about half the time, and the test is not the
-/// # thing that is wrong
+/// # This test used to fail about half the time, and wgaf was never the reason
 ///
-/// It reproduces an open defect, filed in `issues.md`: **the window disappears
-/// from the compositor's list while the application is never told it closed.**
-/// Both halves were observed in the same failing run — `ListWindows` no longer
-/// returns the dialog, and the application, still running, has written no
-/// report and goes on describing the window as visible.
+/// It was recorded in `issues.md` as reproducing a compositor defect — "the
+/// window disappears from the compositor's list while the application is never
+/// told it closed". **That was wrong, and the diagnosis is worth keeping so it
+/// is not repeated.** The application is told every single time. What it lacked
+/// was a watcher on any signal that fires once the close has *completed*, so it
+/// never wrote a report describing the state afterwards, and this test waited
+/// for a report that was never coming.
 ///
-/// **Do not weaken this test to make it pass.** Asserting only that the
-/// compositor stopped listing the window would check wgaf against wgaf and
-/// would hide exactly the symptom a user would meet. The assertion below is the
-/// correct one; it is the behaviour underneath that is wrong.
+/// The intermittency was the tell, read backwards. The runs that passed did so
+/// because an unrelated `is-active` change happened to trigger a report after
+/// the close, which then observed the new state by luck. Nothing about closing
+/// varied between runs.
 ///
-/// What has been ruled out, so nobody repeats it: it is not a mapping race
-/// (waiting longer makes it *worse*), not stale windows from an earlier run
-/// (checked before spawning), and not specific to the dialog (targeting the
-/// main `ApplicationWindow` failed five times out of five). `window-test` also
-/// now watches `destroy` in addition to `close-request` and `notify::visible`,
-/// which did **not** change the outcome.
+/// Fixed in `window-test` by watching `unmap`, which is emitted on every close
+/// with `is_visible()` already `false`; the full signal measurements are in the
+/// comment on that watcher. Two other defects were found and fixed alongside
+/// it, and both had been masking this one: the readiness gate accepted windows
+/// Mutter was still reporting as `0x0`, and nothing waited for a previous
+/// instance's windows to go away.
+///
+/// **Do not weaken this test.** Asserting only that the compositor stopped
+/// listing the window would check wgaf against wgaf and would hide exactly the
+/// symptom a user would meet. The assertion below is the correct one, and it
+/// now holds deterministically — measured at 20 consecutive passes.
 #[tokio::test]
 #[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
             Run deliberately after `make test-apps`, with --test-threads=1."]
@@ -401,10 +485,9 @@ async fn close_window_closes_the_one_it_names() {
         Ok(report) => report,
         Err(last) => {
             // What the compositor thinks, printed alongside what the
-            // application thinks — because the two disagreeing is the whole
-            // shape of the open defect this test currently reproduces, and a
-            // failure that shows only one side sends the next person looking
-            // in the wrong place.
+            // application thinks. A failure that shows only one side sends the
+            // next person looking in the wrong place — which is precisely what
+            // happened the first time this failed.
             let titles: Vec<String> = fixture
                 .list()
                 .await
@@ -415,8 +498,9 @@ async fn close_window_closes_the_one_it_names() {
             panic!(
                 "the dialog never reported becoming invisible after CloseWindow({}).\n\
                  The compositor now lists: {titles:?}\n\
-                 If the dialog is absent there, this is the known defect in `issues.md`: \
-                 the window is gone from the compositor and the application was never told.\n\
+                 If the dialog is absent there, the close itself worked and the \
+                 application did not report it — check that `window-test` still watches \
+                 `unmap`, which is the only signal that fires on a compositor close.\n\
                  Last report:\n{}",
                 dialog.id,
                 last.map(|r| format!("{:#}", r.json()))
