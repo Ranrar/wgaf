@@ -44,6 +44,8 @@ pub struct DaemonStatusDict {
     uinput_detail: String,
     input_device_name: String,
     input_device_created: bool,
+    input_keyboard_layout_configured: String,
+    input_keyboard_layout_resolved: String,
     accessibility_available: bool,
     accessibility_detail: String,
     accessibility_connected: bool,
@@ -69,6 +71,8 @@ impl From<DaemonStatus> for DaemonStatusDict {
             uinput_detail: s.uinput_detail,
             input_device_name: s.input_device_name,
             input_device_created: s.input_device_created,
+            input_keyboard_layout_configured: s.input_keyboard_layout_configured,
+            input_keyboard_layout_resolved: s.input_keyboard_layout_resolved,
             accessibility_available: s.accessibility_available,
             accessibility_detail: s.accessibility_detail,
             accessibility_connected: s.accessibility_connected,
@@ -96,6 +100,8 @@ impl From<DaemonStatusDict> for DaemonStatus {
             uinput_detail: d.uinput_detail,
             input_device_name: d.input_device_name,
             input_device_created: d.input_device_created,
+            input_keyboard_layout_configured: d.input_keyboard_layout_configured,
+            input_keyboard_layout_resolved: d.input_keyboard_layout_resolved,
             accessibility_available: d.accessibility_available,
             accessibility_detail: d.accessibility_detail,
             accessibility_connected: d.accessibility_connected,
@@ -210,6 +216,8 @@ mod tests {
             uinput_detail: String::new(),
             input_device_name: "wgaf virtual input device".to_string(),
             input_device_created: false,
+            input_keyboard_layout_configured: "auto".into(),
+            input_keyboard_layout_resolved: String::new(),
             accessibility_available: true,
             accessibility_detail: String::new(),
             accessibility_connected: false,
@@ -247,6 +255,8 @@ mod tests {
             "uinput_detail",
             "input_device_name",
             "input_device_created",
+            "input_keyboard_layout_configured",
+            "input_keyboard_layout_resolved",
             "accessibility_available",
             "accessibility_detail",
             "accessibility_connected",
@@ -263,7 +273,7 @@ mod tests {
         }
         assert_eq!(
             dto_keys.len(),
-            20,
+            22,
             "a field was added to DaemonStatus without being added to the \
              assertion above (and probably without being added to \
              DaemonStatusDict either)"

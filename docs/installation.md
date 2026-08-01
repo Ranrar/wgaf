@@ -4,6 +4,10 @@
 
 - GNOME Shell on Wayland (built and tested against GNOME Shell 50)
 - A recent Rust toolchain (the workspace uses the 2024 edition)
+- The `libxkbcommon` development package, which wgaf builds against to read
+  your keyboard layout. The library itself is already on every Wayland desktop;
+  it is the headers the build needs. On Debian and Ubuntu that is
+  `libxkbcommon-dev`, on Fedora `libxkbcommon-devel`, on Arch `libxkbcommon`.
 - AT-SPI enabled — the default on GNOME
 - `systemd` user services, only if you want the daemon to run as a service
 
@@ -98,7 +102,7 @@ step 2 of [first-time setup](#first-time-setup), and confirm the group
 membership actually applied (`id -nG | grep input`); it only takes effect
 after a full log out and back in.
 
-**The first `wgaf type` or `wgaf click` after starting the daemon does
+**The first `wgaf type` or `wgaf mouse click` after starting the daemon does
 nothing**, and running it again works — the desktop had not finished picking
 up wgaf's virtual input device yet, so the keystrokes went nowhere. wgaf waits
 300 ms for this on the first command; raise `input_device_settle_ms` in

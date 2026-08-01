@@ -48,68 +48,44 @@ So it keeps working instead of racing GNOME's next release.
 Checked items work today.
 
 ### Window management
-- [x] List windows — id, title, application, position, size, workspace, focused and maximized state
-- [x] Focus, move, resize, and close a window
-- [x] List workspaces and see which window sits on which
+- [x] List windows with position, size, workspace, and focus state
+- [x] Focus, move, resize, and close windows
+- [x] Query workspaces
 - [ ] Minimize and maximize
-- [ ] Watch windows open, close, and change focus, so a script can react
+- [ ] Window open, close, and focus events
 
-### Keyboard
-- [x] Type a string of text
-- [x] Press and release individual keys, modifiers and AltGr included
-- [x] Every key of a 105-key keyboard, verified against a real application
-- [ ] Type correctly on non-US keyboard layouts
-- [ ] Refuse to type when the window you meant isn't the focused one
-
-### Mouse
-- [x] Move the pointer relative to where it is
-- [x] Click any button and scroll in either direction
-- [ ] Move the pointer to an absolute position, on any monitor
+### Keyboard & mouse
+- [x] Type text, on whatever keyboard layout your desktop uses
+- [x] Press and release individual keys
+- [x] Press key combinations like `ctrl shift t`
+- [x] Move, click, and scroll the mouse
+- [ ] Move the pointer to an absolute screen position
 
 ### Accessibility
-- [x] List running applications that expose an accessible interface
-- [x] Read an application's UI tree, to whatever depth you ask for
+- [x] List running accessible applications
+- [x] Read an application's UI tree
 - [x] Find elements by name, role, or description
-- [x] Inspect one element — role, name, description, state, children
-- [x] Click an element, trigger a named action, focus it, or fill its text
-- [ ] Durable element names, so a saved script survives the application restarting
-- [ ] Take those names from an application's own GTK UI file, and turn one into a workflow
+- [x] Click elements, focus them, and fill text fields
+- [ ] Durable element names, so a script survives the application restarting
 
-### Applications
-- [ ] Launch an installed application by name
-- [ ] Tell whether an application is already running
-- [ ] Drive an application through the actions it publishes itself, where it does
+### Safety & permissions
+- [x] Allow, deny, or prompt per capability
+- [x] Caps on how fast and how much synthetic input one command can produce
+- [x] Every action that changes something is recorded
+- [ ] A panic stop for a runaway script
+- [ ] A readable log file of what wgaf did
 
-### Scripting and workflows
+### Scripting & tooling
 - [x] JSON output on every command
-- [x] Named, stable errors, so a script can tell what went wrong
+- [x] `wgaf status` — what's working and what isn't
+- [x] Shell completions and man pages
+- [x] systemd user service
+- [ ] Launch applications
 - [ ] Run a saved workflow from a file
-- [ ] Record what you do and replay it later
-- [ ] Trigger a script when a window opens or a UI element changes
+- [ ] Take a screenshot
 
 ### AI agents
-- [ ] An MCP server, so an agent drives the desktop under the permissions you set
-- [ ] Agent actions recorded separately from your own
-
-### Safety and transparency
-- [x] Allow, deny, or prompt per capability — thirteen of them
-- [x] A prompt arrives as a desktop notification you answer
-- [x] Caps on how fast, and how much, synthetic input one command can produce
-- [x] Config and policy files must be yours alone, or the daemon won't start
-- [x] Every action that changes something is recorded
-- [x] `wgaf status` — the extension, `/dev/uinput`, the accessibility bus, and the policy in force
-- [ ] A panic stop that halts input at once and stays off until you clear it
-- [ ] A readable log file, one per day, private to you
-- [ ] A panel indicator showing when something is automating your desktop
-- [ ] Screenshots, through the desktop's own consent flow
-
-### Install and platform
-- [x] One `make install` — binaries, systemd user service, GNOME Shell extension
-- [x] Configuration found automatically, no flags needed
-- [x] Shell completions for bash, zsh, fish, elvish and PowerShell, plus man pages
-- [ ] `.deb` and `.rpm` packages
-- [ ] Tested against more than one GNOME release
-- [ ] Other Wayland compositors — KDE, Sway, Hyprland
+- [ ] MCP server, so an agent can drive the desktop under the permissions you set
 
 ## Use cases
 
@@ -174,8 +150,9 @@ is issuing the commands.
 
 ## Get started
 
-You need GNOME Shell on Wayland (tested against GNOME Shell 50) and a recent
-Rust toolchain.
+You need GNOME Shell on Wayland (tested against GNOME Shell 50), a recent Rust
+toolchain, and the `libxkbcommon` development package (`libxkbcommon-dev` on
+Debian and Ubuntu, `libxkbcommon-devel` on Fedora).
 
 ```sh
 git clone https://github.com/Ranrar/wgaf.git
@@ -258,13 +235,9 @@ command can produce.
 
 ## Known issues
 
-- Typed text and clicks go to whatever has keyboard focus at the moment they
-  are sent, and can't be aimed at a particular window — so it's best not to use
-  the desktop while a script is running.
-- `wgaf type` assumes a US keyboard layout. On other layouts punctuation can
-  come out differently, and characters that need AltGr — `@` and `{` on a
-  Danish keyboard, for instance — can't be typed at all. Being fixed; see
-  [typing on a non-US layout](docs/cli-reference.md#typing-on-a-non-us-layout).
+- Input can't be aimed at a particular window. Typed text goes wherever the
+  keyboard focus is, and clicks go wherever the pointer already is — so it's
+  best not to use the desktop while a script is running.
 
 ## The goal
 

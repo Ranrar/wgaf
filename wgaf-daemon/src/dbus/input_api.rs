@@ -44,6 +44,19 @@ enum InputApiError {
     /// The call was refused by `permissions.toml`'s policy (or the
     /// caller declined an interactive `Prompt`) — see `crate::permissions`.
     PermissionDenied(String),
+    /// `TypeText` was given a character the active keyboard layout has no key
+    /// sequence for.
+    ///
+    /// Named rather than folded into [`Self::UnknownKey`] because it is a
+    /// different question: `UnknownKey` means "there is no such key", this
+    /// means "this layout cannot produce that character". A script that
+    /// branches on it can substitute or skip; one that cannot tell them apart
+    /// has to guess.
+    CharacterNotTypeable(String),
+    /// The session's keyboard layout could not be determined, so `TypeText`
+    /// does not know what its keystrokes would produce. Environmental — no
+    /// Wayland session, or no keyboard on any seat.
+    KeyboardLayoutUnavailable(String),
 }
 
 impl From<InputError> for InputApiError {
@@ -52,8 +65,18 @@ impl From<InputError> for InputApiError {
             InputError::DeviceUnavailable { .. } => Self::DeviceUnavailable(err.to_string()),
             InputError::UnknownKey(_) => Self::UnknownKey(err.to_string()),
             InputError::InvalidButton(_) => Self::InvalidButton(err.to_string()),
+            // An empty combination is a malformed request, same shape of
+            // mistake as an unknown key name.
+            InputError::EmptyHotkey => Self::UnknownKey(err.to_string()),
             InputError::RateLimited { .. } => Self::RateLimited(err.to_string()),
             InputError::TextTooLong { .. } => Self::TextTooLong(err.to_string()),
+            InputError::CharacterNotTypeable { .. } => Self::CharacterNotTypeable(err.to_string()),
+            // A misconfigured layout reaches the caller the same way an absent
+            // one does: either way `wgaf type` cannot run, and the message
+            // already says which it is.
+            InputError::KeyboardLayoutUnavailable(_) | InputError::KeyboardLayoutInvalid(_) => {
+                Self::KeyboardLayoutUnavailable(err.to_string())
+            }
             InputError::Io(_) => Self::ZBus(zbus::Error::Failure(err.to_string())),
         }
     }
@@ -118,6 +141,26 @@ impl InputApi {
             .check(Capability::KeyPress, connection, &header)
             .await?;
         Ok(self.backend.key_press(key).await?)
+    }
+
+    /// Presses a key combination: every key held down in order, then released
+    /// in reverse.
+    ///
+    /// Gated by `KeyPress` rather than a capability of its own — it presses
+    /// keys, and a caller allowed to press `ctrl` then `t` separately can
+    /// already do everything this does. A new capability would only mean a
+    /// policy that denied `Hotkey` while allowing `KeyPress` looked like it
+    /// prevented something.
+    async fn hotkey(
+        &self,
+        keys: Vec<String>,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::KeyPress, connection, &header)
+            .await?;
+        Ok(self.backend.hotkey(&keys).await?)
     }
 
     /// Releases a key previously pressed via `KeyPress`.

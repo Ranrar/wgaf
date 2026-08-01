@@ -67,6 +67,22 @@ pub struct Config {
     /// [`crate::input::DEFAULT_DEVICE_SETTLE_MS`] for the measurements behind
     /// the default.
     pub input_device_settle_ms: u64,
+    /// Which keyboard layout `wgaf type` types against.
+    ///
+    /// `"auto"` (the default) uses the layout the session's keymap lists first,
+    /// which is what the desktop is configured with. A layout can also be named
+    /// outright, as a code (`"dk"`), a code with a variant (`"dk(nodeadkeys)"`),
+    /// or the full name the keymap reports (`"Danish"`, `"English (Dvorak)"`).
+    /// `"us-ascii"` selects the historical US-QWERTY table instead of the
+    /// session keymap, for scripts written against key *positions*.
+    ///
+    /// **A layout is not a language.** `en` is not accepted, because English has
+    /// ten layouts and `us` and `us(dvorak)` differ on nearly every key — see
+    /// [`crate::input::keymap`].
+    ///
+    /// Resolved once at daemon startup and held. Changing the desktop's layout
+    /// afterwards means restarting the daemon.
+    pub input_keyboard_layout: String,
 }
 
 impl Default for Config {
@@ -79,6 +95,7 @@ impl Default for Config {
             input_max_events_per_second: crate::input::DEFAULT_MAX_EVENTS_PER_SECOND,
             input_max_type_text_chars: crate::input::DEFAULT_MAX_TYPE_TEXT_CHARS,
             input_device_settle_ms: crate::input::DEFAULT_DEVICE_SETTLE_MS,
+            input_keyboard_layout: crate::input::DEFAULT_KEYBOARD_LAYOUT.to_string(),
         }
     }
 }

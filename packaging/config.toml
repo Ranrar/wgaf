@@ -39,3 +39,27 @@ input_max_events_per_second = 3000
 # opposite of the setting above. That is on purpose, so a mistaken 0 fails
 # safe rather than removing the guard.
 input_max_type_text_chars = 4096
+
+# The keyboard layout `wgaf type` types against.
+#
+# "auto" uses the layout your desktop is already set to, which is what you
+# want unless you have a reason otherwise.
+#
+# To pick one yourself, write a layout code ("dk", "de", "fr"), a code with a
+# variant ("dk(nodeadkeys)", "us(dvorak)"), or the full name your system uses
+# for it ("Danish", "English (Dvorak)"). Run
+# `localectl list-x11-keymap-layouts` to see the codes, and
+# `localectl list-x11-keymap-variants dk` for one layout's variants.
+#
+# This is a keyboard layout, not a language. "en" is not a layout: English has
+# ten of them, and US and Dvorak keyboards put nearly every key somewhere
+# different.
+#
+# "us-ascii" is also accepted, and ignores your layout entirely in favour of a
+# plain US keyboard. Only useful for scripts written around key positions
+# rather than the characters they produce.
+#
+# The layout is read once when the daemon starts. If you change your keyboard
+# layout afterwards, restart the daemon so it picks the new one up:
+# `systemctl --user restart wgaf-daemon.service`
+input_keyboard_layout = "auto"

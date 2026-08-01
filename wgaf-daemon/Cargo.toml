@@ -17,6 +17,8 @@ thiserror.workspace = true
 libc.workspace = true
 atspi.workspace = true
 futures-util.workspace = true
+xkbcommon.workspace = true
+wayland-client.workspace = true
 
 [dev-dependencies]
 # Only for reading the JSON reports the GTK4 test applications in `tests/apps/`

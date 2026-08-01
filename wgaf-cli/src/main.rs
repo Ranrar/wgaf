@@ -108,6 +108,19 @@ enum KeyCommand {
         /// `f5`, `altgr`, `kp0`).
         key: String,
     },
+
+    /// Press a key combination — all keys held, then released in reverse.
+    ///
+    /// e.g. `wgaf key combo ctrl shift t`. Doing this by hand takes six
+    /// commands and leaves modifiers stuck down if one of them fails.
+    ///
+    /// These are physical keys, not characters, so a combination is the same
+    /// on every keyboard layout.
+    Combo {
+        /// Key names, in the order they should be held (e.g. `ctrl shift t`).
+        #[arg(required = true, num_args = 1..)]
+        keys: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -339,6 +352,7 @@ async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
             KeyCommand::Release { key } => {
                 commands::input::key_release(bus_name, &key, json).await?
             }
+            KeyCommand::Combo { keys } => commands::input::hotkey(bus_name, &keys, json).await?,
         },
         Command::Mouse { command } => match command {
             MouseCommand::Move { dx, dy } => {

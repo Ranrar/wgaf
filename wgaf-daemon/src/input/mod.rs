@@ -16,8 +16,11 @@
 mod codes;
 mod device;
 mod keyboard;
+mod keymap;
 mod mouse;
 mod rate_limit;
+mod wayland;
+mod xkb;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -104,6 +107,34 @@ pub(crate) const DEFAULT_DEVICE_SETTLE_MS: u64 = 300;
 /// opportunistic pastes even though a determined attacker routes around it.
 pub(crate) const DEFAULT_MAX_TYPE_TEXT_CHARS: usize = 4096;
 
+/// Which keyboard layout `TypeText` resolves characters against, when
+/// `config.toml` does not say otherwise. Overridable via
+/// `Config::input_keyboard_layout`.
+///
+/// `"auto"` takes the session keymap's first layout. See [`keymap`] for why
+/// that is a decision rather than a detection: the *active* layout index only
+/// arrives with keyboard focus, which a headless daemon never has.
+pub(crate) const DEFAULT_KEYBOARD_LAYOUT: &str = keymap::AUTO;
+
+/// The configured value selecting the historical US-QWERTY table instead of the
+/// session's keymap.
+///
+/// Kept reachable because scripts written against key *positions* rather than
+/// characters exist, and because it is the behaviour every wgaf release before
+/// this one had.
+pub(crate) const US_ASCII_LAYOUT: &str = "us-ascii";
+
+/// How `TypeText` turns characters into keystrokes.
+pub(crate) enum Typing {
+    /// Resolved from the session's own keymap — correct on whatever layout the
+    /// desktop is actually using, including characters behind AltGr and dead
+    /// keys.
+    Keymap(Arc<xkb::LayoutMap>),
+    /// The historical flat US-QWERTY table. Correct on exactly one layout, and
+    /// unable to express a third-level modifier at all.
+    UsAscii,
+}
+
 /// Sustained synthetic-input budget, in kernel events per second, when
 /// `config.toml` does not say otherwise.
 ///
@@ -156,6 +187,33 @@ pub struct InputLimits {
     pub device_settle: Duration,
 }
 
+/// Reads the session keymap and builds the character index for the configured
+/// layout. Blocking; callers run it on the blocking pool.
+///
+/// Splits its failures in two on purpose. A keymap that cannot be read is the
+/// *environment* being absent — no Wayland session, no keyboard — and the daemon
+/// stays useful for windows and accessibility. A layout that does not resolve is
+/// the *configuration* being wrong, which is worth refusing to start over rather
+/// than discovering at the first `wgaf type`.
+fn resolve_layout(spec: &str) -> Result<xkb::LayoutMap, InputError> {
+    let session_keymap = wayland::read_session_keymap()
+        .map_err(|e| InputError::KeyboardLayoutUnavailable(e.to_string()))?;
+
+    let index = keymap::resolve(&session_keymap, spec)
+        .map_err(|e| InputError::KeyboardLayoutInvalid(e.to_string()))?;
+
+    let map = xkb::LayoutMap::build(&session_keymap, index, codes::registered_codes());
+
+    tracing::info!(
+        layout = %map.layout_name(),
+        configured = %spec,
+        characters = map.len(),
+        "resolved keyboard layout"
+    );
+
+    Ok(map)
+}
+
 /// Errors surfaced by the daemon's input-automation layer.
 #[derive(Debug, Error)]
 pub enum InputError {
@@ -183,6 +241,12 @@ pub enum InputError {
     #[error("invalid mouse button `{0}` — expected `left`, `right`, or `middle`")]
     InvalidButton(String),
 
+    /// `Hotkey` was given no keys at all. Named rather than silently succeeding,
+    /// since a script building a combination from a variable that turned out
+    /// empty should hear about it.
+    #[error("no keys given — a hotkey needs at least one key, e.g. `ctrl+shift+t`")]
+    EmptyHotkey,
+
     /// `TypeText` was given more text than `input_max_type_text_chars` allows.
     ///
     /// Names the configured limit rather than a compiled-in one, since the
@@ -205,6 +269,37 @@ pub enum InputError {
          `input_max_events_per_second` in config.toml."
     )]
     RateLimited { seconds: f64 },
+
+    /// `TypeText` was asked for a character the configured layout has no key
+    /// sequence for — an emoji, or a script the layout does not cover.
+    ///
+    /// **Deliberately an error rather than a fallback.** Reaching for the
+    /// clipboard or an accessibility text insertion here would silently change
+    /// mechanism mid-string: those replace content rather than typing it, need
+    /// a target element wgaf does not have, and would let a caller denied
+    /// `SetText` obtain it through `TypeText`. Refusing is the honest answer.
+    #[error(
+        "`{ch}` cannot be typed on keyboard layout `{layout}` — it has no key \
+         sequence there. Nothing was typed."
+    )]
+    CharacterNotTypeable { ch: char, layout: String },
+
+    /// The session's keymap could not be read, so `TypeText` does not know what
+    /// its keystrokes would produce.
+    ///
+    /// Window and accessibility commands are unaffected; only character-level
+    /// typing needs a keymap.
+    #[error("the keyboard layout could not be determined: {0}")]
+    KeyboardLayoutUnavailable(String),
+
+    /// `input_keyboard_layout` names a layout that does not exist, or one this
+    /// session is not configured with.
+    ///
+    /// Kept separate from [`Self::KeyboardLayoutUnavailable`] because this one
+    /// is the user's configuration being wrong rather than the environment
+    /// being absent, and only this one is worth refusing to start over.
+    #[error("{0}")]
+    KeyboardLayoutInvalid(String),
 
     /// Any other I/O failure writing to the `uinput` device after it was
     /// successfully created (e.g. it disappeared underneath us).
@@ -240,6 +335,12 @@ pub struct InputBackend {
     /// restart. Mirrors `windows::WindowManager`'s `verified: OnceCell<()>`.
     device: OnceCell<Arc<Mutex<UinputDevice>>>,
     device_name: String,
+    /// The configured `input_keyboard_layout` value, resolved on first use.
+    layout_spec: String,
+    /// Cached only on success, exactly like [`Self::device`]: a daemon started
+    /// before its Wayland session is ready recovers on the next call rather
+    /// than needing a restart.
+    layout: OnceCell<Arc<xkb::LayoutMap>>,
     /// **One global bucket, deliberately not keyed by caller.** There is one
     /// pointer and one keyboard focus, so the resource being protected is
     /// shared; per-caller buckets would let N processes multiply the ceiling
@@ -268,10 +369,16 @@ impl InputBackend {
     ///
     /// `limits` normally comes from `config.toml` — see [`InputLimits`], and
     /// note the two `0` values mean opposite things there, deliberately.
-    pub fn new(device_name: impl Into<String>, limits: InputLimits) -> Self {
+    pub fn new(
+        device_name: impl Into<String>,
+        limits: InputLimits,
+        keyboard_layout: impl Into<String>,
+    ) -> Self {
         Self {
             device: OnceCell::new(),
             device_name: device_name.into(),
+            layout_spec: keyboard_layout.into(),
+            layout: OnceCell::new(),
             limiter: Mutex::new(TokenBucket::new(
                 limits.max_events_per_second,
                 MAX_THROTTLE_DELAY,
@@ -325,6 +432,58 @@ impl InputBackend {
         &self.device_name
     }
 
+    /// How characters are turned into keystrokes, resolved on first use.
+    ///
+    /// Lazy for the same reason the device is: reading the keymap needs a live
+    /// Wayland session, and a daemon started before one is ready should recover
+    /// on the next call rather than require a restart. Failures are not cached.
+    ///
+    /// Costs one Wayland connection, once — see [`wayland`] for why nothing is
+    /// held open afterwards.
+    pub(crate) async fn typing(&self) -> Result<Typing, InputError> {
+        if self
+            .layout_spec
+            .trim()
+            .eq_ignore_ascii_case(US_ASCII_LAYOUT)
+        {
+            return Ok(Typing::UsAscii);
+        }
+
+        let map = self
+            .layout
+            .get_or_try_init(|| async {
+                let spec = self.layout_spec.clone();
+                tokio::task::spawn_blocking(move || resolve_layout(&spec))
+                    .await
+                    .map_err(|e| InputError::KeyboardLayoutUnavailable(e.to_string()))?
+                    .map(Arc::new)
+            })
+            .await?;
+
+        Ok(Typing::Keymap(Arc::clone(map)))
+    }
+
+    /// The configured `input_keyboard_layout` value, verbatim.
+    pub fn layout_spec(&self) -> &str {
+        &self.layout_spec
+    }
+
+    /// The name of the layout actually in use, if one has been resolved.
+    ///
+    /// Reads the `OnceCell` without initializing it, so `wgaf status` can
+    /// report this without opening a Wayland connection — the same rule
+    /// [`Self::device_created`] follows for the uinput device.
+    pub fn resolved_layout_name(&self) -> Option<String> {
+        match self
+            .layout_spec
+            .trim()
+            .eq_ignore_ascii_case(US_ASCII_LAYOUT)
+        {
+            true => Some("US ASCII (layout-independent table)".to_string()),
+            false => self.layout.get().map(|map| map.layout_name().to_string()),
+        }
+    }
+
     pub async fn type_text(&self, text: &str) -> Result<(), InputError> {
         // Checked before the rate limiter and before the device is resolved,
         // so an oversized paste is refused without waiting, without spending
@@ -336,10 +495,16 @@ impl InputBackend {
                 max: self.limits.max_type_text_chars,
             });
         }
+
+        // Resolved before anything is synthesized, so a string containing one
+        // untypeable character types *nothing* rather than stopping partway
+        // through and leaving the application holding half of it.
+        let typing = self.typing().await?;
+        let plan = keyboard::plan_text(text, &typing)?;
+
         tracing::info!(target: AUDIT_TARGET, action = "type_text", len = text.len(), "synthesizing text input");
-        let cost = keyboard::type_text_event_cost(text);
-        let text = text.to_string();
-        self.run(cost, move |device| keyboard::type_text(device, &text))
+        let cost = keyboard::plan_event_cost(&plan);
+        self.run(cost, move |device| keyboard::type_planned(device, &plan))
             .await
     }
 
@@ -354,6 +519,38 @@ impl InputBackend {
         let code = keyboard::resolve_key(key)?;
         tracing::info!(target: AUDIT_TARGET, action = "key_release", key = %key, "synthesizing key release");
         self.run(1, move |device| keyboard::release(device, code))
+            .await
+    }
+
+    /// Presses a key combination — every key held, then released in reverse.
+    ///
+    /// Layout-independent: these are named physical keys, exactly like
+    /// [`Self::key_press`], because a shortcut is a position rather than a
+    /// character. `Ctrl+Shift+T` is the same three keys on every layout.
+    ///
+    /// Every key is resolved before any is pressed, so an unknown name in the
+    /// middle of a combination presses nothing rather than leaving the first
+    /// two held down.
+    pub async fn hotkey(&self, keys: &[String]) -> Result<(), InputError> {
+        if keys.is_empty() {
+            return Err(InputError::EmptyHotkey);
+        }
+
+        let codes = keys
+            .iter()
+            .map(|k| keyboard::resolve_key(k))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        tracing::info!(
+            target: AUDIT_TARGET,
+            action = "hotkey",
+            keys = %keys.join("+"),
+            "synthesizing key combination"
+        );
+        // Two events per key: one press on the way in, one release on the way
+        // out.
+        let cost = 2 * codes.len() as u32;
+        self.run(cost, move |device| keyboard::hotkey(device, &codes))
             .await
     }
 
@@ -469,5 +666,76 @@ impl InputBackend {
         })
         .await
         .expect("input synthesis blocking task panicked")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backend(layout: &str) -> InputBackend {
+        InputBackend::new(
+            "wgaf test device",
+            InputLimits {
+                max_events_per_second: 0,
+                max_type_text_chars: DEFAULT_MAX_TYPE_TEXT_CHARS,
+                device_settle: Duration::ZERO,
+            },
+            layout,
+        )
+    }
+
+    /// A combination is resolved in full before any key is pressed.
+    ///
+    /// Without this, `ctrl shift notakey` would press Ctrl and Shift and then
+    /// fail — leaving both **held down**, which makes the session behave as
+    /// though the user is leaning on them, with nothing to indicate why.
+    /// Asserted through `device_created()`, which is false only if nothing was
+    /// ever synthesized.
+    #[tokio::test]
+    async fn an_unknown_key_in_a_combination_presses_nothing() {
+        let backend = backend(US_ASCII_LAYOUT);
+        let err = backend
+            .hotkey(&["ctrl".into(), "shift".into(), "notakey".into()])
+            .await
+            .expect_err("`notakey` is not a key");
+
+        assert!(matches!(err, InputError::UnknownKey(_)), "got {err:?}");
+        assert!(
+            !backend.device_created(),
+            "nothing should have been synthesized"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_combination_is_refused() {
+        let err = backend(US_ASCII_LAYOUT)
+            .hotkey(&[])
+            .await
+            .expect_err("a hotkey needs keys");
+        assert!(matches!(err, InputError::EmptyHotkey), "got {err:?}");
+    }
+
+    /// `us-ascii` must not open a Wayland connection — it is the escape hatch
+    /// for exactly the environments where reading a keymap is not possible.
+    #[tokio::test]
+    async fn the_us_ascii_mode_resolves_without_a_session() {
+        let backend = backend(US_ASCII_LAYOUT);
+        assert!(matches!(
+            backend.typing().await.expect("should resolve"),
+            Typing::UsAscii
+        ));
+        assert_eq!(
+            backend.resolved_layout_name().as_deref(),
+            Some("US ASCII (layout-independent table)")
+        );
+    }
+
+    /// `wgaf status` must never resolve a layout as a side effect of being
+    /// asked — the same rule that keeps it from creating a uinput device.
+    #[tokio::test]
+    async fn asking_for_the_layout_name_never_resolves_one() {
+        let backend = backend("auto");
+        assert_eq!(backend.resolved_layout_name(), None);
     }
 }

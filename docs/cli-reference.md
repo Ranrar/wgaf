@@ -163,10 +163,11 @@ Lists all workspaces (`index`, `n_windows`, whether it's the active one).
 ## `wgaf type <text>`
 
 Types a string of text, backed by the daemon's `org.wgaf.Input1` interface via
-a virtual `uinput` keyboard device. **ASCII/US-QWERTY only** — there is no
-layout/locale awareness. Goes to whatever currently has keyboard focus on the
-whole system, not a specific window (use `wgaf window focus` first to target
-one).
+a virtual `uinput` keyboard device. Uses the keyboard layout your desktop is
+set to, so the characters you ask for are the characters that arrive — see
+[Keyboard layouts](#keyboard-layouts) below. Goes to whatever currently has
+keyboard focus on the whole system, not a specific window (use
+`wgaf window focus` first to target one).
 
 ```sh
 wgaf type "hello world"
@@ -182,17 +183,31 @@ Typing is also subject to the overall input speed limit, which paces commands
 against each other rather than capping any one of them. See ["If automation
 suddenly runs slowly"](user-guide.md#if-automation-suddenly-runs-slowly).
 
-### Typing on a non-US layout
+### Keyboard layouts
 
-**`wgaf type` currently assumes a US keyboard layout.** It sends key
-*positions* and your desktop decides what character each one produces, so on
-any other layout the result differs from what you asked for — and wgaf reports
-success either way.
+`wgaf type` uses the keyboard layout your desktop is set to, so text arrives as
+you wrote it whatever that layout is — including characters that need AltGr,
+like `@` and `{` on a Danish keyboard, and characters behind a dead key, like
+`~`.
 
-**This is a known limitation and it is being fixed** — a future version will
-detect your active layout and type against it. Until then, if you are not on a
-US layout, treat `wgaf type` as reliable for letters, digits and spaces, and
-check anything else.
+You do not normally need to configure anything. If you want to pin a specific
+layout, set `input_keyboard_layout` in `config.toml` to a layout code (`dk`), a
+code with a variant (`dk(nodeadkeys)`), or its full name (`Danish`,
+`English (Dvorak)`). `localectl list-x11-keymap-layouts` lists the codes.
+
+Three things are worth knowing:
+
+- **The layout is read once, when the daemon starts.** Change your keyboard
+  layout afterwards and you will need to restart the daemon:
+  `systemctl --user restart wgaf-daemon.service`. `wgaf status` shows which
+  layout is in use.
+- **A character your layout cannot produce is refused, not approximated.**
+  Asking for an emoji fails with a message naming the character, and nothing is
+  typed at all — not even the part of the text before it.
+- **This is a layout, not a language.** `en` is not a valid setting: English has
+  ten layouts, and a US and a Dvorak keyboard put nearly every key somewhere
+  different.
+
 ---
 
 ## `wgaf key press|release <key>`
@@ -211,6 +226,26 @@ wgaf key release leftshift
 
 Every key press must be matched by a release. A key left pressed stays pressed
 for the rest of the session, exactly as a physically stuck key would.
+
+---
+
+## `wgaf key combo <key>...`
+
+Press a key combination — every key held down in order, then released in
+reverse:
+
+```sh
+wgaf key combo ctrl shift t
+```
+
+Prefer this over the four-command form above whenever you want a shortcut. It
+is not just shorter: if one of the separate commands fails, the modifiers stay
+held down and the session then behaves as though you are leaning on Ctrl, with
+nothing on screen to say why. `combo` presses nothing at all unless every key
+name is valid.
+
+Combinations are physical keys rather than characters, so the same command
+works on every keyboard layout — unlike `wgaf type`.
 
 ### Key names
 
@@ -236,6 +271,11 @@ A key name refers to a **physical key position**, not to the character printed
 on it, and the names follow a US keyboard. On another layout a key produces
 whatever that position produces there: `wgaf key press 2` with shift held gives
 `"` on a Danish keyboard, not `@`.
+
+That is deliberate: shortcuts are positions, so they work the same everywhere.
+For a character rather than a key, use `wgaf type` — it resolves against your
+layout and would give you the `@`.
+
 ---
 
 ## `wgaf mouse ...`

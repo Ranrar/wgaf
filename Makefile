@@ -1,5 +1,7 @@
 # Build and install wgaf. See README.md for setup and usage.
 #
+#   make check-deps - check the non-Rust packages the build needs are installed
+#                     (runs automatically before 'make build' and 'make install')
 #   make build      - build everything
 #   make install    - install the binaries, config files, systemd user unit,
 #                     and GNOME Shell Extension, then print the remaining
@@ -25,9 +27,35 @@ MAN_DIR := $(XDG_DATA_HOME)/man/man1
 
 .PHONY: build install uninstall man test-apps test-desktop clean \
 	cargo-install cargo-uninstall systemd-install systemd-uninstall \
-	config-install
+	config-install check-deps check-gtk
 
-build:
+# Everything wgaf needs that Cargo cannot install for you.
+#
+# Checked before building rather than after, because the alternative is a wall
+# of linker output ending in "cannot find -lxkbcommon", which tells you what
+# failed but not what to install.
+check-deps:
+	@printf 'Checking build dependencies... '
+	@if ! printf 'int main(void){return 0;}' | cc -x c - -o /dev/null -lxkbcommon 2>/dev/null; then \
+		echo "MISSING"; \
+		echo; \
+		echo "wgaf needs the libxkbcommon development package to build."; \
+		echo "It reads your keyboard layout so 'wgaf type' produces the characters"; \
+		echo "you asked for on any layout, not just US."; \
+		echo; \
+		echo "The library itself is already on every Wayland desktop — it is the"; \
+		echo "header and linker files that are missing. Install one of:"; \
+		echo; \
+		echo "  Debian/Ubuntu   sudo apt install libxkbcommon-dev"; \
+		echo "  Fedora/RHEL     sudo dnf install libxkbcommon-devel"; \
+		echo "  Arch            sudo pacman -S libxkbcommon"; \
+		echo "  openSUSE        sudo zypper install libxkbcommon-devel"; \
+		echo; \
+		exit 1; \
+	fi
+	@echo "ok (libxkbcommon)"
+
+build: check-deps
 	cargo build --release --workspace
 
 # Installs the template config files, never overwriting an existing one — your
@@ -109,7 +137,25 @@ man:
 # step rather than part of 'make build'.
 #
 # On Debian/Ubuntu the requirement is libgtk-4-dev; on Fedora, gtk4-devel.
-test-apps:
+check-gtk:
+	@printf 'Checking test-application dependencies... '
+	@if ! pkg-config --exists gtk4 2>/dev/null; then \
+		echo "MISSING"; \
+		echo; \
+		echo "The test applications need the GTK4 development package."; \
+		echo "Nothing else in wgaf does — the daemon and CLI build without it,"; \
+		echo "which is why this is a separate step."; \
+		echo; \
+		echo "  Debian/Ubuntu   sudo apt install libgtk-4-dev"; \
+		echo "  Fedora/RHEL     sudo dnf install gtk4-devel"; \
+		echo "  Arch            sudo pacman -S gtk4"; \
+		echo "  openSUSE        sudo zypper install gtk4-devel"; \
+		echo; \
+		exit 1; \
+	fi
+	@echo "ok (gtk4)"
+
+test-apps: check-gtk
 	cargo build --manifest-path tests/apps/Cargo.toml
 
 # These tests drive your actual desktop: they open windows, move focus, and
@@ -122,8 +168,8 @@ test-apps:
 # accident, and run one at a time because two of them driving the keyboard at
 # once would each receive the other's keystrokes.
 test-desktop: test-apps
-	cargo test -p wgaf-daemon --test keyboard_coverage --test window_management \
-		-- --ignored --test-threads=1
+	cargo test -p wgaf-daemon --test keyboard_coverage --test keyboard_layout \
+		--test window_management -- --ignored --test-threads=1
 
 clean:
 	cargo clean

@@ -117,6 +117,22 @@ pub fn print_status(s: &wgaf_common::DaemonStatus) {
         println!("       {}", s.uinput_detail);
     }
 
+    // Both halves, always. The configured value alone does not say which
+    // layout `auto` picked, and the resolved name alone does not say whether
+    // it was chosen or detected — and after changing the desktop's layout, the
+    // gap between the two is the answer to "why did my text come out wrong".
+    let layout = if s.input_keyboard_layout_resolved.is_empty() {
+        format!("{}, not resolved yet", s.input_keyboard_layout_configured)
+    } else if s.input_keyboard_layout_configured == s.input_keyboard_layout_resolved {
+        s.input_keyboard_layout_resolved.clone()
+    } else {
+        format!(
+            "{} -> {}",
+            s.input_keyboard_layout_configured, s.input_keyboard_layout_resolved
+        )
+    };
+    println!("       keyboard layout: {layout}");
+
     let a11y = if s.accessibility_connected {
         "connected"
     } else {

@@ -41,6 +41,31 @@ atspi = { version = "0.30", default-features = false, features = ["connection", 
 # `default-features = false` + `std` only: no need for the `async-await`
 # macro helpers or `alloc`-only mode.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Keyboard layout awareness (W12): reads the session's keymap and works out
+# which key and modifiers produce a given character, so `wgaf type` is correct
+# on layouts other than US-QWERTY.
+#
+# FFI bindings to the system `libxkbcommon`, from the repository
+# `rust-x-bindings/xkbcommon-rs`. Note the crate published there is `xkbcommon`,
+# while a *different* project publishes a pure-Rust crate called `xkbcommon-rs`
+# — never name this dependency by one half alone.
+#
+# The C library is the point, not a compromise: the compositor resolves this
+# same keymap with `libxkbcommon`, so using it means wgaf works out the same
+# character the compositor will produce, rather than agreeing with it only as
+# far as it has been tested.
+#
+# Needs `libxkbcommon-dev` to build. `x11` stays OFF (it is off by default) —
+# this project takes no X11 dependencies.
+xkbcommon = "0.9"
+# Reading the session's keyboard keymap (W12). The daemon connects once at
+# startup, takes the keymap the compositor hands every Wayland client, and
+# closes the connection — it holds nothing and listens for nothing, because the
+# layout is pinned at startup and deliberately not tracked afterwards.
+#
+# A native Wayland protocol rather than a GNOME one, so this works on any
+# Wayland compositor and keeps `wgaf type` correct without the Shell extension.
+wayland-client = "0.31"
 # Shell completion script generation for `wgaf completions <shell>`
 # (wgaf-cli/src/main.rs). Pinned to the 4.x line to track `clap` 4.
 clap_complete = "4"

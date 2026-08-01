@@ -74,6 +74,26 @@ pub async fn key_release(
     Ok(())
 }
 
+pub async fn hotkey(
+    bus_name: &str,
+    keys: &[String],
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let connection = connect().await?;
+    connection
+        .call_method(
+            Some(bus_name),
+            wgaf_common::INPUT_OBJECT_PATH,
+            Some(wgaf_common::INPUT_INTERFACE_NAME),
+            "Hotkey",
+            &(keys,),
+        )
+        .await
+        .map_err(map_err)?;
+    crate::output::print_ok(json, &format!("pressed `{}`", keys.join("+")));
+    Ok(())
+}
+
 pub async fn mouse_move(
     bus_name: &str,
     dx: i32,

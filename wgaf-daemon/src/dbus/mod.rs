@@ -128,6 +128,11 @@ impl Daemon {
             uinput_detail,
             input_device_name: self.input.device_name().to_string(),
             input_device_created: self.input.device_created(),
+            input_keyboard_layout_configured: self.input.layout_spec().to_string(),
+            // Read without resolving: asking for status must never open a
+            // Wayland connection, exactly as it must never create a uinput
+            // device. Empty means "not resolved yet", not "no layout".
+            input_keyboard_layout_resolved: self.input.resolved_layout_name().unwrap_or_default(),
 
             accessibility_available,
             accessibility_detail,

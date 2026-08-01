@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`wgaf key combo ctrl shift t` — press a key combination in one command.** Holding a shortcut down previously meant six separate commands (three presses, three releases, in the right order), and if one of them failed the modifiers stayed **held down** — the session then behaves as though you are leaning on Ctrl, with nothing on screen to say why. One command now holds every key, then releases them in reverse, which is also the order that avoids passing through combinations you did not ask for on the way out.
+
+  Every key name is checked before any key is pressed, so a typo in the middle of a combination presses nothing at all rather than leaving the first two stuck.
+
+  Combinations are physical keys rather than characters, so they are the same on every keyboard layout — unlike `wgaf type`.
+
+- **`make build` and `make install` now check for the non-Rust packages they need before starting**, and name the package to install for your distribution if one is missing. Without the check, a missing `libxkbcommon` development package ended the build in a wall of linker output whose last line was `cannot find -lxkbcommon` — accurate, but it tells you what failed rather than what to install. `make test-apps` checks for GTK4 the same way.
+
+- **`wgaf status` now shows the keyboard layout**, as `keyboard layout: auto -> Danish`: both what you configured and what it actually resolved to. `auto` alone does not tell you which layout was picked, and after changing your desktop's layout the difference between the two is the answer to "why did my text come out wrong". Asking for status never reads the layout as a side effect, the same way it never creates an input device.
+
+### Fixed
+
+- **`wgaf type` now types the characters you asked for on keyboard layouts other than US.** It used to synthesize key *positions* from a hardcoded US-QWERTY table and let the compositor decide what those positions meant, so on a Danish keyboard `wgaf type "user@example.com"` wrote `user"example.com` — and reported success. Characters that live on AltGr (`@ $ { } [ ] | \` on Danish, all of them) could not be produced at all, by any route.
+
+  wgaf now reads the keyboard layout your session is actually using and works out which key and which modifiers produce each character. Nothing about any particular layout is written into wgaf: the answers come from the same system library the compositor itself uses, so wgaf works out the same character the compositor will produce. Verified across US, Danish, German, French, Norwegian, Spanish, Dvorak and Danish-without-dead-keys — every printable ASCII character is typeable on all of them.
+
+  **Characters behind a dead key work too.** On a Danish keyboard `^`, `` ` `` and `~` produce nothing on their own — they modify the next key you press — so `~` was unreachable, which matters because it is in every shell path. These are now typed as the two-key sequence your desktop already understands, taken from the system's own compose data rather than a list wgaf maintains. The same mechanism makes accented characters like `é` typeable.
+
+  A character the layout genuinely cannot produce — an emoji, say — is now **refused by name, and nothing is typed at all**. Previously a string could be typed halfway and then stop, leaving an application holding a fragment; half a command in a terminal is worse than none.
+
+- **A new `input_keyboard_layout` setting**, defaulting to `"auto"`, which uses whatever layout your desktop is set to. You can name one instead — a code (`"dk"`), a code with a variant (`"dk(nodeadkeys)"`), or the full name (`"Danish"`, `"English (Dvorak)"`) — and `"us-ascii"` keeps the old US-only behaviour for scripts written around key positions.
+
+  Naming a layout that does not exist, or one this session is not set up with, stops the daemon at startup with a message saying which and listing what is available. It does not quietly fall back to a different layout, because typing the wrong characters while reporting success is the exact problem this change removes.
+
+  Note this is a keyboard *layout*, not a language: `"en"` is rejected, because English has ten layouts and a US and a Dvorak keyboard put nearly every key in a different place. The error says so.
+
+  The layout is read once when the daemon starts. Change your keyboard layout afterwards and you will need to restart the daemon, which the setting's documentation states.
+
+- **The keyboard layout is read from the compositor, not from GNOME.** wgaf asks Wayland directly, so this works on any Wayland compositor and keeps working when the GNOME Shell Extension is not installed — typing has never needed the extension and still does not. The connection is opened once at startup and closed immediately; nothing is held open.
+
+  Building the daemon now needs the `libxkbcommon` development package.
+
+### Added
+
 - **A "The goal" section in the README**, stating what wgaf is aiming at — a desktop that people, scripts, and AI agents operate the same way, with one service deciding what is allowed for all of them — and naming the three planned capabilities that get it there: an MCP server so an AI agent can drive the desktop under the permissions you already set, *Flow Script* for describing a task as a readable file instead of a shell script, and application launching. Each is marked planned, in the diagram as well as the prose, and the section sits below every section documenting working behaviour so nothing above it reads as a promise. The diagram's point is that a new way in is not a new way around the permission check.
 
   Written because the architecture now has an answer to "what happens when it is not you typing the commands", and a reader had no way to know that from a README describing a CLI.

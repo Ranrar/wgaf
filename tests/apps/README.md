@@ -120,12 +120,10 @@ Some things are not missing features and will not be added:
 - **Which window is focused at startup.** It varies between runs; the compositor
   decides. Assert the change `wgaf window focus` causes, not the state before
   it.
-- **Text that matches what you typed, on a non-US keyboard layout.** `wgaf type`
-  synthesizes US-QWERTY key *positions*, so on another layout the same keystroke
-  produces a different character — `wgaf type ":"` gives `Æ` on a Danish
-  keyboard. That is the documented scope of `wgaf type`, not a fault. Assert on
-  `input-test`'s raw key events, which arrive whatever the layout is, and treat
-  the entry's text as layout-dependent.
+- **A key's *name*, where the layout decides it.** The key beside the left shift
+  is whatever the local layout prints on it. Its hardware keycode does not vary,
+  so assert on that instead. Tests about *text* are the other way round —
+  `wgaf-daemon/tests/keyboard_layout.rs` asserts on the entry's contents.
 - **A pointer motion matching the distance requested.** libinput applies pointer
   acceleration to relative motion, so `wgaf mouse move 50 0` does not move the
   pointer 50 logical pixels. `input-test`'s coordinates prove motion arrived and

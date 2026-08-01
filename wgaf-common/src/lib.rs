@@ -290,6 +290,18 @@ pub struct DaemonStatus {
     /// is an *activity* signal, not a health one: false simply means nothing
     /// has synthesized input yet this run.
     pub input_device_created: bool,
+    /// The configured `input_keyboard_layout` value, verbatim — `auto`, a
+    /// layout code or name, or `us-ascii`.
+    pub input_keyboard_layout_configured: String,
+    /// The layout that value actually resolved to, as the keymap names it
+    /// (`Danish`, `English (Dvorak)`). Empty until it has been resolved.
+    ///
+    /// Reported separately from the configured value because `auto` says
+    /// nothing about *which* layout was chosen, and "why did my text come out
+    /// wrong" is answered by this field — the layout is read once at daemon
+    /// start, so a desktop whose layout changed since then shows the old one
+    /// here.
+    pub input_keyboard_layout_resolved: String,
 
     /// Whether the AT-SPI accessibility bus is reachable right now.
     pub accessibility_available: bool,

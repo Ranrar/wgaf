@@ -169,7 +169,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // uinput device) is only created lazily on first real use, so a
     // permissions problem here never prevents the daemon from starting or
     // from serving `org.wgaf.Windows1`. See `input::InputBackend`'s doc
-    // comments.
+    // comments. The same is true of the keyboard layout, which needs a live
+    // Wayland session to read.
     let input_backend = Arc::new(input::InputBackend::new(
         config.input_device_name.clone(),
         input::InputLimits {
@@ -177,7 +178,34 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             max_type_text_chars: config.input_max_type_text_chars,
             device_settle: std::time::Duration::from_millis(config.input_device_settle_ms),
         },
+        config.input_keyboard_layout.clone(),
     ));
+
+    // Resolve the keyboard layout now rather than at the first `wgaf type`, so
+    // a misconfigured `input_keyboard_layout` is reported at startup instead of
+    // surfacing later as a failed command.
+    //
+    // The two failures are treated differently on purpose. A layout that does
+    // not resolve is the *configuration* being wrong and stops the daemon,
+    // exactly as a malformed `config.toml` does — falling back to some other
+    // layout would silently type the wrong characters, which is the failure
+    // this whole feature exists to end. A keymap that cannot be read is the
+    // *environment* being absent, and must not stop anything: window and
+    // accessibility commands need no keymap, and a daemon started before its
+    // session is ready recovers on the next call without a restart.
+    match input_backend.typing().await {
+        Ok(_) => {}
+        Err(e @ input::InputError::KeyboardLayoutInvalid(_)) => {
+            eprintln!("wgaf-daemon: {e}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "keyboard layout not resolved at startup; `wgaf type` will retry on first use"
+            );
+        }
+    }
 
     // `AccessibilityBackend::new` does not touch the AT-SPI bus — like
     // `WindowManager::connect_to`/`InputBackend::new` above, the actual

@@ -5,7 +5,7 @@ wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
 
 | File | Purpose |
 |---|---|
-| `config.toml` | Bus name, log level, device name, input safety limits, device settle time |
+| `config.toml` | Bus name, log level, device name, keyboard layout, input safety limits, device settle time |
 | `permissions.toml` | What wgaf is allowed to do |
 
 `make install` sets both up for you, with the right ownership and mode, and
@@ -48,6 +48,26 @@ thing but stay visible in your config.
 
 The full list of daemon flags is in the
 [CLI reference](cli-reference.md#daemon-configuration).
+
+## Keyboard layout
+
+`wgaf type` uses the layout your desktop is set to. `input_keyboard_layout`
+overrides that:
+
+| Value | Meaning |
+|---|---|
+| `"auto"` | Your session's layout. The default. |
+| `"dk"` | A layout code — `localectl list-x11-keymap-layouts` |
+| `"dk(nodeadkeys)"` | A code with a variant — `localectl list-x11-keymap-variants dk` |
+| `"Danish"`, `"English (Dvorak)"` | The layout's full name |
+| `"us-ascii"` | Ignore your layout; use a plain US keyboard |
+
+A layout, not a language: `"en"` is refused, since English has ten of them. An
+unknown layout stops the daemon rather than falling back to another one.
+
+Read once at startup — after changing your layout, restart the daemon
+(`systemctl --user restart wgaf-daemon.service`). `wgaf status` shows the one in
+use.
 
 ## Input safety limits
 
