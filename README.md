@@ -8,6 +8,12 @@ click buttons by name, drive any app's UI. If you relied on `xdotool` or
 way GNOME actually allows it: no X11 hacks, nothing fighting the compositor,
 nothing that stops working with the next GNOME release.
 
+The aim is a desktop that is programmable the way a user operates it — by
+window, by button, by name — and predictable enough to trust with the same
+task twice. Everything routes through one gated, auditable service, so what
+holds for a command you type holds for a script you run and, eventually, for
+an AI agent acting on your behalf.
+
 ## Why
 
 Wayland's security model correctly stops one app from spying on or
@@ -37,17 +43,73 @@ So it keeps working instead of racing GNOME's next release.
 | JSON output | No | No | **Yes** |
 | Per-capability permissions | No | No | **Yes** |
 
-## What it can do
+## Roadmap
 
-| Capability | Description | Examples |
-|---|---|---|
-| Window management | List, focus, move, resize, and close windows via the GNOME Shell integration. | `wgaf window list`<br>`wgaf window focus 7`<br>`wgaf window move 7 100 100` |
-| Keyboard automation | Type text and send individual key events through Linux `uinput`. | `wgaf type "hello"`<br>`wgaf key press leftshift` |
-| Mouse automation | Move the pointer, click, and scroll. | `wgaf mouse move 100 -50`<br>`wgaf mouse click left`<br>`wgaf mouse scroll 0 -3` |
-| Accessibility automation | Find UI elements by name or role and act on them, instead of using screen coordinates. | `wgaf a11y find --app gtk4-demo --name Save`<br>`wgaf a11y click <element>` |
-| Permission control | Allow, deny, or prompt-before-allowing each mutating capability. | `permissions.toml` |
-| Script integration | JSON output on every command, for shell scripts and other tooling. | `wgaf window list --json` |
-| Developer tooling | Shell completions and man pages. | `wgaf completions bash`<br>`make man` |
+Checked items work today.
+
+### Window management
+- [x] List windows — id, title, application, position, size, workspace, focused and maximized state
+- [x] Focus, move, resize, and close a window
+- [x] List workspaces and see which window sits on which
+- [ ] Minimize and maximize
+- [ ] Watch windows open, close, and change focus, so a script can react
+
+### Keyboard
+- [x] Type a string of text
+- [x] Press and release individual keys, modifiers and AltGr included
+- [x] Every key of a 105-key keyboard, verified against a real application
+- [ ] Type correctly on non-US keyboard layouts
+- [ ] Refuse to type when the window you meant isn't the focused one
+
+### Mouse
+- [x] Move the pointer relative to where it is
+- [x] Click any button and scroll in either direction
+- [ ] Move the pointer to an absolute position, on any monitor
+
+### Accessibility
+- [x] List running applications that expose an accessible interface
+- [x] Read an application's UI tree, to whatever depth you ask for
+- [x] Find elements by name, role, or description
+- [x] Inspect one element — role, name, description, state, children
+- [x] Click an element, trigger a named action, focus it, or fill its text
+- [ ] Durable element names, so a saved script survives the application restarting
+- [ ] Take those names from an application's own GTK UI file, and turn one into a workflow
+
+### Applications
+- [ ] Launch an installed application by name
+- [ ] Tell whether an application is already running
+- [ ] Drive an application through the actions it publishes itself, where it does
+
+### Scripting and workflows
+- [x] JSON output on every command
+- [x] Named, stable errors, so a script can tell what went wrong
+- [ ] Run a saved workflow from a file
+- [ ] Record what you do and replay it later
+- [ ] Trigger a script when a window opens or a UI element changes
+
+### AI agents
+- [ ] An MCP server, so an agent drives the desktop under the permissions you set
+- [ ] Agent actions recorded separately from your own
+
+### Safety and transparency
+- [x] Allow, deny, or prompt per capability — thirteen of them
+- [x] A prompt arrives as a desktop notification you answer
+- [x] Caps on how fast, and how much, synthetic input one command can produce
+- [x] Config and policy files must be yours alone, or the daemon won't start
+- [x] Every action that changes something is recorded
+- [x] `wgaf status` — the extension, `/dev/uinput`, the accessibility bus, and the policy in force
+- [ ] A panic stop that halts input at once and stays off until you clear it
+- [ ] A readable log file, one per day, private to you
+- [ ] A panel indicator showing when something is automating your desktop
+- [ ] Screenshots, through the desktop's own consent flow
+
+### Install and platform
+- [x] One `make install` — binaries, systemd user service, GNOME Shell extension
+- [x] Configuration found automatically, no flags needed
+- [x] Shell completions for bash, zsh, fish, elvish and PowerShell, plus man pages
+- [ ] `.deb` and `.rpm` packages
+- [ ] Tested against more than one GNOME release
+- [ ] Other Wayland compositors — KDE, Sway, Hyprland
 
 ## Use cases
 
@@ -82,9 +144,12 @@ three parts:
                             |
                             | D-Bus
                             v
-                    +---------------+
-                    |  wgaf-daemon  |
-                    +-------+-------+
+                +-----------------------+
+                |      wgaf-daemon      |
+                |                       |
+                |   permission check    |
+                |   audit log           |
+                +-----------+-----------+
                             |
         +-------------------+-------------------+
         |                   |                   |
@@ -101,57 +166,31 @@ management, which is why it has to be installed and enabled separately.
 `uinput` is a kernel interface, which is why it needs a one-time permissions
 step. AT-SPI needs nothing extra — it's on by default on GNOME.
 
-## Requirements
+Nothing reaches those three directly. Every command that changes something
+passes the daemon's permission check first and is recorded afterwards, which is
+what makes [`permissions.toml`](docs/configuration.md#permissionstoml--per-capability-policy)
+a real boundary rather than a suggestion — and what keeps it one no matter what
+is issuing the commands.
 
-- GNOME Shell on Wayland (built and tested against GNOME Shell 50)
-- A recent Rust toolchain (the workspace uses the 2024 edition)
-- AT-SPI enabled — the default on GNOME
-- `systemd` user services, only if you want the daemon to run as a service
+## Get started
 
-## Install
+You need GNOME Shell on Wayland (tested against GNOME Shell 50) and a recent
+Rust toolchain.
 
 ```sh
 git clone https://github.com/Ranrar/wgaf.git
 cd wgaf
 make install
-```
-
-This builds and installs `wgaf` and `wgaf-daemon` (via `cargo install`,
-default `~/.cargo/bin`), installs the systemd user unit, and installs and
-enables the GNOME Shell Extension that window management needs.
-
-### First-time setup
-
-Two one-time steps `make install` can't do for you.
-
-**1. Let GNOME Shell load the extension.** Wayland has no in-session Shell
-restart, so log out and back in once after the first install.
-
-**2. Grant access to `/dev/uinput`** for keyboard and mouse automation:
-
-```sh
-echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-wgaf-uinput.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -aG input $USER
-```
-
-Then log out and back in again for the new group membership to apply.
-
-## Run it
-
-```sh
 systemctl --user enable --now wgaf-daemon.service
+wgaf ping        # should print: pong
 ```
 
-or just `wgaf-daemon &` if you'd rather not run it as a service.
-
-Then:
-
-```sh
-wgaf ping
-```
-
-should print `pong`.
+Two one-time steps `make install` can't do for you: **log out and back in
+once** so GNOME Shell loads the extension, and **grant access to
+`/dev/uinput`** so wgaf can synthesize keyboard and mouse input. Both are in
+the [installation guide](docs/installation.md#first-time-setup), which also
+covers shell completions, man pages, uninstalling, and what to check when
+something isn't working.
 
 ## Quick examples
 
@@ -191,156 +230,31 @@ Machine-readable output for scripts:
 wgaf window list --json
 ```
 
-## Shell completions
-
-```sh
-wgaf completions bash > /etc/bash_completion.d/wgaf
-wgaf completions zsh > "${fpath[1]}/_wgaf"
-```
-
-(`fish` also supported — run `wgaf completions --help` for the full list of
-targets.) Man pages are optional — `make man` generates and installs them.
-
 ## Configuration
 
-wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
-`$XDG_CONFIG_HOME/wgaf/` if set), which the daemon finds on its own:
+Two TOML files in `~/.config/wgaf/`, which the daemon finds on its own:
 
 | File | Purpose |
 |---|---|
 | `config.toml` | Bus name, log level, device name, input safety limits, device settle time |
-| `permissions.toml` | What wgaf is allowed to do |
+| `permissions.toml` | What wgaf is allowed to do — `Allow`, `Deny`, or `Prompt` per capability |
 
-`make install` sets both up for you, with the right ownership and mode, and
-never overwrites files you already have. The templates it installs spell out
-every setting and capability at its default value, so you can see and edit the
-whole surface in place — they change nothing until you edit something. Comment
-a line out and it goes back to tracking the built-in default.
-
-With plain `cargo install`, create them once:
-
-```sh
-mkdir -p ~/.config/wgaf
-: > ~/.config/wgaf/config.toml
-printf '[capabilities]\n' > ~/.config/wgaf/permissions.toml
-chmod 600 ~/.config/wgaf/config.toml ~/.config/wgaf/permissions.toml
-```
-
-Empty files select the defaults: an empty `config.toml` uses the built-in
-settings, and an empty `[capabilities]` table allows every capability. Keep
-both readable and writable by you alone (mode `600`) — wgaf only runs on
-configuration it can tell is yours, and will say so if something needs
-fixing.
-
-`wgaf status` shows which files are in use, what's restricted, and — if a file
-is missing — where it should go.
-
-<details>
-<summary>Using different paths, or no policy file at all</summary>
-
-```sh
-wgaf-daemon --config /path/to/config.toml --permissions /path/to/permissions.toml
-```
-
-`--permissions` defaults to a `permissions.toml` next to whichever
-`config.toml` was resolved, so moving `--config` moves both.
-
-`--config-optional` and `--permissions-optional` skip the respective file and
-use the built-in defaults (for the policy, that means allowing everything, and
-it logs a warning). The empty files above are preferable — they say the same
-thing but stay visible in your config.
-
-</details>
-
-### Input safety limits
-
-Two settings in `config.toml` bound how much synthetic input wgaf will produce:
-
-| Setting | Default | What it does |
-|---|---|---|
-| `input_max_events_per_second` | `3000` | Sustained keystrokes and clicks per second. Going over **slows commands down rather than failing them**, so a long automation still finishes. `0` turns the limit off. |
-| `input_max_type_text_chars` | `4096` | Most characters one `wgaf type` may send. Longer text is **refused outright** — nothing is typed. Careful: `0` here means nothing may be typed, *not* "no limit". |
-
-Both exist for one situation: a script with a loop bug, or a paste far longer
-than you meant. Without them the flood competes with your own keyboard and
-mouse, and taking back control of the desktop is genuinely hard.
-
-The defaults are generous — far beyond anything normal automation needs — so
-you are unlikely to meet either by accident. Lower them if you want a tighter
-guard.
-
-The [user guide](docs/user-guide.md#if-automation-suddenly-runs-slowly) covers
-both in more detail.
-
-### `permissions.toml` — per-capability policy
-
-Thirteen capabilities exist, one per gated (mutating) command. Read-only
-commands (`window list`, `a11y find`, etc.) can't be gated at all:
-
-| Interface | Capabilities |
-|---|---|
-| `org.wgaf.Windows1` | `FocusWindow`, `MoveWindow`, `ResizeWindow`, `CloseWindow` |
-| `org.wgaf.Input1` | `TypeText`, `KeyPress`, `KeyRelease`, `MouseMove`, `MouseClick`, `MouseScroll` |
-| `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement` |
-
-Each can be `Allow`, `Deny`, or `Prompt`:
+`make install` sets both up with the right ownership and mode, and never
+overwrites files you already have. Nothing is mandatory beyond the files
+existing: an unlisted capability is allowed, so the policy is an opt-in
+*restriction* rather than an unlock you must grant before anything works.
 
 ```toml
 # ~/.config/wgaf/permissions.toml
 [capabilities]
 TypeText = "Deny"         # block `wgaf type` entirely
-CloseWindow = "Prompt"    # ask via a GNOME notification (Allow/Deny) before closing a window
+CloseWindow = "Prompt"    # ask before closing a window
 ```
 
-With the above, `wgaf type "secret"` is refused outright, and
-`wgaf window close 7` raises a desktop notification and waits for your
-answer.
-
-Any capability not listed defaults to `Allow` — this is a personal automation
-tool, so permissions are an opt-in *restriction* you configure, never an
-*unlock* you must grant before anything works. Only the file itself is
-mandatory; what you put in it is up to you, and an empty `[capabilities]`
-table restricts nothing.
-
-## Uninstall
-
-```sh
-make uninstall
-```
-
-Any udev rule or `input` group membership you added by hand is left in
-place — `make uninstall` never touches those.
-
-## Troubleshooting
-
-**Start with `wgaf status`.** It checks the GNOME Shell extension bridge,
-`/dev/uinput` access, and the accessibility bus in one go, and prints what to
-fix for any that aren't working — usually faster than guessing which of the
-sections below applies. It exits non-zero if anything is unavailable, and
-`wgaf status --json` is the most useful thing to attach to a bug report.
-
-**"GNOME Shell Extension bridge unavailable"** even though the extension is
-enabled — check for a duplicate `wgaf-daemon` process holding the D-Bus
-name. A stale instance wins the name race and makes a freshly started one
-silently useless:
-
-```sh
-pgrep -af wgaf-daemon
-pkill -f wgaf-daemon
-systemctl --user restart wgaf-daemon.service
-```
-
-**"input device unavailable"** — `/dev/uinput` isn't accessible. Re-check
-step 2 of [first-time setup](#first-time-setup), and confirm the group
-membership actually applied (`id -nG | grep input`); it only takes effect
-after a full log out and back in.
-
-**The first `wgaf type` or `wgaf click` after starting the daemon does
-nothing**, and running it again works — the desktop had not finished picking
-up wgaf's virtual input device yet, so the keystrokes went nowhere. wgaf waits
-300 ms for this on the first command; raise `input_device_settle_ms` in
-`config.toml` if your machine needs longer. You only pay the wait once, on the
-first command after the daemon starts.
+`wgaf status` shows which files are in use and what's restricted. See
+[Configuration](docs/configuration.md) for every setting, the full capability
+list, and the input safety limits that bound how much synthetic input one
+command can produce.
 
 ## Known issues
 
@@ -352,10 +266,55 @@ first command after the daemon starts.
   Danish keyboard, for instance — can't be typed at all. Being fixed; see
   [typing on a non-US layout](docs/cli-reference.md#typing-on-a-non-us-layout).
 
+## The goal
+
+A desktop that people, scripts, and AI agents can all operate the same way —
+by window, by button, by name — with one service deciding what is allowed and
+keeping a record of it, whoever is asking.
+
+The CLI is the first way in. Two more are planned, and both are clients of that
+same daemon rather than a second door around it, so the permissions you set
+hold for all three:
+
+```
+      you            a script          an AI agent
+       |                |                   |
+       v                v                   v
+  +---------+     +-----------+     +----------------+
+  |   CLI   |     |  Flow     |     |   MCP server   |
+  |  (now)  |     |  Script   |     |   (planned)    |
+  |         |     | (planned) |     |                |
+  +----+----+     +-----+-----+     +--------+-------+
+       |                |                    |
+       +----------------+--------------------+
+                        |
+                        v
+              +-----------------------+
+              |      wgaf-daemon      |
+              |   permission + audit  |
+              +-----------+-----------+
+                          |
+      +-------------+-----+-------+---------------+
+      |             |             |               |
+      v             v             v               v
+   windows        input      accessibility    launching
+ (Shell ext.)    (uinput)      (AT-SPI)       (planned)
+```
+
+*Flow Script* is a planned plain-text format for describing a task step by
+step — launch this, wait for that window, click the button named Save — that
+you can read before running it and keep in version control. Shell scripts
+around `--json` are today's answer and will keep working.
+
 ## Documentation
 
-[User guide](docs/user-guide.md) · [CLI reference](docs/cli-reference.md) ·
-[Example walkthrough](docs/example-walkthrough.md)
+| | |
+|---|---|
+| [Installation](docs/installation.md) | Install, first-time setup, completions, uninstall, and what to check when something isn't working |
+| [Configuration](docs/configuration.md) | Every setting, the permission policy, and the input safety limits |
+| [User guide](docs/user-guide.md) | How to actually use each capability |
+| [CLI reference](docs/cli-reference.md) | Every command's exact flags and error messages |
+| [Example walkthrough](docs/example-walkthrough.md) | One complete task, start to finish |
 
 ## License
 

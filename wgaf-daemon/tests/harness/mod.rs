@@ -88,7 +88,7 @@ pub fn require_uinput() {
     if let Err(err) = std::fs::OpenOptions::new().write(true).open("/dev/uinput") {
         panic!(
             "this suite needs a writable /dev/uinput ({err}). \
-             See the first-time setup in README.md: install the udev rule and join the `input` group."
+             See the first-time setup in docs/installation.md: install the udev rule and join the `input` group."
         );
     }
 }

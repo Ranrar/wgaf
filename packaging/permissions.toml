@@ -1,4 +1,4 @@
-# wgaf-daemon permission policy. See README.md for more info
+# wgaf-daemon permission policy. See docs/configuration.md for more info
 
 [capabilities]
 

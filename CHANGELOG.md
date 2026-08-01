@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A "The goal" section in the README**, stating what wgaf is aiming at — a desktop that people, scripts, and AI agents operate the same way, with one service deciding what is allowed for all of them — and naming the three planned capabilities that get it there: an MCP server so an AI agent can drive the desktop under the permissions you already set, *Flow Script* for describing a task as a readable file instead of a shell script, and application launching. Each is marked planned, in the diagram as well as the prose, and the section sits below every section documenting working behaviour so nothing above it reads as a promise. The diagram's point is that a new way in is not a new way around the permission check.
+
+  Written because the architecture now has an answer to "what happens when it is not you typing the commands", and a reader had no way to know that from a README describing a CLI.
+
 - A project logo at the top of the README, from `docs/assets/img/`. The alt text carries the full name, so nothing is lost where images do not render.
 
 - **Two test suites that drive the deterministic GTK4 applications and check what those applications actually received**, plus `make test-desktop` to run them and a shared harness (`wgaf-daemon/tests/harness/`) they are built on. The applications shipped without anything driving them; these are that half.
@@ -111,6 +115,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The README is roughly a third shorter, with installation and configuration moved into two new documents.** It had grown into a manual — a reader wanting to know what wgaf *is* had to scroll past udev rules, a capability table and a troubleshooting list to find out. Now it answers that question and hands off:
+
+  - **`docs/installation.md`** — requirements, install, first-time setup, running the daemon, shell completions, man pages, uninstall, and troubleshooting. Troubleshooting sits here because nearly all of it is setup: the extension not loaded, `/dev/uinput` not accessible, the input device not yet settled.
+  - **`docs/configuration.md`** — the two files, every setting, the alternate-path flags, the input safety limits, and the thirteen-capability policy table. That table existed only in the README and now has a permanent home among the other reference material.
+
+  The README keeps a five-line quick start, a short configuration summary with one worked `permissions.toml` example, and a table of where each document leads. Inbound links from `docs/` and the packaging templates were repointed at the new locations, and the `#configuration` anchors they used are now real headings rather than README sections.
+
+- **"What it can do" became a roadmap** — checkbox lists across nine areas (windows, keyboard, mouse, accessibility, applications, scripting and workflows, AI agents, safety and transparency, install and platform), with shipped items checked and planned work drawn from the project's own planning documents rather than written from memory. The old table's description column mostly restated the command beside it, and unbuilt capabilities had no place to appear at all; now what works and what doesn't sit in one list. "The goal" section below lost its bullets to the same change, keeping the architecture diagram and the Flow Script explanation.
+
+- **The README's architecture diagram now shows the permission check and audit log inside the daemon**, with a line stating that nothing reaches the three backends directly. They were already the boundary every mutating command crosses; the diagram had them invisible, which left `permissions.toml` looking like configuration rather than the thing it enforces. The opening paragraphs say what the project is aiming at, in place of describing only what the CLI does.
+
 - `README.md` gains a **"Known issues"** section, noting in one line each that synthesized input goes to whatever holds keyboard focus rather than to a window you name, and that `wgaf type` assumes a US keyboard layout. Both are long-standing behaviours that had no single place a user would find them. `README.md` and `packaging/config.toml` also describe the new device settle time.
 
   **wgaf does not defend against input reaching the wrong window, and that is a decision for 1.0 rather than an omission.** Input cannot be aimed at a window — Wayland gives no client a way to direct input at another, which is a restriction this project respects rather than routes around. The available guard is refusing to synthesize when the intended window is not focused; it is designed but not built, because it carries open questions (opt-in or mandatory, whether a long `TypeText` re-checks mid-burst) that the release is not being held for.
@@ -121,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `packaging/config.toml` and `packaging/permissions.toml` now state every setting and every capability at its default value, instead of shipping with everything commented out. The whole configurable surface is visible and editable in place rather than something users have to uncomment to discover. Behaviour is unchanged — verified: the daemon reports `no capability restricted — every capability allowed`, identical to the previous empty `[capabilities]` table. The tradeoff is that written values are pinned, so a later version changing a built-in default will not reach anyone who has run `make install` unless they comment the line out.
 
-  Both files were also cut back to a one-line header pointing at `README.md`, and the `config-install` recipe's comments in the `Makefile` with them. They had accumulated explanations of install paths, file modes, the `Allow`/`Deny`/`Prompt` values, and which operations can be gated — all of which `README.md` already covers, in more depth and where users actually look.
+  Both files were also cut back to a one-line header pointing at the configuration documentation (`docs/configuration.md`, since the split above), and the `config-install` recipe's comments in the `Makefile` with them. They had accumulated explanations of install paths, file modes, the `Allow`/`Deny`/`Prompt` values, and which operations can be gated — all of which that document already covers, in more depth and where users actually look.
 
 ### Security
 

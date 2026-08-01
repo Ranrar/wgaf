@@ -37,8 +37,8 @@ service, it's probably already running.
 
 Should the daemon exit immediately instead, it will say what it wants — most
 likely its two config files, which `make install` creates for you and
-`cargo install` does not. The [README](../README.md)'s Configuration section
-has the two commands to create them.
+`cargo install` does not. [Configuration](configuration.md) has the two
+commands to create them.
 
 The rest of this guide assumes the daemon and the extension are both working.
 

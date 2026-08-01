@@ -1,8 +1,9 @@
 # wgaf User Guide
 
 Practical guide to using wgaf. For every command's exact flags, see the
-[CLI reference](cli-reference.md). For installation, see the main
-[README](../README.md).
+[CLI reference](cli-reference.md). To get it installed and running, see
+[Installation](installation.md); for the settings and policy files, see
+[Configuration](configuration.md).
 
 ## Before you start
 

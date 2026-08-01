@@ -1,4 +1,4 @@
-# wgaf-daemon configuration. See README.md for more info
+# wgaf-daemon configuration. See docs/configuration.md for more info
 
 # Change only to run more than one daemon at once.
 bus_name = "org.wgaf.Daemon"
