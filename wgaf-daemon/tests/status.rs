@@ -4,9 +4,14 @@
 //! Status is unusually testable for this project: unlike the window and
 //! accessibility suites, which need a real GNOME Shell or a real AT-SPI bus,
 //! the most valuable thing to assert here is what the daemon reports when a
-//! subsystem is *absent* — and "absent" is the default state in a test
-//! environment. The extension is not installed, so `extension_available` must
-//! be false while the daemon itself stays healthy and answers.
+//! subsystem is *absent*.
+//!
+//! **Absence is arranged, not assumed.** These tests used to take "the
+//! extension is not installed" as a property of the test environment, which
+//! made them fail on any developer desktop that actually has wgaf set up — the
+//! machines most likely to run them. Each test now points its daemon at an
+//! `extension_bus_name` nobody owns, so the assertion is about what the daemon
+//! reports when the bridge is unreachable, which is the thing being tested.
 
 use std::process::{Child, Command};
 use std::time::Duration;
@@ -50,6 +55,19 @@ async fn try_status(bus_name: &str) -> Result<DaemonStatus, Box<dyn std::error::
         .await?;
     let dict: DaemonStatusDict = reply.body().deserialize()?;
     Ok(dict.into())
+}
+
+/// `config.toml` fragment pointing the daemon's extension bridge at a bus name
+/// nothing owns.
+///
+/// This is how a test says "the extension is unreachable" without depending on
+/// the machine it runs on. Unique per test, so a daemon left over from another
+/// suite cannot accidentally own it.
+fn unowned_extension_config(tag: &str) -> String {
+    format!(
+        "extension_bus_name = \"org.wgaf.Test.NoExtension.{tag}{}\"\n",
+        std::process::id()
+    )
 }
 
 /// Spawns a daemon on a unique bus name and waits for `Status` to answer.
@@ -113,13 +131,17 @@ async fn spawn_daemon(tag: &str, extra_config: &str) -> (DaemonGuard, String, Da
 
 #[tokio::test]
 async fn status_reports_the_extension_unavailable_while_the_daemon_itself_is_healthy() {
-    let (_guard, bus_name, status) = spawn_daemon("Ext", "").await;
+    // A bus name nothing owns, so the bridge is unreachable by construction.
+    // Without this the test asserted a property of the *machine* — "wgaf is not
+    // installed here" — and failed on every desktop where it is.
+    let (_guard, bus_name, status) = spawn_daemon("Ext", &unowned_extension_config("Ext")).await;
 
     // The whole point of the command: one unavailable subsystem must not stop
     // the daemon answering for the others.
     assert!(
         !status.extension_available,
-        "no extension is installed in the test environment, so this must be false"
+        "the daemon was pointed at an extension bus name nobody owns, so it \
+         must report the bridge unavailable"
     );
     assert!(
         !status.extension_detail.is_empty(),

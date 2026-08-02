@@ -1,7 +1,8 @@
+/.claude
+/.github/workflows/
+/.vscode
+/.VSCodeCounter
 /target
 /tests/apps/target
-.vscode
-.claude
-extension/*.shell-extension.zip
-extension/schemas/gschemas.compiled
-.github/workflows/
+/extension/*.shell-extension.zip
+/extension/schemas/gschemas.compiled
