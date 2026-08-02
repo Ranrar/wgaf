@@ -3,4 +3,5 @@
 .vscode
 .claude
 extension/*.shell-extension.zip
+extension/schemas/gschemas.compiled
 .github/workflows/

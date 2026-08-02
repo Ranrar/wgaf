@@ -84,6 +84,36 @@ impl Daemon {
         env!("CARGO_PKG_VERSION").to_string()
     }
 
+    /// The kill switch: stop synthesizing input, now, and refuse everything
+    /// further until [`Self::release`].
+    ///
+    /// **On `Daemon1` rather than `Input1`, and ungated.** Stopping is not an
+    /// input operation — it controls the daemon — and no policy may take it
+    /// away: `permissions.toml` restricts what wgaf may do *to the desktop*,
+    /// whereas this is the user's brake on wgaf itself. A policy file that
+    /// could deny someone their own emergency stop would be an unsafe design,
+    /// and gating only `Release` would strand them on the other side of it.
+    ///
+    /// Callable by anything on the session bus, which is the point: the GNOME
+    /// Shell Extension's keyboard shortcut calls exactly this method, and so
+    /// does `wgaf stop`.
+    async fn stop(&self) {
+        self.input.stop().await;
+    }
+
+    /// Releases the kill switch. Ungated for the same reason [`Self::stop`] is.
+    ///
+    /// Deliberately a separate method rather than a toggle. The emergency key
+    /// only ever stops; coming back is this, called once, deliberately, after
+    /// the runaway script is dead.
+    ///
+    /// **Release, not resume:** it lifts the brake and nothing more. Whatever
+    /// was interrupted stays interrupted — the daemon never held a queue to
+    /// carry on with, and the caller it refused has long since given up.
+    async fn release(&self) {
+        self.input.release();
+    }
+
     /// Reports which subsystems are usable right now and what policy is being
     /// enforced. See [`DaemonStatus`] for the two rules this method exists to
     /// uphold — it must change nothing, and it must expose nothing secret.
@@ -133,6 +163,7 @@ impl Daemon {
             // Wayland connection, exactly as it must never create a uinput
             // device. Empty means "not resolved yet", not "no layout".
             input_keyboard_layout_resolved: self.input.resolved_layout_name().unwrap_or_default(),
+            input_stopped: self.input.is_stopped(),
 
             accessibility_available,
             accessibility_detail,

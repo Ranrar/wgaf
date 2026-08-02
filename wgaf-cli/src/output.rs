@@ -78,6 +78,17 @@ fn marker(ok: bool) -> &'static str {
 ///
 /// Only the `--json` shape is a stable interface. This layout may change.
 pub fn print_status(s: &wgaf_common::DaemonStatus) {
+    // First, above everything, and with a blank line under it. Someone runs
+    // this command because nothing is happening, and when the kill switch is
+    // engaged that *is* the answer — one field among twenty further down would
+    // be read after the subsystem list had already suggested other theories.
+    if s.input_stopped {
+        println!("!! INPUT STOPPED — the kill switch is engaged.");
+        println!("   No keystrokes, clicks or scrolls will be synthesized.");
+        println!("   Run `wgaf release` to allow input again.");
+        println!();
+    }
+
     println!(
         "wgaf {} — pid {}, up {}s, on {}",
         s.daemon_version, s.daemon_pid, s.daemon_uptime_seconds, s.daemon_bus_name

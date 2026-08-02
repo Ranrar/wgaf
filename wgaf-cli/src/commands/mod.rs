@@ -29,6 +29,51 @@ pub async fn ping(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+/// `wgaf stop` — the kill switch.
+///
+/// Ungated by design: no `permissions.toml` policy can refuse it, so this
+/// command fails only if the daemon cannot be reached at all.
+pub async fn stop(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    daemon_call(bus_name, "Stop").await?;
+    crate::output::print_ok(
+        json,
+        "input stopped — no keystrokes, clicks or scrolls will be synthesized. \
+         Run `wgaf release` to allow them again.",
+    );
+    Ok(())
+}
+
+/// `wgaf release` — lifts the kill switch.
+///
+/// The message says what the command does *not* do, because that is the part
+/// people expect: releasing a brake is not resuming a journey, and the command
+/// that was interrupted has to be run again.
+pub async fn release(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    daemon_call(bus_name, "Release").await?;
+    crate::output::print_ok(
+        json,
+        "input released — new commands are allowed again. Whatever was stopped \
+         is not restarted; run it again if you still want it.",
+    );
+    Ok(())
+}
+
+/// Calls an argument-less, reply-less `org.wgaf.Daemon1` method.
+async fn daemon_call(bus_name: &str, method: &str) -> Result<(), Box<dyn std::error::Error>> {
+    connect()
+        .await?
+        .call_method(
+            Some(bus_name),
+            wgaf_common::OBJECT_PATH,
+            Some(wgaf_common::INTERFACE_NAME),
+            method,
+            &(),
+        )
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
 /// `wgaf status` — the daemon's self-report, rendered for a human (or as
 /// JSON).
 ///
@@ -88,6 +133,7 @@ fn error_name_label(name: &str) -> Option<&'static str> {
         wgaf_common::INPUT_ERROR_INVALID_BUTTON => Some("invalid mouse button"),
         wgaf_common::INPUT_ERROR_TEXT_TOO_LONG => Some("text too long"),
         wgaf_common::INPUT_ERROR_RATE_LIMITED => Some("input rate limit exceeded"),
+        wgaf_common::INPUT_ERROR_STOPPED => Some("input stopped"),
         wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE => {
             Some("AT-SPI accessibility bus unavailable")
         }
@@ -195,6 +241,7 @@ mod tests {
             wgaf_common::INPUT_ERROR_INVALID_BUTTON,
             wgaf_common::INPUT_ERROR_TEXT_TOO_LONG,
             wgaf_common::INPUT_ERROR_RATE_LIMITED,
+            wgaf_common::INPUT_ERROR_STOPPED,
             wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE,
             wgaf_common::ACCESSIBILITY_ERROR_APP_NOT_FOUND,
             wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND,
@@ -267,8 +314,8 @@ mod tests {
         // Guards the scan itself: a refactor that moves or reformats these
         // constants would otherwise turn this test into a silent no-op.
         assert_eq!(
-            checked, 15,
-            "expected 15 daemon error-name constants, found {checked}. If an error was \
+            checked, 16,
+            "expected 16 daemon error-name constants, found {checked}. If an error was \
              genuinely added or removed, update this number; if not, the scan has stopped \
              matching how `wgaf-common` declares them and is silently passing."
         );

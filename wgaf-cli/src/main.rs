@@ -39,6 +39,25 @@ enum Command {
     /// setup script.
     Status,
 
+    /// Stop all input synthesis immediately — the kill switch.
+    ///
+    /// Use this when a script has run away with the keyboard or pointer. The
+    /// daemon refuses every further `type`/`key`/`mouse` command, aborts one
+    /// already in progress, and removes its virtual input device.
+    ///
+    /// It never un-stops itself: run `wgaf release` when the script is dead.
+    /// The stop is forgotten if the daemon restarts, and no permission policy
+    /// can take it away from you.
+    Stop,
+
+    /// Release the kill switch, allowing input automation again.
+    ///
+    /// Think of `wgaf stop` as a handbrake: this releases it. It does not
+    /// continue whatever was interrupted — the daemon keeps no record of that,
+    /// and the script that was refused has already given up. Run your command
+    /// again once input is allowed.
+    Release,
+
     /// Window management commands (list/focus/move/resize/close, plus
     /// workspace listing), backed by the daemon's `org.wgaf.Windows1`
     /// D-Bus interface.
@@ -326,6 +345,8 @@ async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
                 Outcome::Unhealthy
             });
         }
+        Command::Stop => commands::stop(bus_name, json).await?,
+        Command::Release => commands::release(bus_name, json).await?,
         Command::Window { command } => match command {
             WindowCommand::List => commands::window::list(bus_name, json).await?,
             WindowCommand::Focus(WindowId { id }) => {

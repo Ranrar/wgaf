@@ -59,6 +59,11 @@ should print `pong`.
 Set up the two configuration files next, if `make install` didn't do it for
 you — see [Configuration](configuration.md).
 
+One thing to know before you automate anything: **Escape is wgaf's emergency
+stop** while the extension is enabled. Press it and all input automation stops
+immediately; `wgaf release` allows it again. See the
+[user guide](user-guide.md#emergency-stop--pulling-the-handbrake).
+
 ## Shell completions
 
 ```sh

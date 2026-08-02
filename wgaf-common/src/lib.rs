@@ -119,6 +119,17 @@ pub const INPUT_ERROR_TEXT_TOO_LONG: &str = "org.wgaf.Input1.Error.TextTooLong";
 /// `wgaf-daemon/src/input/rate_limit.rs`.
 pub const INPUT_ERROR_RATE_LIMITED: &str = "org.wgaf.Input1.Error.RateLimited";
 
+/// D-Bus error name returned by every `org.wgaf.Input1` method while the kill
+/// switch is engaged (`org.wgaf.Daemon1.Stop`, or the desktop shortcut the
+/// GNOME Shell Extension installs).
+///
+/// Distinct from [`INPUT_ERROR_PERMISSION_DENIED`] on purpose: policy is a
+/// standing decision about what wgaf may ever do, while this is a live
+/// emergency stop the user can lift with `wgaf release`. A script that cannot
+/// tell them apart cannot tell "you are not allowed to do this" from "wait,
+/// then try again".
+pub const INPUT_ERROR_STOPPED: &str = "org.wgaf.Input1.Error.Stopped";
+
 /// D-Bus error name returned by `org.wgaf.Input1`'s mutating methods
 /// (`TypeText`/`KeyPress`/`KeyRelease`/`MouseMove`/`MouseClick`/
 /// `MouseScroll`) when the permission policy (`permissions.toml`)
@@ -302,6 +313,13 @@ pub struct DaemonStatus {
     /// start, so a desktop whose layout changed since then shows the old one
     /// here.
     pub input_keyboard_layout_resolved: String,
+    /// Whether the kill switch is engaged: every input-synthesis call is being
+    /// refused until `wgaf release`.
+    ///
+    /// Not a fault, and not persisted — it means someone deliberately stopped
+    /// wgaf this run. It is reported here because "nothing happens when I run
+    /// `wgaf type`" has no other visible explanation.
+    pub input_stopped: bool,
 
     /// Whether the AT-SPI accessibility bus is reachable right now.
     pub accessibility_available: bool,

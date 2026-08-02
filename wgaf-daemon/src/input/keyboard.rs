@@ -1,10 +1,12 @@
 //! Keyboard primitives: single key press/release, and the higher-level
 //! `TypeText` ASCII helper built on top of them.
 
+use std::sync::atomic::AtomicBool;
+
 use crate::input::codes::{self, KEY_LEFTSHIFT};
 use crate::input::device::UinputDevice;
 use crate::input::xkb::KeyStroke;
-use crate::input::{InputError, Typing};
+use crate::input::{InputError, Typing, check_not_stopped};
 
 /// Presses (value `1`) the given evdev key code.
 pub(crate) fn press(device: &mut UinputDevice, code: u16) -> Result<(), InputError> {
@@ -34,14 +36,33 @@ pub(crate) fn resolve_key(name: &str) -> Result<u16, InputError> {
 /// after the third leaves modifiers **held down** — the session then behaves as
 /// though the user is leaning on Ctrl, and there is no way to notice except by
 /// feel. Here the whole combination is one call and one plan.
-pub(crate) fn hotkey(device: &mut UinputDevice, codes: &[u16]) -> Result<(), InputError> {
+///
+/// The kill switch is checked before each press and **never during the
+/// releases**, which is the same argument as above wearing a different hat: a
+/// stop that abandoned a half-pressed combination would leave Ctrl and Shift
+/// held down on a desktop whose user has just hit the panic key. Once a key is
+/// down it gets released; the check only decides whether to press the next one.
+pub(crate) fn hotkey(
+    device: &mut UinputDevice,
+    codes: &[u16],
+    stopped: &AtomicBool,
+) -> Result<(), InputError> {
+    let mut pressed = 0;
+    let mut outcome = Ok(());
+
     for code in codes {
+        if let Err(e) = check_not_stopped(stopped) {
+            outcome = Err(e);
+            break;
+        }
         press(device, *code)?;
+        pressed += 1;
     }
-    for code in codes.iter().rev() {
+
+    for code in codes[..pressed].iter().rev() {
         release(device, *code)?;
     }
-    Ok(())
+    outcome
 }
 
 /// Resolves every character of `text` to keystrokes **before any of them is
@@ -108,11 +129,20 @@ pub(crate) fn plan_event_cost(plan: &[KeyStroke]) -> u32 {
 /// A character needing a dead key arrives here as two ordinary keystrokes; the
 /// *application's* input method composes them. wgaf synthesizes keys and never
 /// composes anything itself.
+///
+/// **The kill switch is checked once per keystroke, and this is the check that
+/// makes stopping actually stop.** One maximum-length call is around 16,000
+/// kernel events inside a single `spawn_blocking`; a stop noticed only on the
+/// way in would engage after the flood had already been typed. Between
+/// keystrokes is also the only safe place to abandon the loop — each one
+/// releases its own modifiers before the next begins, so nothing is left held.
 pub(crate) fn type_planned(
     device: &mut UinputDevice,
     plan: &[KeyStroke],
+    stopped: &AtomicBool,
 ) -> Result<(), InputError> {
     for stroke in plan {
+        check_not_stopped(stopped)?;
         for modifier in &stroke.modifiers {
             press(device, *modifier)?;
         }

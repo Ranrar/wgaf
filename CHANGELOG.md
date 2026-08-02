@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An emergency stop: press Escape, or run `wgaf stop`.** Until now a runaway script could only be dealt with by killing it, which assumes you can still use a terminal while synthetic keystrokes are landing in it. The speed limit slows a flood down; it does not end one.
+
+  Think of it as a car's handbrake: everything stops immediately and stays stopped. A command already running is aborted part-way, later ones are refused, and the virtual input device is removed. Window, workspace and accessibility commands keep working. No permission policy can take the stop away from you, and it is never saved to disk.
+
+  Automation is allowed again with `wgaf release` (or a daemon restart). Like a handbrake, wgaf never releases itself: the daemon cannot tell whether a script finished, crashed, or is merely paused, so releasing automatically could restart a problem at the wrong moment. Releasing does not resume what was stopped — run your command again if you still want it.
+
+  `wgaf status` shows `!! INPUT STOPPED` at the top for as long as it lasts.
+
+  The Escape key comes from the GNOME Shell Extension and needs it installed and enabled; while it is, applications no longer see Escape.
+
 - **`wgaf key combo ctrl shift t` — press a key combination in one command.** Holding a shortcut down previously meant six separate commands (three presses, three releases, in the right order), and if one of them failed the modifiers stayed **held down** — the session then behaves as though you are leaning on Ctrl, with nothing on screen to say why. One command now holds every key, then releases them in reverse, which is also the order that avoids passing through combinations you did not ask for on the way out.
 
   Every key name is checked before any key is pressed, so a typo in the middle of a combination presses nothing at all rather than leaving the first two stuck.

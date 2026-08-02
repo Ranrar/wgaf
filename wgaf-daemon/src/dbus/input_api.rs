@@ -53,6 +53,13 @@ enum InputApiError {
     /// branches on it can substitute or skip; one that cannot tell them apart
     /// has to guess.
     CharacterNotTypeable(String),
+    /// The kill switch is engaged — see `org.wgaf.Daemon1.Stop`.
+    ///
+    /// Named rather than folded into [`Self::PermissionDenied`] because the two
+    /// call for different responses: a denial is permanent policy, this is a
+    /// live emergency stop somebody can lift with `wgaf release`. A script that
+    /// cannot tell them apart cannot know whether retrying later is sensible.
+    Stopped(String),
     /// The session's keyboard layout could not be determined, so `TypeText`
     /// does not know what its keystrokes would produce. Environmental — no
     /// Wayland session, or no keyboard on any seat.
@@ -71,6 +78,7 @@ impl From<InputError> for InputApiError {
             InputError::RateLimited { .. } => Self::RateLimited(err.to_string()),
             InputError::TextTooLong { .. } => Self::TextTooLong(err.to_string()),
             InputError::CharacterNotTypeable { .. } => Self::CharacterNotTypeable(err.to_string()),
+            InputError::Stopped => Self::Stopped(err.to_string()),
             // A misconfigured layout reaches the caller the same way an absent
             // one does: either way `wgaf type` cannot run, and the message
             // already says which it is.
@@ -234,6 +242,7 @@ mod tests {
         let permission_denied = InputApiError::PermissionDenied("denied".to_string());
         let rate_limited = InputApiError::RateLimited("limited".to_string());
         let text_too_long = InputApiError::TextTooLong("too long".to_string());
+        let stopped = InputApiError::Stopped("stopped".to_string());
         assert_eq!(
             device_unavailable.name().as_str(),
             wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE
@@ -258,6 +267,7 @@ mod tests {
             text_too_long.name().as_str(),
             wgaf_common::INPUT_ERROR_TEXT_TOO_LONG
         );
+        assert_eq!(stopped.name().as_str(), wgaf_common::INPUT_ERROR_STOPPED);
     }
 
     /// Every `InputError` that is not a plain I/O failure must map to a
@@ -278,6 +288,7 @@ mod tests {
             InputError::InvalidButton("nope".to_string()),
             InputError::TextTooLong { len: 10, max: 5 },
             InputError::RateLimited { seconds: 42.0 },
+            InputError::Stopped,
         ];
 
         for err in cases {

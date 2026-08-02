@@ -89,6 +89,9 @@ guard.
 The [user guide](user-guide.md#if-automation-suddenly-runs-slowly) covers both
 in more detail, including what it looks like when you do meet one.
 
+Neither is a substitute for the emergency stop: press **Escape** to stop input
+automation outright, and `wgaf release` to allow it again.
+
 ## `permissions.toml` — per-capability policy
 
 Thirteen capabilities exist, one per gated (mutating) command. Read-only

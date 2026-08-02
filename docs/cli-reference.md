@@ -112,6 +112,42 @@ Notes on reading the output:
   `--config-optional` or `--permissions-optional`.
 - Only the `--json` output is a stable, parseable interface; the human-readable
   layout may change between versions.
+- If the kill switch is engaged, the report opens with `!! INPUT STOPPED`
+  before anything else. That is the answer to "why is nothing happening"; run
+  `wgaf release` to allow input again.
+
+---
+
+## `wgaf stop`
+
+Stops all input automation immediately. Use it when a script has run away with
+your keyboard or pointer. Pressing **Escape** does the same thing without a
+terminal, provided the GNOME Shell Extension is installed and enabled.
+
+```sh
+wgaf stop
+```
+
+- A command already in progress is aborted part-way.
+- Every later `type`, `key` or `mouse` command is refused.
+- The daemon's virtual input device is removed.
+- Window, workspace and accessibility commands are unaffected.
+- No permission policy can take it away, and it is never saved to disk.
+
+---
+
+## `wgaf release`
+
+Releases the emergency stop, allowing input automation again.
+
+```sh
+wgaf release
+```
+
+It does not resume what was stopped — run your command again if you still want
+it. Restarting the daemon has the same effect. See the
+[user guide](user-guide.md#emergency-stop--pulling-the-handbrake) for why the
+release is manual.
 
 ---
 
@@ -381,6 +417,10 @@ than a raw D-Bus error dump, for example:
 - `text too long` — the text given to `wgaf type` is over
   `input_max_type_text_chars`. Nothing was typed. The message names the limit
   in force.
+- `input is stopped` — the kill switch is engaged (`wgaf stop`, or
+  Escape). Nothing will be synthesized until you run `wgaf release`.
+  This is a live emergency stop rather than a policy decision, which is why it
+  is not `permission denied`.
 - `input rate limit exceeded` — so much synthetic input is queued that this
   command would have waited more than half a minute, which means something is
   stuck in a loop. Note that merely going over the speed limit does *not*

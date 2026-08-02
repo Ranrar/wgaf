@@ -166,6 +166,48 @@ It names both paths, says whether each exists, and lists any capability that
 isn't at its default — useful when a command was refused and you want to know
 what did the refusing.
 
+## Emergency stop — pulling the handbrake
+
+Pressing **Escape** immediately stops all wgaf input automation. Think of it
+like pulling the handbrake on a car: everything stops immediately and stays
+stopped. The same thing from a terminal:
+
+```sh
+wgaf stop
+```
+
+To start automation again, release the handbrake:
+
+```sh
+wgaf release
+```
+
+Restarting the daemon has the same effect, since the stop is never saved to
+disk:
+
+```sh
+systemctl --user restart wgaf-daemon.service
+```
+
+Window and accessibility commands keep working while input is stopped, and no
+permission setting can take the emergency stop away from you. `wgaf status`
+shows `!! INPUT STOPPED` at the top for as long as it lasts.
+
+### Why `wgaf release` is required
+
+Just like a car's handbrake does not release itself, wgaf never resumes
+automatically after an emergency stop. The daemon cannot know *why* automation
+stopped; it only knows whether it is receiving commands. It cannot tell if a
+script finished normally, crashed, is paused, is waiting, or is about to
+continue.
+
+Because of this, automatically releasing the stop state could restart a
+problematic automation at the wrong moment. A manual `wgaf release` ensures you
+have confirmed that it is safe to continue.
+
+Releasing does not resume what was stopped — run your command again if you
+still want it.
+
 ## If automation suddenly runs slowly
 
 There is a speed limit on typing and clicking, set by

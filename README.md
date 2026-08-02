@@ -72,7 +72,7 @@ Checked items work today.
 - [x] Allow, deny, or prompt per capability
 - [x] Caps on how fast and how much synthetic input one command can produce
 - [x] Every action that changes something is recorded
-- [ ] A panic stop for a runaway script
+- [x] A panic stop for a runaway script — `wgaf stop`, or Escape
 - [ ] A readable log file of what wgaf did
 
 ### Scripting & tooling
@@ -207,6 +207,14 @@ Machine-readable output for scripts:
 wgaf window list --json
 ```
 
+Emergency stop — press **Escape** to stop all input automation immediately,
+like pulling a handbrake. It stays stopped until you release it:
+
+```sh
+wgaf stop      # same thing, from a terminal
+wgaf release   # allow input automation again
+```
+
 ## Configuration
 
 Two TOML files in `~/.config/wgaf/`, which the daemon finds on its own:
@@ -235,9 +243,13 @@ command can produce.
 
 ## Known issues
 
-- Input can't be aimed at a particular window. Typed text goes wherever the
-  keyboard focus is, and clicks go wherever the pointer already is — so it's
-  best not to use the desktop while a script is running.
+- Typed text and clicks go to whatever has keyboard focus at the moment they
+  are sent, and can't be aimed at a particular window — so it's best not to use
+  the desktop while a script is running. If one does get away from you, press
+  Escape or run `wgaf stop`.
+- The keyboard layout is read once when the daemon starts. If you change your
+  layout afterwards, restart the daemon so `wgaf type` picks up the new one:
+  `systemctl --user restart wgaf-daemon.service`.
 
 ## The goal
 

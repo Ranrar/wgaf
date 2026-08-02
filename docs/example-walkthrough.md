@@ -187,6 +187,9 @@ automate through it too, rather than treating it as a special case.
 
 ## If something goes wrong
 
+- **The script is typing where it shouldn't** — press **Escape**. All input
+  automation stops immediately, and `wgaf release` allows it again.
+
 - **`GNOME Shell Extension bridge unavailable`** — the extension isn't
   enabled, or hasn't loaded yet. Recheck `gnome-extensions info
   wgaf@wgaf.dev` from "Before you start."

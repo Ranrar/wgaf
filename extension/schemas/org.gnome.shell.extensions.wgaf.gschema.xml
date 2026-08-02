@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Settings for the wgaf GNOME Shell extension.
+
+  The only setting is the emergency key for wgaf's kill switch: press it and
+  the wgaf daemon stops synthesizing keyboard and mouse input immediately, and
+  refuses to synthesize any more until you run `wgaf release`.
+
+  The default is Escape, on its own — the key everyone already reaches for to
+  cancel something, with no combination to remember while a script is running
+  away with your keyboard.
+
+  To use a different key:
+
+      gsettings set org.gnome.shell.extensions.wgaf kill-switch "['<Control><Alt>Escape']"
+
+  To go back to the default:
+
+      gsettings reset org.gnome.shell.extensions.wgaf kill-switch
+
+  To switch the shortcut off entirely, set it to an empty list ("[]"). The
+  `wgaf stop` command still works; you just lose the one-key version of it.
+-->
+<schemalist gettext-domain="wgaf">
+  <schema id="org.gnome.shell.extensions.wgaf"
+          path="/org/gnome/shell/extensions/wgaf/">
+    <!--
+      A string array rather than a single string: GNOME's keyboard shortcuts
+      are all arrays, and the Shell function that installs one rejects a plain
+      string key.
+    -->
+    <key name="kill-switch" type="as">
+      <default><![CDATA[['Escape']]]></default>
+      <summary>Stop all wgaf input automation</summary>
+      <description>
+        Emergency key that stops wgaf from synthesizing any further keyboard or
+        mouse input. It only ever stops: pressing it again will not restart
+        automation, because during a runaway script you should be able to lean
+        on it. Run `wgaf release` when you are ready to allow input again.
+
+        The default is Escape on its own — easy to reach, universally
+        understood as cancel, and not something you would confuse with an
+        automation command.
+
+        Note what a desktop-wide shortcut means for a key this ordinary: while
+        the wgaf extension is enabled, Escape is taken by the emergency stop
+        before any application sees it. If you need Escape back for everyday
+        use, set this to a combination instead (Ctrl+Alt+Escape, say), or to an
+        empty list to remove the shortcut entirely.
+      </description>
+    </key>
+  </schema>
+</schemalist>

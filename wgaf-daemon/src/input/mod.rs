@@ -301,10 +301,36 @@ pub enum InputError {
     #[error("{0}")]
     KeyboardLayoutInvalid(String),
 
+    /// The kill switch is engaged: someone stopped wgaf, and nothing will be
+    /// synthesized until they say otherwise.
+    ///
+    /// **The message names `wgaf release`** because the state outlives the
+    /// emergency that caused it. Someone who stopped wgaf during a runaway
+    /// script an hour ago, and now finds `wgaf type` doing nothing, needs the
+    /// failure itself to point at the way back — nothing else on screen will.
+    #[error(
+        "input is stopped — wgaf's kill switch is engaged and no input will be synthesized. \
+         Run `wgaf release` to allow input again."
+    )]
+    Stopped,
+
     /// Any other I/O failure writing to the `uinput` device after it was
     /// successfully created (e.g. it disappeared underneath us).
     #[error("I/O error writing to the uinput device: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Returns [`InputError::Stopped`] if the kill switch is engaged.
+///
+/// Free function rather than a method so the emit loops in [`keyboard`] can
+/// call it: they run on a blocking-pool thread with nothing but the flag,
+/// deliberately, since holding a `&InputBackend` there would mean holding the
+/// backend across the whole synthesis.
+pub(crate) fn check_not_stopped(stopped: &AtomicBool) -> Result<(), InputError> {
+    match stopped.load(Ordering::SeqCst) {
+        true => Err(InputError::Stopped),
+        false => Ok(()),
+    }
 }
 
 /// Owns the daemon's one virtual input device and exposes the
@@ -330,10 +356,18 @@ pub enum InputError {
 /// forcing every event write in `device.rs`/`keyboard.rs`/`mouse.rs` to
 /// itself be async.
 pub struct InputBackend {
-    /// Cached only on success — an initialization failure (permissions) is
-    /// not cached, so the next call retries rather than requiring a daemon
-    /// restart. Mirrors `windows::WindowManager`'s `verified: OnceCell<()>`.
-    device: OnceCell<Arc<Mutex<UinputDevice>>>,
+    /// `None` until the first synthesis creates the device, and `None` again
+    /// after [`Self::stop`] drops it. An initialization failure (permissions)
+    /// leaves it `None`, so the next call retries rather than requiring a
+    /// daemon restart — the property `windows::WindowManager`'s
+    /// `verified: OnceCell<()>` gets from not caching failures.
+    ///
+    /// **Not a `OnceCell`, and that is the kill switch's doing.** The device
+    /// has to be *droppable*: stopping wgaf must leave no virtual keyboard or
+    /// pointer registered with the kernel, and a cell that can only be filled
+    /// once cannot express that. Creation therefore happens inside the lock,
+    /// on the blocking-pool thread that is about to use it.
+    device: Arc<Mutex<Option<UinputDevice>>>,
     device_name: String,
     /// The configured `input_keyboard_layout` value, resolved on first use.
     layout_spec: String,
@@ -353,6 +387,17 @@ pub struct InputBackend {
     /// is worth seeing once; on every throttled call it would itself become
     /// a flood.
     throttle_reported: AtomicBool,
+    /// The kill switch. `true` refuses every synthesis until [`Self::release`].
+    ///
+    /// An `Arc` because it is read from inside the blocking closures that emit
+    /// events, per keystroke — a stop that only took effect between D-Bus calls
+    /// would let a 16,000-event `TypeText` run to completion after the user hit
+    /// the panic key, which is the exact case this exists for.
+    ///
+    /// In memory only, never persisted: it represents a live emergency, and one
+    /// that survived a reboot would turn a five-second panic into a mystery
+    /// next week.
+    stopped: Arc<AtomicBool>,
     /// Resolved from `config.toml` at startup; see [`InputLimits`].
     limits: InputLimits,
 }
@@ -375,7 +420,7 @@ impl InputBackend {
         keyboard_layout: impl Into<String>,
     ) -> Self {
         Self {
-            device: OnceCell::new(),
+            device: Arc::new(Mutex::new(None)),
             device_name: device_name.into(),
             layout_spec: keyboard_layout.into(),
             layout: OnceCell::new(),
@@ -385,24 +430,73 @@ impl InputBackend {
                 Instant::now(),
             )),
             throttle_reported: AtomicBool::new(false),
+            stopped: Arc::new(AtomicBool::new(false)),
             limits,
         }
     }
 
-    async fn device(&self) -> Result<Arc<Mutex<UinputDevice>>, InputError> {
-        let device = self
-            .device
-            .get_or_try_init(|| async {
-                let name = self.device_name.clone();
-                let settle = self.limits.device_settle;
-                let device =
-                    tokio::task::spawn_blocking(move || UinputDevice::create(&name, settle))
-                        .await
-                        .expect("uinput device-creation task panicked")?;
-                Ok::<_, InputError>(Arc::new(Mutex::new(device)))
-            })
-            .await?;
-        Ok(Arc::clone(device))
+    /// Engages the kill switch: refuses every further synthesis and takes the
+    /// virtual device away from the kernel.
+    ///
+    /// **One-way.** Calling it twice stops harder than once in no respect at
+    /// all, and nothing here ever clears the flag — coming back is always an
+    /// explicit [`Self::release`]. During a failure the user may well hit the
+    /// panic key repeatedly, and a second press that restarted the automation
+    /// they were trying to kill would be the worst possible reading of it.
+    ///
+    /// The order matters. The flag is set *first*, so an in-flight `TypeText`
+    /// sees it on its next keystroke and returns [`InputError::Stopped`] rather
+    /// than discovering a device that vanished mid-string; only then is the
+    /// device dropped, which issues `UI_DEV_DESTROY` and leaves no virtual
+    /// keyboard or pointer registered.
+    pub async fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        tracing::warn!(
+            target: AUDIT_TARGET,
+            action = "stop",
+            "kill switch engaged: refusing all input synthesis until `wgaf release`"
+        );
+
+        // On the blocking pool because the lock is held for the whole of any
+        // synthesis currently running through the device. That synthesis is
+        // already unwinding — it checks the flag set above per keystroke — but
+        // "already unwinding" is not "instant", and the async executor must not
+        // be the thing that waits for it.
+        let device = Arc::clone(&self.device);
+        tokio::task::spawn_blocking(move || {
+            let mut slot = device
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // `UinputDevice::drop` issues UI_DEV_DESTROY.
+            *slot = None;
+        })
+        .await
+        .expect("input stop task panicked");
+    }
+
+    /// Releases the kill switch, allowing synthesis again.
+    ///
+    /// **Releasing is not resuming**, and the name is the difference: nothing
+    /// that was interrupted is continued or replayed. The daemon keeps no
+    /// record of what it was told to type, and the caller that was flooding
+    /// already received [`InputError::Stopped`] and gave up. This lifts the
+    /// brake; driving again is the caller's business.
+    ///
+    /// The virtual device is recreated lazily by the next synthesis, exactly as
+    /// it was on the first one.
+    pub fn release(&self) {
+        self.stopped.store(false, Ordering::SeqCst);
+        tracing::info!(
+            target: AUDIT_TARGET,
+            action = "release",
+            "kill switch released: input synthesis is allowed again"
+        );
+    }
+
+    /// Whether the kill switch is currently engaged. Reported by
+    /// `org.wgaf.Daemon1.Status`.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
     }
 
     /// Reports whether `/dev/uinput` is usable right now, **without**
@@ -418,13 +512,22 @@ impl InputBackend {
             .expect("uinput probe task panicked")
     }
 
-    /// Whether the virtual device has actually been created this run.
+    /// Whether the daemon holds a live virtual device right now.
     ///
-    /// An *activity* signal, not a health one — `false` just means nothing
-    /// has synthesized input yet. Reads the `OnceCell` without initializing
-    /// it, so calling this never creates the device.
+    /// An *activity* signal, not a health one — `false` means either that
+    /// nothing has synthesized input yet, or that [`Self::stop`] took the
+    /// device away. Never creates one as a side effect of asking.
+    ///
+    /// `try_lock` rather than `lock`: the lock is held for the duration of a
+    /// synthesis, and `wgaf status` must not block behind a 4,000-character
+    /// `TypeText` to answer a yes/no question. Held *is* the answer anyway —
+    /// only a synthesis holds it, and a synthesis has a device.
     pub fn device_created(&self) -> bool {
-        self.device.initialized()
+        match self.device.try_lock() {
+            Ok(slot) => slot.is_some(),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().is_some(),
+        }
     }
 
     /// The name this backend's virtual device reports to the kernel.
@@ -485,6 +588,16 @@ impl InputBackend {
     }
 
     pub async fn type_text(&self, text: &str) -> Result<(), InputError> {
+        // Every synthesis method is checked against the kill switch by
+        // [`Self::run`], the funnel they all pass through — so there is exactly
+        // one place to forget, and a method that forgets it is a method that
+        // does not synthesize. This one is checked here as well because it is
+        // the only one that does real work *before* reaching the funnel:
+        // resolving the layout can open a Wayland connection, and a stopped
+        // daemon should say it is stopped rather than report whatever that
+        // turns up.
+        check_not_stopped(&self.stopped)?;
+
         // Checked before the rate limiter and before the device is resolved,
         // so an oversized paste is refused without waiting, without spending
         // budget, and without registering a uinput device.
@@ -504,8 +617,14 @@ impl InputBackend {
 
         tracing::info!(target: AUDIT_TARGET, action = "type_text", len = text.len(), "synthesizing text input");
         let cost = keyboard::plan_event_cost(&plan);
-        self.run(cost, move |device| keyboard::type_planned(device, &plan))
-            .await
+        // The flag travels into the emit loop, not just into `run`: this is the
+        // one call that can be tens of thousands of events long, and a stop
+        // checked only on the way in would let the whole flood finish.
+        let stopped = Arc::clone(&self.stopped);
+        self.run(cost, move |device| {
+            keyboard::type_planned(device, &plan, &stopped)
+        })
+        .await
     }
 
     pub async fn key_press(&self, key: &str) -> Result<(), InputError> {
@@ -550,8 +669,11 @@ impl InputBackend {
         // Two events per key: one press on the way in, one release on the way
         // out.
         let cost = 2 * codes.len() as u32;
-        self.run(cost, move |device| keyboard::hotkey(device, &codes))
-            .await
+        let stopped = Arc::clone(&self.stopped);
+        self.run(cost, move |device| {
+            keyboard::hotkey(device, &codes, &stopped)
+        })
+        .await
     }
 
     pub async fn mouse_move(&self, dx: i32, dy: i32) -> Result<(), InputError> {
@@ -641,8 +763,18 @@ impl InputBackend {
     where
         F: FnOnce(&mut UinputDevice) -> Result<(), InputError> + Send + 'static,
     {
+        // Twice, deliberately. The first check refuses a call that arrives
+        // while stopped without spending rate-limiter budget on it; the second
+        // catches a stop that landed during the throttle sleep, which can be up
+        // to thirty seconds long.
+        check_not_stopped(&self.stopped)?;
         self.throttle(cost).await?;
-        let device = self.device().await?;
+        check_not_stopped(&self.stopped)?;
+
+        let device = Arc::clone(&self.device);
+        let stopped = Arc::clone(&self.stopped);
+        let name = self.device_name.clone();
+        let settle = self.limits.device_settle;
         tokio::task::spawn_blocking(move || {
             // FIXED: recover from poisoning instead of panicking. The guarded
             // state is just an open `/dev/uinput` file descriptor plus the
@@ -659,10 +791,31 @@ impl InputBackend {
             // the whole subsystem over that would make one panicking caller
             // permanently disable input synthesis for every other caller for
             // the rest of the daemon's life, which is worse than proceeding.
-            let mut device = device
+            let mut slot = device
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            f(&mut device)
+
+            // The last check before anything is created or emitted, and the
+            // only one that cannot be raced: `stop` sets the flag and then
+            // takes this same lock to drop the device, so a stop that arrives
+            // while this call is queued is visible here — and no device is
+            // created afterwards to leave registered.
+            check_not_stopped(&stopped)?;
+
+            if slot.is_none() {
+                *slot = Some(UinputDevice::create(&name, settle)?);
+            }
+            let device = slot
+                .as_mut()
+                .expect("the device was just created if it was absent");
+
+            // Creating the device waits for the compositor to notice it, which
+            // is a third of a second the check above cannot see past. A stop
+            // that arrived during it must not be answered with one last
+            // keystroke — the emit loops re-check per keystroke, but a single
+            // `KeyPress` or `MouseClick` has no loop to catch it.
+            check_not_stopped(&stopped)?;
+            f(device)
         })
         .await
         .expect("input synthesis blocking task panicked")
@@ -737,5 +890,62 @@ mod tests {
     async fn asking_for_the_layout_name_never_resolves_one() {
         let backend = backend("auto");
         assert_eq!(backend.resolved_layout_name(), None);
+    }
+
+    /// A stopped backend refuses every kind of synthesis, and registers no
+    /// virtual device while doing so — a panic stop that left a keyboard behind
+    /// would leave the user with the thing they were trying to be rid of.
+    #[tokio::test]
+    async fn a_stopped_backend_refuses_synthesis_and_creates_no_device() {
+        let backend = backend(US_ASCII_LAYOUT);
+        backend.stop().await;
+        assert!(backend.is_stopped());
+
+        for result in [
+            backend.type_text("hello").await,
+            backend.key_press("a").await,
+            backend.key_release("a").await,
+            backend.hotkey(&["ctrl".into(), "t".into()]).await,
+            backend.mouse_move(1, 1).await,
+            backend.mouse_click("left").await,
+            backend.mouse_scroll(0, 1).await,
+        ] {
+            let err = result.expect_err("a stopped backend synthesizes nothing");
+            assert!(matches!(err, InputError::Stopped), "got {err:?}");
+        }
+
+        assert!(
+            !backend.device_created(),
+            "refusing a call must not create the device it refused to use"
+        );
+    }
+
+    /// Stopping twice is not a toggle. Someone in a panic hits the shortcut
+    /// repeatedly, and the second press must not restart the automation the
+    /// first one stopped.
+    #[tokio::test]
+    async fn stopping_twice_stays_stopped() {
+        let backend = backend(US_ASCII_LAYOUT);
+        backend.stop().await;
+        backend.stop().await;
+        assert!(backend.is_stopped());
+        assert!(matches!(
+            backend.mouse_move(1, 1).await,
+            Err(InputError::Stopped)
+        ));
+    }
+
+    /// `release` lifts the refusal.
+    ///
+    /// Asserted on the flag rather than on a successful call: proving synthesis
+    /// works again means creating a real `uinput` device, which a unit test has
+    /// no business registering with the kernel. `tests/kill_switch.rs` makes
+    /// that assertion against a real daemon.
+    #[tokio::test]
+    async fn release_lifts_the_refusal() {
+        let backend = backend(US_ASCII_LAYOUT);
+        backend.stop().await;
+        backend.release();
+        assert!(!backend.is_stopped());
     }
 }
