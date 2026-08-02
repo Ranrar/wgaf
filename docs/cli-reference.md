@@ -181,9 +181,35 @@ Focuses (activates) the window with the given id.
 Moves the window so its top-left corner lands at `(x, y)`. `x`/`y` may be
 negative (e.g. a monitor positioned left of or above the primary one).
 
+**The move happens in one step**, with no intermediate positions and no
+animation — the window is at its old position, then its new one. The
+application is told once where it ended up; it does not see a sequence of
+positions along the way, so anything watching for a drag-like series of moves
+will not see one. `wgaf window resize` and `wgaf mouse move-to` work the same
+way.
+
 ### `wgaf window resize <id> <width> <height>`
 
 Resizes the window to `width`×`height` pixels, without moving it.
+
+Applied in one step, exactly as `wgaf window move` describes: the window jumps
+from the old size to the new one, and the application is told once rather than
+being asked to relayout repeatedly.
+
+**The command returns before the new size can be read back.** For a moment
+afterwards — around 30 ms on a typical desktop — `wgaf window list` still
+reports the *old* rectangle. This matters if you compute a coordinate from it:
+
+```sh
+# Wrong: the list may still describe the old size, so this clicks the old centre
+wgaf window resize "$id" 720 560
+wgaf mouse move-to "$new_centre_x" "$new_centre_y"
+```
+
+Nothing errors — the pointer goes exactly where you sent it, which just is not
+where you meant. If you need the new geometry, poll `wgaf window list` until it
+reports the size you asked for before using it. The same caution applies to
+`wgaf window move`.
 
 ### `wgaf window close <id>`
 
@@ -316,9 +342,11 @@ layout and would give you the `@`.
 
 ## `wgaf mouse ...`
 
-Mouse automation, backed by `org.wgaf.Input1`. There is no absolute-move
-command — only relative movement, since Wayland has no reliable global
-absolute-coordinate authority.
+Mouse automation, backed by `org.wgaf.Input1`.
+
+Two ways to move the pointer, and they behave differently: `move` is relative
+and approximate, `move-to` is absolute and exact. Prefer `wgaf a11y` over either
+when an element can be found by name or role.
 
 ### `wgaf mouse move <dx> <dy>`
 
@@ -328,8 +356,50 @@ negative.
 **Not pixel-exact.** `libinput` applies pointer acceleration to relative
 motion, so the pointer does not necessarily end up exactly `dx`/`dy` pixels
 away — a fast large movement travels further than a slow one covering the same
-requested distance. Don't rely on it to land on a precise coordinate; prefer
-`wgaf a11y` to act on an element directly.
+requested distance. Don't rely on it to land on a precise coordinate; use
+`wgaf mouse move-to`, or prefer `wgaf a11y` to act on an element directly.
+
+### `wgaf mouse move-to <x> <y>`
+
+Moves the pointer to an absolute position, in screen pixels measured from the
+top-left of your desktop layout. Prints the position the pointer ended up at.
+
+Either value may be negative — a monitor placed left of or above your primary
+one has negative coordinates.
+
+**This one is pixel-exact.** Unlike `wgaf mouse move`, no pointer acceleration
+is involved: the pointer lands on exactly the coordinate you asked for.
+
+**The move happens in one step**, with no intermediate positions — the same
+contract as `wgaf window move` and `wgaf window resize`. An application sees the
+pointer arrive, along with the usual enter/leave as it crosses windows, but it
+never sees it travel: anything watching for a drag-like sequence of movements
+will not see one.
+
+**A position that is not on a monitor is refused, and nothing moves.** Worth
+knowing if you compute coordinates: a desktop whose monitors differ in size or
+alignment has gaps. With a tall monitor beside a short one, for instance, part
+of the overall rectangle is not on any screen, and a coordinate there is
+rejected rather than nudged to the nearest visible pixel. The error lists your
+monitors and their positions.
+
+```console
+$ wgaf mouse move-to 1500 700
+moved pointer to (1500, 700)
+
+$ wgaf mouse move-to 2000 1700
+error: off screen: (2000, 1700) is not on any monitor — the current layout is:
+HDMI-1 1080x1920 at (0,0), DP-3 2560x1440 at (1080,0)
+```
+
+### `wgaf mouse position`
+
+Prints the pointer's current position as `x y`, or as a JSON object with `--json`.
+
+```console
+$ wgaf mouse position
+1500 700
+```
 
 ### `wgaf mouse click <button>`
 

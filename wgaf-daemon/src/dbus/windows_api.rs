@@ -44,6 +44,17 @@ impl From<WindowsError> for WindowsApiError {
                 Self::ExtensionUnavailable(err.to_string())
             }
             WindowsError::DBus(e) => Self::ZBus(e),
+
+            // Pointer-path failures. `WindowManager` owns the pointer because
+            // only the extension can reach Clutter's seat, but no method on
+            // `org.wgaf.Windows1` moves the pointer — `MouseMoveAbsolute` and
+            // `GetPointerPosition` live on `org.wgaf.Input1`, which translates
+            // these into named errors of its own. They are unreachable here,
+            // and mapping them to a window-ish error name would be a lie; the
+            // catch-all keeps the message intact for the impossible case.
+            err @ (WindowsError::OutOfBounds { .. } | WindowsError::DisplayConfig(_)) => {
+                Self::ZBus(zbus::Error::Failure(err.to_string()))
+            }
         }
     }
 }

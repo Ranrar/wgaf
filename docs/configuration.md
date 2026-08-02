@@ -100,7 +100,7 @@ commands (`window list`, `a11y find`, etc.) can't be gated at all:
 | Interface | Capabilities |
 |---|---|
 | `org.wgaf.Windows1` | `FocusWindow`, `MoveWindow`, `ResizeWindow`, `CloseWindow` |
-| `org.wgaf.Input1` | `TypeText`, `KeyPress`, `KeyRelease`, `MouseMove`, `MouseClick`, `MouseScroll` |
+| `org.wgaf.Input1` | `TypeText`, `KeyPress`, `KeyRelease`, `MouseMove`, `MouseMoveAbsolute`, `MouseClick`, `MouseScroll` |
 | `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement` |
 
 Each can be `Allow`, `Deny`, or `Prompt`:

@@ -169,7 +169,7 @@ test-apps: check-gtk
 # once would each receive the other's keystrokes.
 test-desktop: test-apps
 	cargo test -p wgaf-daemon --test keyboard_coverage --test keyboard_layout \
-		--test window_management -- --ignored --test-threads=1
+		--test window_management --test pointer --test combined -- --ignored --test-threads=1
 
 clean:
 	cargo clean

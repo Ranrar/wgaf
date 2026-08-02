@@ -162,6 +162,21 @@ impl Report {
             .unwrap_or_else(|| self.missing(field, "an integer"))
     }
 
+    /// A numeric field as `f64`.
+    ///
+    /// Separate from [`Self::i64`] because some reported values are genuinely
+    /// fractional: GTK reports pointer coordinates in subpixel precision, so
+    /// `pointer_x` arrives as `320.0` and `i64` refuses it as "not an integer".
+    /// Accepts integers too, since JSON writes `0` rather than `0.0` when a
+    /// float happens to be whole — a field that is fractional most of the time
+    /// is not fractional all of the time.
+    pub fn f64(&self, field: &str) -> f64 {
+        self.0
+            .get(field)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_else(|| self.missing(field, "a number"))
+    }
+
     pub fn bool(&self, field: &str) -> bool {
         self.0
             .get(field)

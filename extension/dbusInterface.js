@@ -79,6 +79,16 @@ export const DBUS_INTERFACE_XML = `
     <method name="GetWorkspaces">
       <arg type="aa{sv}" direction="out" name="workspaces"/>
     </method>
+    <method name="WarpPointer">
+      <arg type="i" direction="in" name="x"/>
+      <arg type="i" direction="in" name="y"/>
+      <arg type="i" direction="out" name="actual_x"/>
+      <arg type="i" direction="out" name="actual_y"/>
+    </method>
+    <method name="GetPointer">
+      <arg type="i" direction="out" name="x"/>
+      <arg type="i" direction="out" name="y"/>
+    </method>
     <signal name="WindowCreated">
       <arg type="a{sv}" name="window"/>
     </signal>
@@ -160,8 +170,9 @@ function translateError(error) {
  * only marshals inputs/outputs and translates errors.
  */
 export class WgafDBusInterface {
-    constructor(windowManager) {
+    constructor(windowManager, pointerManager) {
         this._wm = windowManager;
+        this._pointer = pointerManager;
     }
 
     ListWindows() {
@@ -202,5 +213,35 @@ export class WgafDBusInterface {
 
     GetWorkspaces() {
         return this._wm.getWorkspaces().map(workspaceRecordToVariantDict);
+    }
+
+    /* Asynchronous by necessity, not by preference.
+     *
+     * PointerManager.warpPointer() waits for the warp to actually land before
+     * resolving (the warp is asynchronous inside Mutter - see pointer.js), so
+     * this cannot be a plain synchronous method returning a value. GJS's
+     * Gio.DBusExportedObject dispatches a method named `<Name>Async` with the
+     * raw parameter tuple and the invocation, leaving us to reply ourselves.
+     *
+     * The `Async` suffix is the wrapper's convention and does NOT appear in the
+     * interface XML - the method is `WarpPointer` on the bus. A daemon calling
+     * `WarpPointerAsync` over D-Bus would get "no such method".
+     */
+    WarpPointerAsync(params, invocation) {
+        const [x, y] = params;
+        this._pointer.warpPointer(x, y).then(position => {
+            invocation.return_value(new GLib.Variant('(ii)', [position.x, position.y]));
+        }).catch(error => {
+            invocation.return_error_literal(
+                Gio.DBusError,
+                Gio.DBusError.FAILED,
+                `wgaf: could not move the pointer: ${error.message}`
+            );
+        });
+    }
+
+    GetPointer() {
+        const {x, y} = this._pointer.getPointer();
+        return [x, y];
     }
 }

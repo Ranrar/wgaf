@@ -12,6 +12,7 @@ use zbus::message::Header;
 
 use crate::input::{InputBackend, InputError};
 use crate::permissions::{Capability, PermissionError, PermissionGate};
+use crate::windows::{WindowManager, WindowsError};
 
 /// D-Bus error names for `org.wgaf.Input1`, matching
 /// `wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE`/`INPUT_ERROR_UNKNOWN_KEY`/
@@ -64,6 +65,22 @@ enum InputApiError {
     /// does not know what its keystrokes would produce. Environmental — no
     /// Wayland session, or no keyboard on any seat.
     KeyboardLayoutUnavailable(String),
+    /// `MouseMoveAbsolute` was given a coordinate that is not on any monitor.
+    ///
+    /// Named rather than folded into [`Self::ZBus`] because it is an ordinary
+    /// outcome a script should branch on, not a fault: a layout with two
+    /// monitors of different heights has coordinates inside its bounding box
+    /// that are on no screen, and a caller computing a position can land on one
+    /// without doing anything wrong. The description names the monitors, so the
+    /// gap is visible rather than merely asserted.
+    OutOfBounds(String),
+    /// The monitor layout could not be read, so no coordinate can be checked
+    /// and no absolute move can be made safely.
+    ///
+    /// Separate from [`Self::DeviceUnavailable`]: `uinput` is fine, the
+    /// compositor's display configuration is what is missing, and telling a
+    /// user to check their `uinput` permissions would send them the wrong way.
+    MonitorLayoutUnavailable(String),
 }
 
 impl From<InputError> for InputApiError {
@@ -90,6 +107,26 @@ impl From<InputError> for InputApiError {
     }
 }
 
+/// Absolute pointer positioning is served by [`WindowManager`], so its errors
+/// have to reach `org.wgaf.Input1`'s callers too — see the note on
+/// [`InputApi`]'s two handles.
+impl From<WindowsError> for InputApiError {
+    fn from(err: WindowsError) -> Self {
+        match err {
+            WindowsError::OutOfBounds { .. } => Self::OutOfBounds(err.to_string()),
+            WindowsError::DisplayConfig(_) => Self::MonitorLayoutUnavailable(err.to_string()),
+            // The pointer lives in the Shell extension, so "the extension is
+            // missing" is exactly as fatal to an absolute move as a missing
+            // `uinput` device is to a relative one, and it reads the same way
+            // to a caller: the mechanism this call needs is not there.
+            WindowsError::ExtensionUnavailable { .. } => Self::DeviceUnavailable(err.to_string()),
+            WindowsError::DBus(e) => Self::ZBus(e),
+            // No pointer method takes a window id.
+            WindowsError::WindowNotFound(_) => Self::ZBus(zbus::Error::Failure(err.to_string())),
+        }
+    }
+}
+
 impl From<PermissionError> for InputApiError {
     fn from(err: PermissionError) -> Self {
         match err {
@@ -101,15 +138,41 @@ impl From<PermissionError> for InputApiError {
     }
 }
 
+/// Serves `org.wgaf.Input1`.
+///
+/// **Two backends, deliberately.** Every other interface in this daemon
+/// delegates to exactly one subsystem, and this one does not: relative input
+/// (`TypeText`, `KeyPress`, `MouseMove`, …) goes to [`InputBackend`] and its
+/// `uinput` device, while absolute pointer positioning
+/// (`MouseMoveAbsolute`, `GetPointerPosition`) goes to [`WindowManager`] and
+/// through it to the GNOME Shell extension.
+///
+/// The split is real and not an accident of layering. `uinput` can only express
+/// *relative* motion, which libinput then accelerates, so it cannot put the
+/// pointer on a chosen pixel at all; absolute positioning is a geometry problem
+/// and the compositor is the only thing that knows the geometry. Grouping them
+/// here is a decision about the **user's** model — "moving the mouse" is one
+/// idea and belongs on one interface — taken knowing it costs this struct its
+/// single-subsystem tidiness.
+///
+/// The practical consequence to remember: these two paths fail differently.
+/// A relative move fails when `/dev/uinput` is unavailable; an absolute one
+/// fails when the extension or Mutter's display configuration is.
 pub struct InputApi {
     backend: Arc<InputBackend>,
+    windows: Arc<WindowManager>,
     permissions: Arc<PermissionGate>,
 }
 
 impl InputApi {
-    pub fn new(backend: Arc<InputBackend>, permissions: Arc<PermissionGate>) -> Self {
+    pub fn new(
+        backend: Arc<InputBackend>,
+        windows: Arc<WindowManager>,
+        permissions: Arc<PermissionGate>,
+    ) -> Self {
         Self {
             backend,
+            windows,
             permissions,
         }
     }
@@ -198,6 +261,43 @@ impl InputApi {
             .check(Capability::MouseMove, connection, &header)
             .await?;
         Ok(self.backend.mouse_move(dx, dy).await?)
+    }
+
+    /// Moves the pointer to an absolute position in global logical pixels,
+    /// returning where it landed.
+    ///
+    /// Coordinates may be negative: a monitor placed left of or above the
+    /// primary has them, and rejecting them would make those layouts
+    /// unreachable.
+    ///
+    /// A coordinate that is not on any monitor fails with `OutOfBounds` and
+    /// moves nothing. It is **not** clamped to the nearest valid point, which
+    /// would put the pointer somewhere the caller did not choose and then let
+    /// them click there — the compositor does exactly that if asked, which is
+    /// why the check happens here first.
+    ///
+    /// The reply means the pointer has arrived, not merely that the request was
+    /// sent: the extension waits for the warp to take effect. Without that,
+    /// moving and then clicking would be a race against the compositor.
+    async fn mouse_move_absolute(
+        &self,
+        x: i32,
+        y: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(i32, i32), InputApiError> {
+        self.permissions
+            .check(Capability::MouseMoveAbsolute, connection, &header)
+            .await?;
+        Ok(self.windows.warp_pointer(x, y).await?)
+    }
+
+    /// The pointer's current position in global logical pixels.
+    ///
+    /// Ungated, like every other read-only method on the daemon's interfaces:
+    /// it observes the desktop rather than changing it.
+    async fn get_pointer_position(&self) -> Result<(i32, i32), InputApiError> {
+        Ok(self.windows.get_pointer().await?)
     }
 
     /// Clicks (press then release) `button`, which must be `left`, `right`,

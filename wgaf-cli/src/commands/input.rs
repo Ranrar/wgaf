@@ -115,6 +115,76 @@ pub async fn mouse_move(
     Ok(())
 }
 
+/// Moves the pointer to an absolute screen position.
+///
+/// The daemon replies with the position actually reached, and that is what gets
+/// reported rather than the position that was requested. They are the same in
+/// every ordinary case; printing the reply means that if they ever differ, the
+/// user sees where the pointer really is instead of being told what they
+/// already typed.
+pub async fn mouse_move_to(
+    bus_name: &str,
+    x: i32,
+    y: i32,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let connection = connect().await?;
+    let reply = connection
+        .call_method(
+            Some(bus_name),
+            wgaf_common::INPUT_OBJECT_PATH,
+            Some(wgaf_common::INPUT_INTERFACE_NAME),
+            "MouseMoveAbsolute",
+            &(x, y),
+        )
+        .await
+        .map_err(map_err)?;
+    let (actual_x, actual_y): (i32, i32) = reply.body().deserialize()?;
+
+    if json {
+        crate::output::print_json(&PointerPosition {
+            x: actual_x,
+            y: actual_y,
+        })?;
+    } else {
+        crate::output::print_ok(json, &format!("moved pointer to ({actual_x}, {actual_y})"));
+    }
+    Ok(())
+}
+
+/// Prints the pointer's current screen position.
+pub async fn mouse_position(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let connection = connect().await?;
+    let reply = connection
+        .call_method(
+            Some(bus_name),
+            wgaf_common::INPUT_OBJECT_PATH,
+            Some(wgaf_common::INPUT_INTERFACE_NAME),
+            "GetPointerPosition",
+            &(),
+        )
+        .await
+        .map_err(map_err)?;
+    let (x, y): (i32, i32) = reply.body().deserialize()?;
+
+    if json {
+        crate::output::print_json(&PointerPosition { x, y })?;
+    } else {
+        println!("{x} {y}");
+    }
+    Ok(())
+}
+
+/// `--json` shape for the two pointer-position commands.
+///
+/// Bare `x`/`y` rather than wrapped in an `ok` envelope, because these return a
+/// *record* like `window list` does, not a bare success like `mouse click`.
+#[derive(serde::Serialize)]
+struct PointerPosition {
+    x: i32,
+    y: i32,
+}
+
 pub async fn mouse_click(
     bus_name: &str,
     button: &str,

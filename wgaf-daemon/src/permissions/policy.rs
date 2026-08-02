@@ -59,6 +59,13 @@ pub enum Capability {
     KeyPress,
     KeyRelease,
     MouseMove,
+    /// Deliberately **not** folded into [`Capability::MouseMove`]. Relative
+    /// motion nudges the pointer from wherever it happens to be; absolute
+    /// positioning puts it on a chosen pixel. A caller granted "nudge the
+    /// pointer" has not thereby granted "put the pointer on the Confirm
+    /// button", and only the second one composes with `MouseClick` into
+    /// clicking a specific thing.
+    MouseMoveAbsolute,
     MouseClick,
     MouseScroll,
     // org.wgaf.Accessibility1
@@ -81,6 +88,7 @@ impl Capability {
             Capability::KeyPress => "KeyPress",
             Capability::KeyRelease => "KeyRelease",
             Capability::MouseMove => "MouseMove",
+            Capability::MouseMoveAbsolute => "MouseMoveAbsolute",
             Capability::MouseClick => "MouseClick",
             Capability::MouseScroll => "MouseScroll",
             Capability::InvokeAction => "InvokeAction",

@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-02
+
 ### Added
+
+- **A test that drives a whole sequence rather than one thing at a time.** The existing desktop tests each exercise one subsystem — windows, keyboard, pointer — which is the right shape for finding a fault and covers nothing about what happens when they are combined. Focusing a window, resizing it, clicking one of its buttons and scrolling it is what using wgaf actually looks like, and the couplings between those steps are where state left by one breaks the next.
+
+  It found a real one on its first runs: resizing a window reports success before the new size can be read back, so a button aimed at using coordinates fetched a moment later is not where the coordinates say. That is invisible to a test that does one thing, and it is the kind of mistake a script would make too.
+
+  Every step is verified from the test application's own report rather than from wgaf's reply, and the run logs each step as it happens so a failure shows the whole sequence up to that point. `input-test` now also reports its own size and the position of its button, which is what makes clicking a specific button checkable at all — before absolute pointer positioning existed, nothing could aim at one.
+
+- **`wgaf mouse move-to <x> <y>` — put the pointer on an exact screen position.** Until now the only way to move the pointer was `wgaf mouse move`, which is *relative* and runs through pointer acceleration: asking to move 50 pixels right moves you some distance right, and how far depends on how fast the movement was. That is fine for a nudge and useless for landing on a button, so wgaf could not aim at anything.
+
+  Absolute positioning is exact — the pointer arrives on the pixel you named. Coordinates may be negative, for a monitor sitting left of or above your primary one. `wgaf mouse position` prints where the pointer is now.
+
+  **A position that is not on a monitor is refused, and nothing moves.** This matters more than it sounds: with monitors of different sizes or alignments, part of your desktop's overall rectangle is not on any screen, and a coordinate there is easy to compute by accident. Asked to move somewhere off-screen, the compositor quietly puts the pointer somewhere else instead and reports success — so wgaf checks against your actual monitor layout first and tells you, rather than aiming somewhere you did not choose and letting you click there. The error lists your monitors.
+
+  The pointer arrives in one step, with no intermediate positions, exactly as `wgaf window move` does. Applications see it appear rather than travel.
+
+  This is still secondary to `wgaf a11y`: clicking an element found by name keeps working when a window moves or a theme changes, and a coordinate does not.
+
+  Absolute positioning is gated by its own `MouseMoveAbsolute` permission rather than reusing `MouseMove`, because they are not the same power — being allowed to nudge the pointer is not being allowed to place it on the Confirm button. Denying it leaves relative movement working. It needs the GNOME Shell Extension installed and enabled.
 
 - **An emergency stop: press Escape, or run `wgaf stop`.** Until now a runaway script could only be dealt with by killing it, which assumes you can still use a terminal while synthetic keystrokes are landing in it. The speed limit slows a flood down; it does not end one.
 
@@ -30,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`wgaf status` now shows the keyboard layout**, as `keyboard layout: auto -> Danish`: both what you configured and what it actually resolved to. `auto` alone does not tell you which layout was picked, and after changing your desktop's layout the difference between the two is the answer to "why did my text come out wrong". Asking for status never reads the layout as a side effect, the same way it never creates an input device.
 
 ### Fixed
+
+- **`docs/cli-reference.md` now warns that `wgaf window resize` and `wgaf window move` return before the new geometry can be read back.** For about 30 ms afterwards `wgaf window list` still reports the old rectangle, so a script that resizes a window and then computes a coordinate from the list aims at where the window used to be — and nothing errors, because the pointer goes exactly where it was sent. The behaviour is unchanged; what was missing was any way to find out about it short of being caught by it.
 
 - **`wgaf type` now types the characters you asked for on keyboard layouts other than US.** It used to synthesize key *positions* from a hardcoded US-QWERTY table and let the compositor decide what those positions meant, so on a Danish keyboard `wgaf type "user@example.com"` wrote `user"example.com` — and reported success. Characters that live on AltGr (`@ $ { } [ ] | \` on Danish, all of them) could not be produced at all, by any route.
 

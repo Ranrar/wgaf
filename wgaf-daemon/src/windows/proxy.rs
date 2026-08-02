@@ -43,6 +43,25 @@ pub(crate) trait ShellExtension {
 
     /// Enumerate all workspaces.
     fn get_workspaces(&self) -> zbus::Result<Vec<WorkspaceRecordDict>>;
+
+    /// Move the pointer to an absolute position in global logical pixels,
+    /// returning where it actually landed.
+    ///
+    /// The extension waits for the warp to take effect before replying, so a
+    /// caller may treat the reply as meaning "the pointer is there now". The
+    /// returned position is normally the requested one; it differs only if
+    /// something else moved the pointer while the warp was in flight, or if
+    /// Mutter clamped an off-screen coordinate.
+    ///
+    /// **This does not bounds-check.** Mutter silently clamps a coordinate that
+    /// is not on any monitor, so an out-of-range request here succeeds and puts
+    /// the pointer somewhere the caller did not ask for. Callers must validate
+    /// against [`super::display_config::MonitorLayout`] first — see
+    /// `WindowManager::warp_pointer`.
+    fn warp_pointer(&self, x: i32, y: i32) -> zbus::Result<(i32, i32)>;
+
+    /// The pointer's current position in global logical pixels.
+    fn get_pointer(&self) -> zbus::Result<(i32, i32)>;
 }
 
 #[cfg(test)]
@@ -310,13 +329,18 @@ mod tests {
             ),
             (
                 "ResizeWindow",
-                Args::new(vec![u.clone(), i.clone(), i], vec![]),
+                Args::new(vec![u.clone(), i.clone(), i.clone()], vec![]),
             ),
             ("CloseWindow", Args::new(vec![u], vec![])),
             (
                 "GetWorkspaces",
                 Args::new(vec![], vec![sig::<Vec<WorkspaceRecordDict>>()]),
             ),
+            (
+                "WarpPointer",
+                Args::new(vec![i.clone(), i.clone()], vec![i.clone(), i.clone()]),
+            ),
+            ("GetPointer", Args::new(vec![], vec![i.clone(), i.clone()])),
         ]
         .into_iter()
         .map(|(name, args)| (name.to_string(), args))
@@ -328,6 +352,34 @@ mod tests {
             "proxy.rs and extension/dbusInterface.js disagree about the \
              methods on {}",
             wgaf_common::EXTENSION_INTERFACE_NAME
+        );
+    }
+
+    /// ADR-0002's member-presence check is only as good as its list. If a
+    /// method is added to the proxy and the extension but not to
+    /// `REQUIRED_EXTENSION_METHODS`, an outdated extension stops being detected
+    /// and the failure reverts to an unexplained `UnknownMethod` — the exact
+    /// outcome the check was built to replace.
+    ///
+    /// Pinned against the extension's own XML rather than against the trait,
+    /// for the same reason the test below is: `zbus` exposes no compile-time
+    /// metadata about a proxy, so the XML is the only machine-readable list of
+    /// what the daemon can call.
+    #[test]
+    fn the_required_method_list_covers_every_method_the_extension_exposes() {
+        let declared: std::collections::BTreeSet<&str> = crate::windows::REQUIRED_EXTENSION_METHODS
+            .iter()
+            .copied()
+            .collect();
+        let interface = extension_interface();
+        let in_xml: std::collections::BTreeSet<&str> =
+            interface.methods.keys().map(String::as_str).collect();
+
+        assert_eq!(
+            declared, in_xml,
+            "REQUIRED_EXTENSION_METHODS and the extension's interface XML disagree — a method \
+             present in one and absent from the other either breaks the outdated-extension check \
+             or makes it reject a perfectly current extension"
         );
     }
 

@@ -14,6 +14,17 @@ pub struct Config {
     /// `wgaf-daemon/tests/windows_stub.rs`), without needing to run a real
     /// GNOME Shell session.
     pub extension_bus_name: String,
+    /// Bus name the daemon reads the monitor layout from, for bounds-checking
+    /// absolute pointer positions. Defaults to
+    /// `org.gnome.Mutter.DisplayConfig`.
+    ///
+    /// Overridable for the same reason `extension_bus_name` is, and it is the
+    /// only way to test the pointer path at all: on a real session Mutter
+    /// already owns that name, so a stub cannot take it. Pointing a test daemon
+    /// at a private name lets the bounds check be exercised against a known,
+    /// awkward monitor layout rather than whatever the developer's desk
+    /// happens to look like.
+    pub display_config_bus_name: String,
     /// Name the daemon's virtual `uinput` device reports to the kernel.
     /// Defaults to `crate::input::DEFAULT_DEVICE_NAME`; overridable so
     /// tests can give each spawned daemon a unique device name — see that
@@ -91,6 +102,7 @@ impl Default for Config {
             bus_name: wgaf_common::BUS_NAME.to_string(),
             log_level: "info".to_string(),
             extension_bus_name: wgaf_common::EXTENSION_BUS_NAME.to_string(),
+            display_config_bus_name: crate::windows::display_config::DEFAULT_BUS_NAME.to_string(),
             input_device_name: crate::input::DEFAULT_DEVICE_NAME.to_string(),
             input_max_events_per_second: crate::input::DEFAULT_MAX_EVENTS_PER_SECOND,
             input_max_type_text_chars: crate::input::DEFAULT_MAX_TYPE_TEXT_CHARS,

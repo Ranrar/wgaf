@@ -137,6 +137,30 @@ pub const INPUT_ERROR_STOPPED: &str = "org.wgaf.Input1.Error.Stopped";
 /// `wgaf-daemon/src/permissions/`.
 pub const INPUT_ERROR_PERMISSION_DENIED: &str = "org.wgaf.Input1.Error.PermissionDenied";
 
+/// D-Bus error name returned by `org.wgaf.Input1.MouseMoveAbsolute` when the
+/// requested coordinate is not on any monitor.
+///
+/// Worth branching on rather than treating as a generic failure: a desktop
+/// whose monitors differ in size or alignment has coordinates inside its
+/// overall bounding box that sit on no screen, so a caller computing a target
+/// can reach one without having done anything wrong. The error's description
+/// lists the monitors and their rectangles, which is usually enough to see why.
+///
+/// Nothing is moved when this is returned. The pointer is deliberately **not**
+/// clamped to the nearest valid position — see the error's documentation in
+/// `wgaf-daemon/src/windows/mod.rs`.
+pub const INPUT_ERROR_OUT_OF_BOUNDS: &str = "org.wgaf.Input1.Error.OutOfBounds";
+
+/// D-Bus error name returned by `org.wgaf.Input1.MouseMoveAbsolute` when the
+/// monitor layout cannot be read from the compositor at all, so no coordinate
+/// can be validated.
+///
+/// Environmental rather than a bad request: absolute positioning needs both the
+/// wgaf GNOME Shell Extension and `org.gnome.Mutter.DisplayConfig`, and this
+/// says the second one is missing. Relative `MouseMove` is unaffected.
+pub const INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE: &str =
+    "org.wgaf.Input1.Error.MonitorLayoutUnavailable";
+
 // ---------------------------------------------------------------------------
 // GNOME Shell Extension's D-Bus API (client-side naming) — the daemon is a
 // `zbus` client of this interface. Canonical definition lives in

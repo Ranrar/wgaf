@@ -134,6 +134,8 @@ fn error_name_label(name: &str) -> Option<&'static str> {
         wgaf_common::INPUT_ERROR_TEXT_TOO_LONG => Some("text too long"),
         wgaf_common::INPUT_ERROR_RATE_LIMITED => Some("input rate limit exceeded"),
         wgaf_common::INPUT_ERROR_STOPPED => Some("input stopped"),
+        wgaf_common::INPUT_ERROR_OUT_OF_BOUNDS => Some("off screen"),
+        wgaf_common::INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE => Some("monitor layout unavailable"),
         wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE => {
             Some("AT-SPI accessibility bus unavailable")
         }
@@ -314,8 +316,8 @@ mod tests {
         // Guards the scan itself: a refactor that moves or reformats these
         // constants would otherwise turn this test into a silent no-op.
         assert_eq!(
-            checked, 16,
-            "expected 16 daemon error-name constants, found {checked}. If an error was \
+            checked, 18,
+            "expected 18 daemon error-name constants, found {checked}. If an error was \
              genuinely added or removed, update this number; if not, the scan has stopped \
              matching how `wgaf-common` declares them and is silently passing."
         );

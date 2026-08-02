@@ -59,7 +59,8 @@ Checked items work today.
 - [x] Press and release individual keys
 - [x] Press key combinations like `ctrl shift t`
 - [x] Move, click, and scroll the mouse
-- [ ] Move the pointer to an absolute screen position
+- [x] Move the pointer to an exact screen position
+- [ ] Hold off typing when the window you meant isn't focused
 
 ### Accessibility
 - [x] List running accessible applications
@@ -74,6 +75,8 @@ Checked items work today.
 - [x] Every action that changes something is recorded
 - [x] A panic stop for a runaway script — `wgaf stop`, or Escape
 - [ ] A readable log file of what wgaf did
+- [ ] A panel icon showing when something is automating your desktop
+- [ ] Watch what wgaf is doing, live
 
 ### Scripting & tooling
 - [x] JSON output on every command
@@ -81,11 +84,19 @@ Checked items work today.
 - [x] Shell completions and man pages
 - [x] systemd user service
 - [ ] Launch applications
+- [ ] Act on an app by name, without looking up a window id first
 - [ ] Run a saved workflow from a file
+- [ ] Record what you do, and replay it later
+- [ ] Run a script when a window opens, closes, or takes focus
+- [ ] Confirm an action had the effect you expected
 - [ ] Take a screenshot
 
 ### AI agents
 - [ ] MCP server, so an agent can drive the desktop under the permissions you set
+
+### Installing & platforms
+- [x] GNOME on Wayland
+- [ ] `.deb` and `.rpm` packages
 
 ## Use cases
 
@@ -188,6 +199,7 @@ Type and click:
 
 ```sh
 wgaf type "Hello from wgaf"
+wgaf mouse move-to 1500 700
 wgaf mouse click left
 ```
 
@@ -250,6 +262,13 @@ command can produce.
 - The keyboard layout is read once when the daemon starts. If you change your
   layout afterwards, restart the daemon so `wgaf type` picks up the new one:
   `systemctl --user restart wgaf-daemon.service`.
+- After `wgaf window move` or `wgaf window resize`, the new position and size
+  take a moment to show up in `wgaf window list`. If you're calculating
+  coordinates from it, read it again until it reports what you asked for.
+- `wgaf ping --json` names its result `response`; every other command uses
+  `message`.
+- Window and workspace commands need the GNOME Shell extension, and it only
+  loads on login — so log out and back in once after installing or updating it.
 
 ## The goal
 

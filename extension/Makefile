@@ -15,7 +15,7 @@
 
 UUID := wgaf@wgaf.dev
 SCHEMA := schemas/org.gnome.shell.extensions.wgaf.gschema.xml
-SRC_FILES := metadata.json extension.js dbusInterface.js windows.js $(SCHEMA)
+SRC_FILES := metadata.json extension.js dbusInterface.js windows.js pointer.js $(SCHEMA)
 PACK_FILE := $(UUID).shell-extension.zip
 INSTALL_DIR := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
@@ -36,6 +36,7 @@ $(PACK_FILE): $(SRC_FILES)
 	gnome-extensions pack --force \
 		--extra-source=windows.js \
 		--extra-source=dbusInterface.js \
+		--extra-source=pointer.js \
 		--schema=$(SCHEMA) \
 		.
 

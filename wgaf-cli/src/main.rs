@@ -11,10 +11,9 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// D-Bus well-known bus name of the daemon to talk to. Defaults to the
-    /// daemon's own default (`org.wgaf.Daemon`, [`wgaf_common::BUS_NAME`]) —
-    /// only pass this if the target daemon was started with a customized
-    /// `bus_name` in its `config.toml` (see `Config::bus_name`).
+    /// D-Bus name of the daemon to talk to. Defaults to `org.wgaf.Daemon`.
+    ///
+    /// Only needed if you changed `bus_name` in `config.toml`.
     #[arg(long, global = true)]
     bus_name: Option<String>,
 
@@ -82,9 +81,12 @@ enum Command {
         command: KeyCommand,
     },
 
-    /// Mouse automation commands (relative move, click, scroll), backed by
-    /// the daemon's `org.wgaf.Input1` D-Bus interface. There is no
-    /// absolute-move command.
+    /// Mouse automation commands (move, click, scroll), backed by the
+    /// daemon's `org.wgaf.Input1` D-Bus interface.
+    ///
+    /// Prefer `wgaf a11y` where an element can be found by name or role:
+    /// clicking a named button keeps working when a window moves or a theme
+    /// changes, and a coordinate does not.
     Mouse {
         #[command(subcommand)]
         command: MouseCommand,
@@ -153,6 +155,29 @@ enum MouseCommand {
         #[arg(allow_hyphen_values = true)]
         dy: i32,
     },
+
+    /// Move the pointer to an absolute screen position.
+    ///
+    /// Coordinates are in screen pixels, measured from the top-left of your
+    /// desktop layout, and are exact — unlike `wgaf mouse move`, which is
+    /// relative and subject to pointer acceleration.
+    ///
+    /// A position that is not on any monitor is refused, and nothing moves.
+    /// Note that a desktop with monitors of different sizes has gaps: with a
+    /// short monitor beside a tall one, a coordinate can be inside the overall
+    /// rectangle and still on no screen. `wgaf mouse position` and the error
+    /// message both show the layout.
+    MoveTo {
+        /// May be negative, for a monitor placed left of the primary one.
+        #[arg(allow_hyphen_values = true)]
+        x: i32,
+        /// May be negative, for a monitor placed above the primary one.
+        #[arg(allow_hyphen_values = true)]
+        y: i32,
+    },
+
+    /// Print the pointer's current screen position.
+    Position,
 
     /// Click (press then release) a mouse button.
     Click {
@@ -379,6 +404,10 @@ async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
             MouseCommand::Move { dx, dy } => {
                 commands::input::mouse_move(bus_name, dx, dy, json).await?
             }
+            MouseCommand::MoveTo { x, y } => {
+                commands::input::mouse_move_to(bus_name, x, y, json).await?
+            }
+            MouseCommand::Position => commands::input::mouse_position(bus_name, json).await?,
             MouseCommand::Click { button } => {
                 commands::input::mouse_click(bus_name, &button, json).await?
             }

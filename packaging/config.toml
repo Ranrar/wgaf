@@ -9,6 +9,11 @@ log_level = "info"
 # Only useful for testing against a stub extension.
 extension_bus_name = "org.gnome.Shell.Extensions.Wgaf"
 
+# Where the daemon reads your monitor layout from, which it needs to check that
+# an absolute pointer position is actually on a screen. Only useful for testing
+# against a stub; leave this alone.
+display_config_bus_name = "org.gnome.Mutter.DisplayConfig"
+
 # What the virtual uinput device reports to the kernel.
 input_device_name = "wgaf virtual input device"
 

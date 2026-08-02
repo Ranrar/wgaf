@@ -160,6 +160,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &config.extension_bus_name,
             wgaf_common::EXTENSION_OBJECT_PATH,
             wgaf_common::EXTENSION_INTERFACE_NAME,
+            &config.display_config_bus_name,
         )
         .await?,
     );
@@ -239,11 +240,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?
         .serve_at(
             wgaf_common::WINDOWS_OBJECT_PATH,
-            dbus::windows_api::WindowsApi::new(window_manager, Arc::clone(&permission_gate)),
+            dbus::windows_api::WindowsApi::new(
+                Arc::clone(&window_manager),
+                Arc::clone(&permission_gate),
+            ),
         )?
         .serve_at(
             wgaf_common::INPUT_OBJECT_PATH,
-            dbus::input_api::InputApi::new(input_backend, Arc::clone(&permission_gate)),
+            // `Input1` gets the window manager as well as the input backend:
+            // absolute pointer positioning is served through the Shell
+            // extension, not through `uinput`. See `InputApi`'s documentation
+            // for why the two live on one interface despite that.
+            dbus::input_api::InputApi::new(
+                input_backend,
+                window_manager,
+                Arc::clone(&permission_gate),
+            ),
         )?
         .serve_at(
             wgaf_common::ACCESSIBILITY_OBJECT_PATH,

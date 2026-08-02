@@ -13,6 +13,12 @@ TypeText = "Allow"
 KeyPress = "Allow"
 KeyRelease = "Allow"
 MouseMove = "Allow"
+# Moving the pointer to an exact screen position, as `wgaf mouse move-to` does.
+# Separate from MouseMove on purpose: that one nudges the pointer from wherever
+# it happens to be, while this one can place it on a specific button and is what
+# combines with MouseClick to press something chosen. Denying this still leaves
+# relative movement working.
+MouseMoveAbsolute = "Allow"
 MouseClick = "Allow"
 MouseScroll = "Allow"
 

@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "wgaf-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "wgaf-common"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1289,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "wgaf-daemon"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "atspi",
  "clap",

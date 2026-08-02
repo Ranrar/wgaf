@@ -172,6 +172,20 @@ struct State<'a> {
     /// goes somewhere else entirely, and the resulting empty report looks like a
     /// synthesis failure.
     window_focused: bool,
+    /// The window's current logical size in pixels, as the toolkit sees it.
+    ///
+    /// Here so that `wgaf window resize` can be verified from this application
+    /// rather than from wgaf's own reply — the same reason `window-test` reports
+    /// it. A test that combines resizing with input needs both halves from one
+    /// application, and reading the size back through `wgaf window list` would
+    /// be verifying wgaf with wgaf.
+    ///
+    /// Note this is the *client's* size and need not equal the frame rectangle
+    /// Mutter reports. For the CSD windows this application draws they have
+    /// matched exactly in every measurement so far, but that is an observation
+    /// about GTK4 client-side decorations, not a guarantee to rely on.
+    width: i32,
+    height: i32,
     /// Whether the text entry holds the focus within the window. It is focused
     /// at startup and nothing here moves it, so a `false` means something
     /// outside this application took it — most likely a click that landed on
@@ -194,6 +208,23 @@ struct State<'a> {
     /// records raw button events anywhere in the window: a click that lands on
     /// empty space appears in `clicks` and not here.
     button_activations: u64,
+    /// Where the button is, in logical pixels from the window's top-left, or
+    /// `null` before the window has been laid out.
+    ///
+    /// **This is what makes clicking the button testable at all.** wgaf can now
+    /// place the pointer on an exact coordinate, but a test that hardcoded one
+    /// would be asserting against this application's current layout rather than
+    /// against wgaf, and would break silently the first time a margin changed —
+    /// landing on empty space, reporting a click, and activating nothing.
+    /// Reporting the real bounds keeps the aiming honest: the test asks the
+    /// application where to click and then checks that clicking there worked.
+    ///
+    /// Prefer aiming at the centre (`button_x + button_width / 2`) rather than
+    /// the origin, which is the corner and is a pixel away from being outside.
+    button_x: Option<f64>,
+    button_y: Option<f64>,
+    button_width: Option<f64>,
+    button_height: Option<f64>,
     /// How many pointer motion events arrived. This is the honest measure of
     /// `wgaf mouse move`; the distance is not, because of pointer acceleration.
     motion_count: u64,
@@ -222,6 +253,7 @@ struct State<'a> {
 struct Observed {
     entry: Entry,
     window: ApplicationWindow,
+    button: Button,
     keys: Vec<KeyEvent>,
     key_event_count: u64,
     clicks: Vec<ClickEvent>,
@@ -237,9 +269,17 @@ struct Observed {
 
 impl Observed {
     fn state(&self) -> State<'_> {
+        let button_bounds = self.button.compute_bounds(&self.window);
         State {
             pid: std::process::id(),
             window_focused: self.window.is_active(),
+            // `default_width`/`default_height` track the current size of a
+            // mapped GTK4 window, which is why they are the documented way to
+            // persist one. `width()`/`height()` would report the widget's
+            // allocated size, which is 0 until the window has been mapped and
+            // laid out — the same trap `window-test` documents.
+            width: self.window.default_width(),
+            height: self.window.default_height(),
             entry_focused: self.entry.has_focus(),
             typed: self.entry.text().into(),
             keys: &self.keys,
@@ -247,6 +287,14 @@ impl Observed {
             clicks: &self.clicks,
             click_count: self.click_count,
             button_activations: self.button_activations,
+            // `compute_bounds` answers relative to the widget passed in, so
+            // this is window-relative — the same space `pointer_x`/`pointer_y`
+            // use, which is what lets a test add them to a window origin and
+            // aim. It returns `None` until the window has been laid out.
+            button_x: button_bounds.map(|b| f64::from(b.x())),
+            button_y: button_bounds.map(|b| f64::from(b.y())),
+            button_width: button_bounds.map(|b| f64::from(b.width())),
+            button_height: button_bounds.map(|b| f64::from(b.height())),
             motion_count: self.motion_count,
             pointer_x: self.pointer.map(|(x, _)| x),
             pointer_y: self.pointer.map(|(_, y)| y),
@@ -442,6 +490,7 @@ fn build_ui(application: &Application, reporter: Reporter) {
         observed: RefCell::new(Observed {
             entry: entry.clone(),
             window: window.clone(),
+            button: button.clone(),
             keys: Vec::new(),
             key_event_count: 0,
             clicks: Vec::new(),
@@ -542,6 +591,19 @@ fn build_ui(application: &Application, reporter: Reporter) {
     // focused before it sends anything — the precondition that decides whether
     // the input arrives at all.
     window.connect_is_active_notify({
+        let app = Rc::clone(&app);
+        move |_| app.report()
+    });
+
+    // Report whenever the window is resized, so `wgaf window resize` can be
+    // verified from this side. Both dimensions are watched: a resize that
+    // changes only one would otherwise go unreported, and a test waiting on it
+    // would time out against a window that had in fact done as it was told.
+    window.connect_default_width_notify({
+        let app = Rc::clone(&app);
+        move |_| app.report()
+    });
+    window.connect_default_height_notify({
         let app = Rc::clone(&app);
         move |_| app.report()
     });

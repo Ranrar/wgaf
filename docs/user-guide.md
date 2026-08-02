@@ -81,6 +81,23 @@ wgaf mouse click left
 wgaf mouse scroll 0 -5
 ```
 
+`wgaf mouse move` is *relative* and approximate — your desktop applies pointer
+acceleration to it, so it does not travel exactly 50 pixels. To put the pointer
+somewhere exact, give it a screen position instead:
+
+```sh
+wgaf mouse position          # where is it now?
+wgaf mouse move-to 1500 700  # put it there, exactly
+```
+
+A position that is not on any monitor is refused and nothing moves. Note that
+monitors of different sizes leave gaps: with a short monitor beside a tall one,
+a position can be inside the overall rectangle and still on no screen. The
+error lists your monitors so you can see where the gap is.
+
+Clicking a specific thing this way means knowing its coordinates, which change
+whenever a window moves. Prefer the next section where you can.
+
 Two safety limits apply to everything in this section — one on how fast input
 is produced, one on how much a single `wgaf type` may send. Both are generous
 by default and you are unlikely to meet either by accident. See ["If automation

@@ -16,6 +16,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {WindowManager} from './windows.js';
+import {PointerManager} from './pointer.js';
 import {
     WgafDBusInterface,
     DBUS_INTERFACE_XML,
@@ -58,7 +59,11 @@ export default class WgafExtension extends Extension {
     enable() {
         this._windowManager = new WindowManager();
 
-        this._dbusInterface = new WgafDBusInterface(this._windowManager);
+        // Holds no state and connects no signals, so unlike WindowManager it
+        // needs no teardown in disable() - dropping the reference is enough.
+        this._pointerManager = new PointerManager();
+
+        this._dbusInterface = new WgafDBusInterface(this._windowManager, this._pointerManager);
         this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(DBUS_INTERFACE_XML, this._dbusInterface);
         this._dbusImpl.export(Gio.DBus.session, DBUS_OBJECT_PATH);
 
@@ -186,6 +191,8 @@ export default class WgafExtension extends Extension {
             this._windowManager.destroy();
             this._windowManager = null;
         }
+
+        this._pointerManager = null;
 
         if (this._ownerId) {
             Gio.bus_unown_name(this._ownerId);
