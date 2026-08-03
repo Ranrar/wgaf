@@ -289,6 +289,17 @@ wgaf key release leftshift
 Every key press must be matched by a release. A key left pressed stays pressed
 for the rest of the session, exactly as a physically stuck key would.
 
+**`escape` does not reach applications while wgaf is running.** Escape is the
+emergency stop, so the desktop hands it to wgaf rather than to whatever you are
+automating. wgaf recognizes its own keystrokes and will not stop itself on one,
+but the key does not arrive at the application either — so pressing Escape at a
+dialog will not close it. Use the [`wgaf a11y`](#wgaf-a11y-) commands to press
+the dialog's own Cancel or Close button, which is more dependable than a
+keystroke in any case.
+
+This applies only to whichever key is set as the emergency stop; every other
+key is unaffected.
+
 ---
 
 ## `wgaf key combo <key>...`

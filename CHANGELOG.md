@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Escape is your applications' key again, except while automation is actually running.** Enabling the GNOME Shell Extension used to take Escape away from the entire desktop for as long as it stayed enabled — dialogs would not close, vim never left insert mode, fullscreen video would not exit — and it did this even while the wgaf daemon was idle or not running at all. A GNOME keyboard shortcut is an interception rather than a notification: whichever thing claims the key takes it, and nothing else ever sees it.
+
+  The emergency key is now held only while wgaf holds a virtual input device, which is to say only while a script can actually type. Between runs Escape reaches your applications exactly as it always did. The daemon publishes when that starts and stops, and the extension gives the key back the moment a run ends — including when the daemon exits or crashes mid-run.
+
+  During a run the key does still belong to wgaf. That is the point of a handbrake, and it is now a matter of seconds rather than your whole session.
+
+- **A script that presses Escape no longer stops itself.** `wgaf key press escape` is a documented way to dismiss a dialog. It went out through wgaf's virtual keyboard, reached the compositor as an ordinary key press, matched the emergency shortcut, and stopped the very run that issued it — which looked like wgaf crashing rather than wgaf braking. The emergency key was only ever tested against a person pressing it.
+
+  wgaf now recognizes its own keystrokes. Its virtual keyboard identifies itself to the system, and the emergency key ignores anything coming from it, so only a press on a real keyboard stops a run.
+
+  **One limitation worth knowing:** while a run is in progress, an Escape sent by a script reaches nothing at all. It no longer stops wgaf, but the compositor still takes the key before the application can see it, so the dialog you aimed it at stays open. Dismiss dialogs with the `wgaf a11y` commands instead — they find the button and press it, which is more reliable than a keystroke regardless.
+
 ## [0.8.0] - 2026-08-02
 
 ### Added

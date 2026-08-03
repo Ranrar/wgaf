@@ -210,6 +210,28 @@ Window and accessibility commands keep working while input is stopped, and no
 permission setting can take the emergency stop away from you. `wgaf status`
 shows `!! INPUT STOPPED` at the top for as long as it lasts.
 
+### Escape is only borrowed while automation runs
+
+An emergency key has to be taken from your applications to work — the desktop
+hands it to wgaf instead of to whatever you are using. wgaf takes it only while
+it is actually running automation, and gives it straight back when the run
+ends. Between runs, Escape closes your dialogs and leaves your editor's insert
+mode exactly as it always did.
+
+Two things follow from that, both only while a run is in progress:
+
+- **The application being automated will not receive Escape.** That is the
+  point of a handbrake, and it lasts seconds rather than your whole session.
+- **A script cannot press Escape at a dialog.** wgaf recognizes its own
+  keystrokes, so `wgaf key press escape` will not stop the run that sent it —
+  but the key does not reach the application either, so the dialog stays open.
+  Use `wgaf a11y` to press the dialog's own Cancel or Close button instead,
+  which survives the dialog moving or being restyled in a way a keystroke does
+  not.
+
+To use a different key, or none at all, see
+[Configuration](configuration.md).
+
 ### Why `wgaf release` is required
 
 Just like a car's handbrake does not release itself, wgaf never resumes

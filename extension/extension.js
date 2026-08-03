@@ -45,6 +45,7 @@ const DAEMON_INTERFACE_XML = `
 <node>
   <interface name="org.wgaf.Daemon1">
     <method name="Stop"/>
+    <property name="InputDeviceActive" type="b" access="read"/>
   </interface>
 </node>`;
 
@@ -54,6 +55,23 @@ const WgafDaemonProxy = Gio.DBusProxy.makeProxyWrapper(DAEMON_INTERFACE_XML);
  * string arrays, so this is type "as" - see schemas/.
  */
 const KILL_SWITCH_KEY = 'kill-switch';
+
+/* wgaf's own virtual keyboard, as the kernel advertises it.
+ *
+ * These must match `VENDOR_ID`/`PRODUCT_ID` in the daemon's
+ * input/device.rs. They identify keystrokes wgaf synthesized itself, which
+ * the emergency key must ignore - otherwise a script that presses Escape to
+ * dismiss a dialog stops the very run that issued it.
+ *
+ * Deliberately not the device *name*: that is configurable (config.toml's
+ * input_device_name), so a renamed device would silently switch the emergency
+ * key off. The vendor and product IDs are fixed in the daemon's source.
+ *
+ * Clutter reports both as integers - confirmed against Mutter 18, where
+ * get_vendor_id() and get_product_id() are typed `int`, not hex strings.
+ */
+const WGAF_VENDOR_ID = 0x57ae;
+const WGAF_PRODUCT_ID = 0x0001;
 
 export default class WgafExtension extends Extension {
     enable() {
@@ -106,34 +124,83 @@ export default class WgafExtension extends Extension {
         this._enableKillSwitch();
     }
 
-    /* Installs the keyboard shortcut that stops wgaf's input automation.
+    /* Prepares the emergency key, without yet taking it.
      *
-     * Shell.ActionMode.ALL on purpose: the shortcut has to work while the
-     * overview is open, while a menu has grabbed the pointer, and in every
-     * other state a runaway script can leave the desktop in. A brake that only
-     * works when things are calm is not a brake.
+     * The shortcut is a *grab*: while it is registered, the compositor consumes
+     * that key before any application sees it. Registering it for the whole
+     * session therefore took Escape away from the entire desktop - dialogs
+     * would not close, vim never left insert mode - even while the daemon was
+     * idle or not running at all.
      *
-     * The proxy is created once, here, rather than when the shortcut is
-     * pressed. It survives the daemon starting later or restarting, and it
-     * keeps the emergency path free of setup work.
+     * So it is held only while wgaf can actually type, which the daemon
+     * reports as org.wgaf.Daemon1.InputDeviceActive. Between runs the key
+     * belongs to your applications, which is nearly all of the time.
+     *
+     * The proxy is created once, here, rather than when the key is pressed. It
+     * survives the daemon starting later or restarting, and it keeps the
+     * emergency path free of setup work.
      */
     _enableKillSwitch() {
+        this._killSwitchArmed = false;
+
         this._daemonProxy = new WgafDaemonProxy(
             Gio.DBus.session,
             DAEMON_BUS_NAME,
             DAEMON_OBJECT_PATH,
             (proxy, error) => {
-                if (error)
+                if (error) {
                     console.error(`wgaf: could not reach the wgaf daemon: ${error.message}`);
+                    return;
+                }
+                this._syncKillSwitch();
             }
         );
+
+        this._daemonPropertiesId = this._daemonProxy.connect(
+            'g-properties-changed',
+            () => this._syncKillSwitch()
+        );
+
+        /* A daemon that crashes mid-run emits no closing property change, so
+         * without this the grab would outlive it and Escape would stay
+         * captured by nothing at all.
+         */
+        this._daemonWatchId = Gio.bus_watch_name(
+            Gio.BusType.SESSION,
+            DAEMON_BUS_NAME,
+            Gio.BusNameWatcherFlags.NONE,
+            () => this._syncKillSwitch(),
+            () => this._disarmKillSwitch()
+        );
+    }
+
+    /* Holds the emergency key exactly while the daemon can type. */
+    _syncKillSwitch() {
+        // `?? false` covers the daemon being absent, and an older daemon that
+        // does not publish the property at all. Both mean "cannot type now".
+        const canType = this._daemonProxy?.InputDeviceActive ?? false;
+
+        if (canType)
+            this._armKillSwitch();
+        else
+            this._disarmKillSwitch();
+    }
+
+    /* Shell.ActionMode.ALL on purpose: the key has to work while the overview
+     * is open, while a menu has grabbed the pointer, and in every other state
+     * a runaway script can leave the desktop in. A brake that only works when
+     * things are calm is not a brake.
+     */
+    _armKillSwitch() {
+        if (this._killSwitchArmed)
+            return;
 
         const action = Main.wm.addKeybinding(
             KILL_SWITCH_KEY,
             this.getSettings(),
             Meta.KeyBindingFlags.IGNORE_AUTOREPEAT,
             Shell.ActionMode.ALL,
-            () => this._stopDaemon()
+            (display, window, event) => this._onKillSwitchPressed(event)
         );
 
         /* A shortcut that silently failed to register is worse than none:
@@ -146,7 +213,50 @@ export default class WgafExtension extends Extension {
             console.error('wgaf: the kill switch shortcut could not be registered. ' +
                 'Use `wgaf stop` instead, or choose a different shortcut with ' +
                 '`gsettings set org.gnome.shell.extensions.wgaf kill-switch`.');
+            return;
         }
+
+        this._killSwitchArmed = true;
+    }
+
+    _disarmKillSwitch() {
+        if (!this._killSwitchArmed)
+            return;
+
+        Main.wm.removeKeybinding(KILL_SWITCH_KEY);
+        this._killSwitchArmed = false;
+    }
+
+    /* Decides whether a press of the emergency key was the user's or wgaf's.
+     *
+     * wgaf types through a virtual keyboard of its own, and the compositor
+     * hands this handler the event that triggered the shortcut - including
+     * which device sent it. A key wgaf synthesized is ignored, so a script
+     * that presses Escape to dismiss a dialog no longer stops itself.
+     *
+     * Note that the key is consumed either way: a matched shortcut is taken
+     * before this runs, and there is no way to pass it on. So while a run is
+     * in progress, a synthesized Escape reaches nothing - it neither stops
+     * wgaf nor closes the dialog. Dismiss dialogs through the accessibility
+     * layer instead.
+     *
+     * An event with no identifiable device counts as the user's. If wgaf
+     * cannot prove a keystroke was its own, the only safe reading is that
+     * somebody is asking it to stop.
+     */
+    _onKillSwitchPressed(event) {
+        const device = event?.get_source_device?.();
+
+        if (device &&
+            device.get_vendor_id() === WGAF_VENDOR_ID &&
+            device.get_product_id() === WGAF_PRODUCT_ID) {
+            // Debug rather than silence: an emergency key that appears to do
+            // nothing is precisely the thing that must leave a trace.
+            console.debug('wgaf: ignoring an emergency key press from wgaf\'s own virtual keyboard');
+            return;
+        }
+
+        this._stopDaemon();
     }
 
     /* Asks the daemon to stop synthesizing input, and says so either way.
@@ -176,9 +286,20 @@ export default class WgafExtension extends Extension {
 
     disable() {
         // The shortcut is the Shell's while it is installed, so it has to be
-        // handed back here - otherwise Ctrl+Alt+Escape stays captured by a
+        // handed back here - otherwise the emergency key stays captured by a
         // disabled extension and reaches nothing at all.
-        Main.wm.removeKeybinding(KILL_SWITCH_KEY);
+        this._disarmKillSwitch();
+
+        if (this._daemonWatchId) {
+            Gio.bus_unwatch_name(this._daemonWatchId);
+            this._daemonWatchId = null;
+        }
+
+        if (this._daemonPropertiesId && this._daemonProxy) {
+            this._daemonProxy.disconnect(this._daemonPropertiesId);
+            this._daemonPropertiesId = null;
+        }
+
         this._daemonProxy = null;
 
         // FIXED: every signal connected in enable() must be torn down here.

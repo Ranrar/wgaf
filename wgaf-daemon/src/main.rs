@@ -217,7 +217,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // doc comments.
     let accessibility_backend = Arc::new(accessibility::AccessibilityBackend::new());
 
-    let _connection = zbus::connection::Builder::session()?
+    // Taken before `input_backend` is moved into `Input1` below. Drives the
+    // `InputDeviceActive` property's change notifications, which is how the
+    // Shell extension knows when to hold the emergency-key grab and when to
+    // give the key back to the desktop.
+    let device_presence = input_backend.device_present_watch();
+
+    let connection = zbus::connection::Builder::session()?
         .name(config.bus_name.as_str())?
         .serve_at(
             wgaf_common::OBJECT_PATH,
@@ -267,6 +273,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
+    tokio::spawn(announce_device_presence(
+        connection.clone(),
+        device_presence,
+    ));
+
     tracing::info!(
         object_path = wgaf_common::OBJECT_PATH,
         windows_object_path = wgaf_common::WINDOWS_OBJECT_PATH,
@@ -278,4 +289,51 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("shutting down");
 
     Ok(())
+}
+
+/// Emits `PropertiesChanged` for `org.wgaf.Daemon1.InputDeviceActive` whenever
+/// the virtual input device appears or goes away.
+///
+/// The GNOME Shell Extension holds its emergency-key grab only while that
+/// property is `true`, so this task is what hands `Escape` back to the
+/// desktop between runs. A missed notification is a real fault and is logged
+/// as one — too few and the key stays captured after a run; too few in the
+/// other direction and the panic key is absent during one.
+async fn announce_device_presence(
+    connection: zbus::Connection,
+    mut presence: tokio::sync::watch::Receiver<bool>,
+) {
+    while presence.changed().await.is_ok() {
+        let active = *presence.borrow_and_update();
+
+        let interface = match connection
+            .object_server()
+            .interface::<_, dbus::Daemon>(wgaf_common::OBJECT_PATH)
+            .await
+        {
+            Ok(interface) => interface,
+            Err(error) => {
+                // The object server outlives this task in every ordinary run,
+                // so this means shutdown is under way. Stopping is correct:
+                // there is nothing left to notify.
+                tracing::debug!(%error, "stopped announcing input-device presence");
+                return;
+            }
+        };
+
+        if let Err(error) = interface
+            .get()
+            .await
+            .input_device_active_changed(interface.signal_emitter())
+            .await
+        {
+            tracing::warn!(
+                %error,
+                active,
+                "failed to announce a change in input-device presence; the \
+                 emergency-key shortcut may now be armed when it should not be, \
+                 or absent when it should be armed"
+            );
+        }
+    }
 }

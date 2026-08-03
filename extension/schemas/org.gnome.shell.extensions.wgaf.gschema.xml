@@ -10,9 +10,13 @@
   cancel something, with no combination to remember while a script is running
   away with your keyboard.
 
+  Escape is only captured while wgaf is actually running automation. The rest
+  of the time it belongs to your applications as usual, so dialogs close and
+  menus dismiss exactly as they always did.
+
   To use a different key:
 
-      gsettings set org.gnome.shell.extensions.wgaf kill-switch "['<Control><Alt>Escape']"
+      gsettings set org.gnome.shell.extensions.wgaf kill-switch "['<Super><Alt>Escape']"
 
   To go back to the default:
 
@@ -42,11 +46,16 @@
         understood as cancel, and not something you would confuse with an
         automation command.
 
-        Note what a desktop-wide shortcut means for a key this ordinary: while
-        the wgaf extension is enabled, Escape is taken by the emergency stop
-        before any application sees it. If you need Escape back for everyday
-        use, set this to a combination instead (Ctrl+Alt+Escape, say), or to an
-        empty list to remove the shortcut entirely.
+        This key is only captured while wgaf is running automation, and is
+        released the moment it finishes. Between runs it reaches your
+        applications normally.
+
+        While a run is in progress the key does belong to wgaf, so an
+        application in the middle of being automated will not receive it. That
+        includes a script pressing Escape itself: wgaf recognizes its own
+        keystrokes and will not stop on them, but they will not reach the
+        application either. Use the accessibility commands to dismiss a dialog
+        from a script rather than pressing Escape at it.
       </description>
     </key>
   </schema>

@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, watch};
 use tokio::time::Instant;
 
 use device::UinputDevice;
@@ -400,6 +400,20 @@ pub struct InputBackend {
     stopped: Arc<AtomicBool>,
     /// Resolved from `config.toml` at startup; see [`InputLimits`].
     limits: InputLimits,
+    /// Broadcasts whether a virtual device exists, so the GNOME Shell Extension
+    /// can hold its emergency-key grab **only while wgaf can actually type**.
+    ///
+    /// The extension used to register that shortcut for the whole session,
+    /// which took `Escape` away from every application on the desktop even
+    /// while the daemon was idle or absent. Arming it from this signal is what
+    /// makes bare `Escape` an acceptable default instead of a desktop-wide tax.
+    ///
+    /// A `watch` and not a callback: it holds the *current* value as well as
+    /// notifying on change, so a subscriber that connects late still learns the
+    /// truth rather than waiting for the next edge.
+    /// `Arc` because the "device now exists" edge is published from inside the
+    /// blocking closure that creates it, and `watch::Sender` is not `Clone`.
+    device_present: Arc<watch::Sender<bool>>,
 }
 
 impl InputBackend {
@@ -432,7 +446,37 @@ impl InputBackend {
             throttle_reported: AtomicBool::new(false),
             stopped: Arc::new(AtomicBool::new(false)),
             limits,
+            // Starts `false` and correctly so: `new` deliberately does not
+            // touch `/dev/uinput`, so no device exists yet.
+            device_present: Arc::new(watch::channel(false).0),
         }
+    }
+
+    /// Subscribes to "does a virtual device exist right now".
+    ///
+    /// The receiver carries the current value immediately, so a subscriber
+    /// never has to assume a starting state — see [`Self::device_present`].
+    pub fn device_present_watch(&self) -> watch::Receiver<bool> {
+        self.device_present.subscribe()
+    }
+
+    /// Republishes the device's existence after it may have changed.
+    ///
+    /// Reads the real state rather than tracking it, so the signal cannot drift
+    /// from the slot it describes — a creation that failed halfway, or a device
+    /// dropped by `stop` while a synthesis was queued, both report honestly.
+    /// `send_if_modified` keeps this silent on the overwhelmingly common path
+    /// where nothing changed, so the hot synthesis path costs one comparison.
+    fn republish_device_presence(&self) {
+        let present = self.device_created();
+        self.device_present.send_if_modified(|current| {
+            if *current == present {
+                false
+            } else {
+                *current = present;
+                true
+            }
+        });
     }
 
     /// Engages the kill switch: refuses every further synthesis and takes the
@@ -472,6 +516,12 @@ impl InputBackend {
         })
         .await
         .expect("input stop task panicked");
+
+        // After the device is gone, never before: the extension drops its
+        // emergency-key grab on this signal, and announcing the drop early
+        // would open a window where wgaf could still type and the panic key
+        // no longer worked.
+        self.republish_device_presence();
     }
 
     /// Releases the kill switch, allowing synthesis again.
@@ -775,6 +825,7 @@ impl InputBackend {
         let stopped = Arc::clone(&self.stopped);
         let name = self.device_name.clone();
         let settle = self.limits.device_settle;
+        let device_present = Arc::clone(&self.device_present);
         tokio::task::spawn_blocking(move || {
             // FIXED: recover from poisoning instead of panicking. The guarded
             // state is just an open `/dev/uinput` file descriptor plus the
@@ -804,6 +855,14 @@ impl InputBackend {
 
             if slot.is_none() {
                 *slot = Some(UinputDevice::create(&name, settle)?);
+                // Announced here rather than after this call returns, and the
+                // ordering is a safety property: the extension arms the
+                // emergency key on this edge, and `UinputDevice::create` has
+                // just spent its settle wait letting the compositor notice the
+                // device. Publishing after the first keystroke instead would
+                // leave the opening events of a runaway unprotected — exactly
+                // the ones a panic press needs to catch.
+                device_present.send_replace(true);
             }
             let device = slot
                 .as_mut()

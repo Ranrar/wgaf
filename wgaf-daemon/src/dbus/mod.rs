@@ -114,6 +114,28 @@ impl Daemon {
         self.input.release();
     }
 
+    /// Whether wgaf currently holds a virtual input device — that is, whether
+    /// it can type at this moment.
+    ///
+    /// **Exists for the GNOME Shell Extension's emergency key.** The extension
+    /// registers that shortcut while this is `true` and gives it back when it
+    /// goes `false`, so `Escape` belongs to the user's applications except
+    /// during the seconds a script can actually drive the desktop. Registering
+    /// it for the whole session instead took the key away from every
+    /// application on the machine, including while the daemon was idle or not
+    /// running at all.
+    ///
+    /// A property rather than a method so that it carries change
+    /// notification: the extension must learn the device went away, not
+    /// discover it by asking.
+    ///
+    /// Never creates a device as a side effect of being read — see
+    /// [`crate::input::InputBackend::device_created`].
+    #[zbus(property)]
+    async fn input_device_active(&self) -> bool {
+        self.input.device_created()
+    }
+
     /// Reports which subsystems are usable right now and what policy is being
     /// enforced. See [`DaemonStatus`] for the two rules this method exists to
     /// uphold — it must change nothing, and it must expose nothing secret.
