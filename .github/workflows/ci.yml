@@ -1,0 +1,120 @@
+# Runs on GitHub and locally with `act` (https://github.com/nektos/act).
+#
+# The tests needing a real /dev/uinput and AT-SPI only run under `act`, and
+# need the host's devices passed into the container:
+#
+#   act --container-options "--device /dev/uinput \
+#                            -v /run/user/1000:/run/user/1000 \
+#                            -e XDG_RUNTIME_DIR=/run/user/1000"
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # `cargo fmt --all` locally is the fix.
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # --all-targets so test code is linted too, not just the binaries.
+      - name: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Two system dependencies. `dbus` because the tests need a session bus,
+      # and `libxkbcommon-dev` because the daemon links against xkbcommon to
+      # read the session's keyboard layout — without it the build fails at the
+      # link step with `unable to find library -lxkbcommon`, which is easy to
+      # misread as a Rust problem. GitHub's own runner image happens to ship
+      # it; the slimmer images `act` uses locally do not, so naming it here
+      # keeps the two honest with each other.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus libxkbcommon-dev
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      # Under dbus-run-session because three permissions::notify tests register
+      # a stub notification service on the session bus.
+      - name: Unit tests
+        run: dbus-run-session -- cargo test --workspace --bins --lib
+
+      # A private session bus per invocation. The two skipped tests type and
+      # move the mouse for real, so they need /dev/uinput and run below.
+      - name: Integration tests (session bus only)
+        run: >
+          dbus-run-session --
+          cargo test -p wgaf-daemon
+          --test ping
+          --test default_config_path
+          --test windows_stub
+          --test permissions
+          --test status
+          --
+          --skip denied_capability_is_refused_while_other_capabilities_still_succeed
+          --skip absent_permissions_file_defaults_every_capability_to_allow
+
+      # Needs the host's uinput device and Wayland socket mapped into the
+      # container — see the header for the `act` flags that do it.
+      #
+      # The check below is not ceremony. Without those flags these tests fail
+      # with `DeviceUnavailable` and `KeyboardLayoutUnavailable`, which read
+      # like defects in wgaf rather than a container missing hardware, and cost
+      # real time to diagnose more than once. A precondition documented only in
+      # a comment at the top of the file is a precondition that gets violated
+      # silently; this makes the workflow state it where it is needed.
+      #
+      # The accessibility tests are not here: they drive a real gtk4-demo
+      # window, so run them on your desktop with
+      # `cargo test -p wgaf-daemon --test accessibility`.
+      - name: Integration tests (real /dev/uinput)
+        if: ${{ env.ACT }}
+        run: |
+          missing=""
+          [ -e /dev/uinput ] || missing="$missing /dev/uinput"
+          [ -n "$XDG_RUNTIME_DIR" ] && [ -n "$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null)" ] \
+            || missing="$missing a-wayland-socket"
+          if [ -n "$missing" ]; then
+            echo "Skipping: the container is missing:$missing"
+            echo
+            echo "These tests drive a real virtual input device and read the"
+            echo "session's keyboard layout, so they need the host's hardware"
+            echo "passed in. Re-run act with:"
+            echo
+            echo "  act --container-options \"--device /dev/uinput \\"
+            echo "      -v /run/user/1000:/run/user/1000 \\"
+            echo "      -e XDG_RUNTIME_DIR=/run/user/1000\""
+            echo
+            echo "Everything above this step has already run and passed."
+            exit 0
+          fi
+          dbus-run-session -- cargo test -p wgaf-daemon --test input --test permissions
