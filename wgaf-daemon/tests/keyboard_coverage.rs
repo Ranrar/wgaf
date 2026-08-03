@@ -337,11 +337,11 @@ async fn every_advertised_key_presses_the_physical_key_it_names() {
         };
 
         let events = observed_keys(&report);
-        let Some((release, press)) = events.last().and_then(|release| {
-            events
-                .get(events.len().wrapping_sub(2))
-                .map(|p| (release, p))
-        }) else {
+        // `wrapping_sub` rather than `- 2`: with fewer than two events the
+        // index wraps to a huge number, `get` returns `None`, and `zip` yields
+        // `None` — which is the "fewer than two events" case handled below.
+        let Some((release, press)) = events.last().zip(events.get(events.len().wrapping_sub(2)))
+        else {
             failures.push(format!(
                 "`{}` (evdev {}): fewer than two events in the report",
                 case.name, case.code

@@ -394,8 +394,7 @@ async fn input_device_active(connection: &Connection, bus_name: &str) -> bool {
 
 #[tokio::test]
 async fn input_device_active_follows_the_virtual_device() {
-    let (_daemon, bus_name, _device) =
-        spawn_daemon("Active", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
+    let (_daemon, bus_name, _device) = spawn_daemon("Active", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
     let connection = harness::wait_for_daemon(&bus_name).await;
 
     // False at startup, and reading it must not be what makes it true: the
@@ -452,8 +451,7 @@ async fn input_device_active_follows_the_virtual_device() {
 async fn input_device_active_announces_both_edges() {
     use futures_util::StreamExt;
 
-    let (_daemon, bus_name, _device) =
-        spawn_daemon("Edges", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
+    let (_daemon, bus_name, _device) = spawn_daemon("Edges", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
     let connection = harness::wait_for_daemon(&bus_name).await;
 
     let properties = zbus::fdo::PropertiesProxy::builder(&connection)
