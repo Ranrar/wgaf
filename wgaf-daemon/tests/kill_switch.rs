@@ -21,13 +21,35 @@
 //! feature rests on. Nothing observable from this process distinguishes "the
 //! flood stopped" from "the flood finished", because these tests have no
 //! application receiving the keystrokes. The test that can tell the difference
-//! is `stop_during_a_long_type_text_aborts_it` at the bottom of this file, which
-//! drives a real window and is `#[ignore]`d for it.
+//! is `stop_during_a_long_type_text_aborts_it`, which drives a real window and
+//! is `#[ignore]`d for it.
+//!
+//! # What runs unattended, and what cannot
+//!
+//! Most of this file runs in CI. Two tests do not, for different reasons, and
+//! both are `#[ignore]`d:
+//!
+//! | Test | Needs |
+//! |---|---|
+//! | `stop_during_a_long_type_text_aborts_it` | a real window to type into |
+//! | `a_synthesized_escape_is_ignored_but_a_physical_one_stops_wgaf` | a person to press a key |
+//!
+//! The second one's requirement is not an oversight to be engineered away. It
+//! asserts that the *same key* from two different keyboards produces two
+//! different outcomes, and nothing in this process can press a physical one.
+//! Asserting only the automatable half is worse than not testing at all — that
+//! was tried, and it passed while the compositor grab was never armed.
+//!
+//! What *is* automatable of that feature is the daemon's half: that
+//! `InputDeviceActive` follows the virtual device and announces both edges.
+//! Those two tests run in CI and would catch most ways the emergency key could
+//! silently stop being armed.
 
 mod harness;
 
+use std::io::Write;
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wgaf_common::DaemonStatus;
 use wgaf_common::dict::DaemonStatusDict;
@@ -339,6 +361,159 @@ async fn stop_and_release_are_not_gated_by_the_permission_policy() {
     assert_eq!(name, wgaf_common::INPUT_ERROR_PERMISSION_DENIED);
 }
 
+// ---------------------------------------------------------------------------
+// `InputDeviceActive` — the signal the emergency key is armed from
+//
+// The GNOME Shell Extension registers its shortcut while this is true and
+// gives the key back when it goes false. That is what keeps `Escape` out of
+// wgaf's hands between runs, so the property lying in either direction is a
+// safety fault: stuck true holds the key hostage for the session, stuck false
+// leaves a running script with no panic key.
+//
+// The extension half cannot be tested from here — it is GJS in the Shell's
+// process, and proving the *key* works needs a physical press (see
+// `a_synthesized_escape_is_ignored_but_a_physical_one_stops_wgaf` below).
+// The daemon half is entirely testable, and these run in CI.
+// ---------------------------------------------------------------------------
+
+/// Reads `org.wgaf.Daemon1.InputDeviceActive`.
+async fn input_device_active(connection: &Connection, bus_name: &str) -> bool {
+    let value: zbus::zvariant::OwnedValue = harness::call(
+        connection,
+        bus_name,
+        wgaf_common::OBJECT_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        &(wgaf_common::INTERFACE_NAME, "InputDeviceActive"),
+    )
+    .await
+    .expect("reading InputDeviceActive must succeed");
+
+    bool::try_from(value).expect("InputDeviceActive must be a boolean")
+}
+
+#[tokio::test]
+async fn input_device_active_follows_the_virtual_device() {
+    let (_daemon, bus_name, _device) =
+        spawn_daemon("Active", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
+    let connection = harness::wait_for_daemon(&bus_name).await;
+
+    // False at startup, and reading it must not be what makes it true: the
+    // daemon deliberately does not touch /dev/uinput until asked to synthesize.
+    assert!(
+        !input_device_active(&connection, &bus_name).await,
+        "no device exists until something synthesizes, so this must start false"
+    );
+    assert!(
+        !input_device_active(&connection, &bus_name).await,
+        "reading the property must not create a device as a side effect"
+    );
+
+    synthesize(&connection, &bus_name)
+        .await
+        .expect("synthesis must succeed");
+    assert!(
+        input_device_active(&connection, &bus_name).await,
+        "a synthesis creates the virtual device, so this must now be true"
+    );
+
+    daemon_call(&connection, &bus_name, "Stop")
+        .await
+        .expect("Stop must succeed");
+    assert!(
+        !input_device_active(&connection, &bus_name).await,
+        "Stop destroys the device, so this must go false — an extension that \
+         believed otherwise would hold the emergency key for the whole session"
+    );
+
+    // Release alone does not bring the device back; the next synthesis does.
+    // The property must describe what is, not what is permitted.
+    daemon_call(&connection, &bus_name, "Release")
+        .await
+        .expect("Release must succeed");
+    assert!(
+        !input_device_active(&connection, &bus_name).await,
+        "Release lifts the refusal but recreates nothing, so this stays false"
+    );
+
+    synthesize(&connection, &bus_name)
+        .await
+        .expect("synthesis must succeed again after Release");
+    assert!(
+        input_device_active(&connection, &bus_name).await,
+        "the device is recreated lazily by the next synthesis"
+    );
+}
+
+/// The value being right is not enough: the extension is driven by the
+/// *change notification*, not by polling. A property that never announced
+/// itself would leave the key armed until something else happened to ask.
+#[tokio::test]
+async fn input_device_active_announces_both_edges() {
+    use futures_util::StreamExt;
+
+    let (_daemon, bus_name, _device) =
+        spawn_daemon("Edges", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
+    let connection = harness::wait_for_daemon(&bus_name).await;
+
+    let properties = zbus::fdo::PropertiesProxy::builder(&connection)
+        .destination(bus_name.as_str())
+        .expect("the test daemon's bus name must be valid")
+        .path(wgaf_common::OBJECT_PATH)
+        .expect("the daemon object path must be valid")
+        .build()
+        .await
+        .expect("building a Properties proxy must succeed");
+
+    // Subscribed before anything changes, so no edge can be missed between
+    // setup and the first assertion.
+    let mut changes = properties
+        .receive_properties_changed()
+        .await
+        .expect("subscribing to PropertiesChanged must succeed");
+
+    /// Waits for the next announced value of `InputDeviceActive`.
+    ///
+    /// Bounded rather than awaited forever: a missing signal is the fault
+    /// under test, and a test that hangs reports it as a stuck suite instead
+    /// of a failure.
+    async fn next_value(
+        changes: &mut (impl StreamExt<Item = zbus::fdo::PropertiesChanged> + Unpin),
+    ) -> bool {
+        let signal = tokio::time::timeout(Duration::from_secs(5), changes.next())
+            .await
+            .expect("no PropertiesChanged arrived within 5s")
+            .expect("the PropertiesChanged stream ended unexpectedly");
+
+        let args = signal.args().expect("PropertiesChanged must carry args");
+        let value = args
+            .changed_properties()
+            .get("InputDeviceActive")
+            .expect("the signal must name InputDeviceActive");
+
+        bool::try_from(value.try_clone().expect("cloning the value must succeed"))
+            .expect("InputDeviceActive must be announced as a boolean")
+    }
+
+    synthesize(&connection, &bus_name)
+        .await
+        .expect("synthesis must succeed");
+    assert!(
+        next_value(&mut changes).await,
+        "creating the device must announce true — this is the edge the \
+         extension arms the emergency key on"
+    );
+
+    daemon_call(&connection, &bus_name, "Stop")
+        .await
+        .expect("Stop must succeed");
+    assert!(
+        !next_value(&mut changes).await,
+        "destroying the device must announce false — without this edge the \
+         extension never gives Escape back to your applications"
+    );
+}
+
 /// **The assertion the feature exists for**: a stop issued while a long
 /// `TypeText` is being emitted aborts it, rather than taking effect once the
 /// flood has finished.
@@ -452,4 +627,385 @@ async fn poll_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+// ===========================================================================
+// Does the emergency key tell wgaf's own `Escape` from the developer's?
+//
+// Everything above runs unattended. This last section does not, and cannot.
+//
+// The property under test is a *difference* between two origins of the same
+// key: one synthesized by wgaf, one pressed by a person. Nothing in this
+// process — or in CI — can press a physical key, so the test asks and waits.
+//
+// **Do not "fix" this by asserting only the automatable half.** That was tried
+// on 2026-08-03 and passed while the compositor grab was never armed at all: a
+// kill switch that fires on nothing satisfies "wgaf's own Escape did not stop
+// it" perfectly. Only the physical press proves the grab existed, which is what
+// makes the synthesized half mean anything. The two assertions are one test for
+// that reason.
+//
+// What *is* automatable is the daemon half — that `InputDeviceActive` follows
+// the device and announces both edges — and that is covered above, in CI.
+//
+// See `adr/adr-0006-emergency-key-armed-on-device-and-checked-by-origin.md`.
+// ===========================================================================
+
+/// The extension's UUID, as installed.
+const EXTENSION_UUID: &str = "wgaf@wgaf.dev";
+
+/// How long to wait for a physical key press before giving up.
+const HUMAN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait after synthesizing before concluding no handbrake engaged.
+///
+/// One-sided and deliberately generous: waiting longer can only give a `Stop`
+/// that is on its way more time to arrive, so the failure mode of too long is a
+/// *correct* failure. Too short is the dangerous direction.
+const SETTLE_FOR_A_STOP: Duration = Duration::from_millis(2_000);
+
+/// A daemon owning the **production** bus name, killed on drop.
+///
+/// Unlike every other daemon in this file, this one cannot use a private bus
+/// name: the extension's emergency-key handler calls a hardcoded
+/// `org.wgaf.Daemon` (`extension/extension.js`), so a daemon on a test-private
+/// name would never hear the `Stop` this test exists to observe.
+fn spawn_production_daemon() -> (DaemonGuard, String) {
+    let nonce = std::process::id();
+    let device_name = format!("wgaf-device-origin-{nonce}");
+
+    let config_path = std::env::temp_dir().join(format!("wgaf-device-origin-config-{nonce}.toml"));
+    std::fs::write(
+        &config_path,
+        format!(
+            "bus_name = \"{}\"\n\
+             log_level = \"error\"\n\
+             input_device_name = \"{device_name}\"\n\
+             # Unlike the suites above, this one needs the synthesized Escape to\n\
+             # actually reach the compositor, so the settle wait stays.\n\
+             input_device_settle_ms = 300\n",
+            wgaf_common::BUS_NAME
+        ),
+    )
+    .expect("failed to write the test config");
+
+    let permissions_path =
+        std::env::temp_dir().join(format!("wgaf-device-origin-permissions-{nonce}.toml"));
+    std::fs::write(&permissions_path, ALLOW_EVERYTHING).expect("failed to write the test policy");
+
+    for path in [&config_path, &permissions_path] {
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .expect("failed to tighten test file permissions");
+    }
+
+    let child = Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--permissions")
+        .arg(&permissions_path)
+        .spawn()
+        .expect("failed to start wgaf-daemon");
+
+    (
+        DaemonGuard {
+            child,
+            config_path,
+            permissions_path,
+        },
+        device_name,
+    )
+}
+
+/// Fails unless nothing already owns `org.wgaf.Daemon`.
+///
+/// A daemon the developer started themselves would answer this test's D-Bus
+/// calls while a *different* daemon received the extension's `Stop`, and the
+/// halves would disagree for a reason unrelated to the code.
+fn require_production_bus_free() {
+    let owned = Command::new("busctl")
+        .args(["--user", "list", "--no-legend"])
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).contains(wgaf_common::BUS_NAME))
+        .unwrap_or(false);
+
+    assert!(
+        !owned,
+        "something already owns {}. This test must be the daemon the extension \
+         talks to, so stop the running one first: \
+         `systemctl --user stop wgaf-daemon`",
+        wgaf_common::BUS_NAME
+    );
+}
+
+/// Fails unless the wgaf extension is installed and actually running.
+fn require_extension_running() {
+    let output = Command::new("gnome-extensions")
+        .args(["info", EXTENSION_UUID])
+        .output()
+        .unwrap_or_else(|err| {
+            panic!("could not run `gnome-extensions` ({err}); this test needs a GNOME session")
+        });
+
+    let info = String::from_utf8_lossy(&output.stdout);
+
+    // `State: ACTIVE` rather than `Enabled: Yes`: an extension can be enabled
+    // and still not be running, having thrown on load. Only the loaded one
+    // holds the grab this test observes. Note also that the Shell cannot reload
+    // an extension's code in-session — after editing extension.js you must log
+    // out and back in, and nothing warns you that you did not.
+    if !output.status.success() || !info.contains("State: ACTIVE") {
+        let state = info
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("State: "))
+            .unwrap_or("not installed");
+        panic!(
+            "the wgaf extension must be installed and running — it is the half \
+             that grabs the key. Its state is `{state}`. Run \
+             `gnome-extensions enable {EXTENSION_UUID}`, and if it is enabled but \
+             not ACTIVE, check `journalctl --user -b _COMM=gnome-shell` for what \
+             it threw on load."
+        );
+    }
+}
+
+/// Fails unless the emergency key is bound to bare `Escape`.
+///
+/// The test synthesizes exactly one key, so the binding has to be that key. A
+/// combination would need modifiers synthesized around it, which is a different
+/// test with different failure modes.
+fn require_kill_switch_on_bare_escape() {
+    let schemadir = extension_schema_dir();
+    let mut command = Command::new("gsettings");
+    if let Some(dir) = &schemadir {
+        command.arg("--schemadir").arg(dir);
+    }
+    let output = command
+        .args(["get", "org.gnome.shell.extensions.wgaf", "kill-switch"])
+        .output()
+        .expect("failed to run `gsettings`");
+
+    let value = String::from_utf8_lossy(&output.stdout);
+    let value = value.trim();
+
+    assert!(
+        value == "['Escape']",
+        "this test needs the emergency key bound to bare `Escape`, but it is \
+         {value}. That is the shipped default, so the likely cause is a local \
+         override; clear it with:\n  gsettings{} reset \
+         org.gnome.shell.extensions.wgaf kill-switch",
+        schemadir
+            .as_ref()
+            .map(|d| format!(" --schemadir {}", d.display()))
+            .unwrap_or_default()
+    );
+}
+
+/// The extension's own schema directory, for a per-user install.
+///
+/// A system-wide install compiles its schema into the global set where plain
+/// `gsettings` finds it, so `None` is a valid answer rather than a failure.
+fn extension_schema_dir() -> Option<std::path::PathBuf> {
+    let candidate = std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join(".local/share/gnome-shell/extensions")
+            .join(EXTENSION_UUID)
+            .join("schemas")
+    })?;
+    candidate.is_dir().then_some(candidate)
+}
+
+/// Whether the handbrake is engaged, asked of the input subsystem directly.
+///
+/// **Deliberately not `Status`.** That method probes every subsystem including
+/// accessibility, and the accessibility probe can hang indefinitely on a
+/// session whose a11y bus is otherwise healthy — see the S2 in `issues.md`. A
+/// test about input has no business failing because of that.
+async fn handbrake_engaged(connection: &Connection) -> bool {
+    match synthesize(connection, wgaf_common::BUS_NAME).await {
+        Ok(()) => false,
+        Err(zbus::Error::MethodError(name, _, _))
+            if name.as_str() == wgaf_common::INPUT_ERROR_STOPPED =>
+        {
+            true
+        }
+        Err(other) => panic!("could not tell whether input is stopped: {other}"),
+    }
+}
+
+/// Polls until the handbrake is engaged, or `timeout` elapses.
+async fn wait_for_handbrake(connection: &Connection, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if handbrake_engaged(connection).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
+/// Puts a prompt where the developer will actually see it.
+fn prompt(lines: &[&str]) {
+    let mut stderr = std::io::stderr();
+    let _ = writeln!(stderr);
+    let _ = writeln!(stderr, "  ┌─────────────────────────────────────────────");
+    for line in lines {
+        let _ = writeln!(stderr, "  │ {line}");
+    }
+    let _ = writeln!(stderr, "  └─────────────────────────────────────────────");
+    let _ = stderr.flush();
+}
+
+/// Puts the same thing on screen, because the terminal is the one place the
+/// developer is *not* looking during this test — the key press has to go to
+/// some other window.
+///
+/// A notification rather than a dialog, deliberately: a dialog steals the focus
+/// the press is aimed at, and `zenity` and friends close themselves on
+/// `Escape`, which is the exact key under test. A notification can do neither.
+///
+/// Best-effort — a machine without `notify-send` still runs the test, it just
+/// runs it the noisy way.
+fn on_screen(urgency: &str, summary: &str, body: &str) {
+    let _ = Command::new("notify-send")
+        .arg("--app-name=wgaf test")
+        .arg(format!("--urgency={urgency}"))
+        .arg(summary)
+        .arg(body)
+        .status();
+}
+
+/// The pair, asserted together. See the section comment above for why this is
+/// one test and not two, and why it cannot be automated.
+#[tokio::test]
+#[ignore = "needs a human: asks the developer to press Escape on a real keyboard, \
+            and needs the extension installed and running. Run with --ignored \
+            --nocapture --test-threads=1; press the key in a window other than \
+            the terminal running the test."]
+async fn a_synthesized_escape_is_ignored_but_a_physical_one_stops_wgaf() {
+    harness::require_wayland_session();
+    harness::require_uinput();
+    require_production_bus_free();
+    require_extension_running();
+    require_kill_switch_on_bare_escape();
+
+    let (_daemon, _device_name) = spawn_production_daemon();
+    let connection = harness::wait_for_daemon(wgaf_common::BUS_NAME).await;
+
+    // Creates the virtual device, which is what arms the grab. Also means the
+    // `Escape` below is not the call that pays for device creation.
+    harness::warm_up_input_device(&connection, wgaf_common::BUS_NAME).await;
+
+    assert!(
+        !handbrake_engaged(&connection).await,
+        "the daemon must start with the handbrake off"
+    );
+
+    // -- Half one: wgaf's own Escape. Automatable. ------------------------
+    prompt(&[
+        "Part 1 of 2 — no action needed.",
+        "wgaf is about to press Escape on its own virtual keyboard.",
+        "Please do not touch the keyboard for the next few seconds.",
+    ]);
+    on_screen(
+        "normal",
+        "wgaf test — part 1 of 2: hands off",
+        "wgaf is pressing Escape on its own keyboard. Do not touch the keyboard \
+         until the next notification.",
+    );
+
+    harness::input::<(), _>(&connection, wgaf_common::BUS_NAME, "KeyPress", &("escape",))
+        .await
+        .expect("KeyPress escape must be accepted while the handbrake is off");
+
+    // **The release is not optional, and leaving it out cost an afternoon.** A
+    // press with no matching release leaves Escape held down on wgaf's virtual
+    // keyboard exactly as a stuck physical key would, and the developer's press
+    // in part two then produces no fresh press-edge for the shortcut to fire
+    // on. Two full runs failed at the hardware half and blamed the extension
+    // for a fault of the test's own making.
+    harness::input::<(), _>(
+        &connection,
+        wgaf_common::BUS_NAME,
+        "KeyRelease",
+        &("escape",),
+    )
+    .await
+    .expect("KeyRelease escape must be accepted while the handbrake is off");
+
+    tokio::time::sleep(SETTLE_FOR_A_STOP).await;
+
+    assert!(
+        !handbrake_engaged(&connection).await,
+        "wgaf stopped itself.\n\n\
+         The Escape that engaged the handbrake was one wgaf synthesized on its \
+         own virtual keyboard — vendor 0x57ae, product 0x0001 (input/device.rs).\n\n\
+         The extension's handler reads `get_source_device()` on the triggering \
+         event to tell wgaf's keystrokes from the user's. If that check is gone \
+         or the ids no longer match, `wgaf key press escape` — a documented \
+         command, annotated \"dismissing a dialog\" — aborts the run that issued \
+         it. `extension_agrees_with_the_ids_this_device_advertises` in \
+         input/device.rs guards the ids specifically."
+    );
+
+    // -- Half two: the developer's Escape. Needs a human. -----------------
+    prompt(&[
+        "Part 2 of 2 — over to you.",
+        "",
+        "Press Escape now, once, on your physical keyboard.",
+        "Press it in some window other than this terminal.",
+        "",
+        &format!("Waiting up to {} seconds…", HUMAN_TIMEOUT.as_secs()),
+    ]);
+    // Critical so it stays on screen until acted on: one that faded after a few
+    // seconds would be no better than the terminal line nobody is reading.
+    on_screen(
+        "critical",
+        "wgaf test — YOUR TURN",
+        &format!(
+            "Press Escape once, on your real keyboard, in any window except the \
+             terminal running the test. Waiting up to {} seconds.",
+            HUMAN_TIMEOUT.as_secs()
+        ),
+    );
+
+    let stopped = wait_for_handbrake(&connection, HUMAN_TIMEOUT).await;
+
+    on_screen(
+        if stopped { "normal" } else { "critical" },
+        if stopped {
+            "wgaf test — passed"
+        } else {
+            "wgaf test — FAILED"
+        },
+        if stopped {
+            "Your Escape stopped wgaf, and wgaf's own Escape did not. You can \
+             stop watching now."
+        } else {
+            "No Escape arrived within the time limit, so the handbrake was never \
+             tested. See the terminal."
+        },
+    );
+
+    assert!(
+        stopped,
+        "no handbrake after a physical Escape (waited {}s).\n\n\
+         If you did press it, the grab was not armed. Check that the extension \
+         is ACTIVE, that it has been reloaded since extension.js last changed \
+         (the Shell cannot do that in-session — log out and back in), and that \
+         `InputDeviceActive` went true.\n\n\
+         Note the direction of this failure: it is the dangerous one. It means \
+         the handbrake does not work.",
+        HUMAN_TIMEOUT.as_secs()
+    );
+
+    prompt(&["Both halves passed. Releasing the handbrake."]);
+
+    daemon_call(&connection, wgaf_common::BUS_NAME, "Release")
+        .await
+        .expect("Release must succeed");
+    assert!(
+        !handbrake_engaged(&connection).await,
+        "Release must lift the handbrake"
+    );
 }

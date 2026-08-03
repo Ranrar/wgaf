@@ -361,8 +361,9 @@ mod tests {
     /// wgaf's own kill switch. Change one side alone and the handler stops
     /// recognizing wgaf's keystrokes, the self-kill returns, and **nothing else
     /// fails**: the acceptance test that would catch it
-    /// (`tests/kill_switch_device_origin.rs`) needs a human to press a real key,
-    /// so it is `#[ignore]`d and never runs in CI.
+    /// (`a_synthesized_escape_is_ignored_but_a_physical_one_stops_wgaf`, in
+    /// `tests/kill_switch.rs`) needs a human to press a real key, so it is
+    /// `#[ignore]`d and never runs in CI.
     ///
     /// See `adr/adr-0006-emergency-key-armed-on-device-and-checked-by-origin.md`.
     #[test]
