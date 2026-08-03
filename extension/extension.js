@@ -39,6 +39,15 @@ import {
  * The bus name is wgaf's default. A daemon started with a customized
  * `bus_name` in its config.toml will not hear this shortcut; use `wgaf stop`.
  */
+/* These names must match what the daemon actually provides. If you rename one
+ * here without renaming it in the daemon (or the other way round), nothing
+ * will report an error: the extension simply reads nothing back, assumes wgaf
+ * is not running automation, and never takes the emergency key - so the panic
+ * button quietly stops existing.
+ *
+ * A test guards the pair. If it fails, change these to match the daemon rather
+ * than changing the test.
+ */
 const DAEMON_BUS_NAME = 'org.wgaf.Daemon';
 const DAEMON_OBJECT_PATH = '/org/wgaf/Daemon';
 const DAEMON_INTERFACE_XML = `

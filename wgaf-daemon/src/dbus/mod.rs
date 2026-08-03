@@ -177,6 +177,19 @@ impl Daemon {
     ///
     /// Never creates a device as a side effect of being read — see
     /// [`crate::input::InputBackend::device_created`].
+    ///
+    /// # Do not rename this without changing the extension
+    ///
+    /// The name on the wire is `InputDeviceActive`, and
+    /// `extension/extension.js` asks for it by that exact string in its
+    /// `DAEMON_INTERFACE_XML`. **Renaming this method renames the property**,
+    /// and the extension would then read nothing, treat that as "wgaf is not
+    /// typing", and never grab the emergency key — the panic button would
+    /// silently cease to exist, with no error anywhere.
+    ///
+    /// `the_daemon_provides_every_member_the_extension_asks_for` in
+    /// `tests/kill_switch.rs` fails if the two drift apart. If it does, fix
+    /// the extension to match rather than relaxing the test.
     #[zbus(property)]
     async fn input_device_active(&self) -> bool {
         self.input.device_created()

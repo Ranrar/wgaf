@@ -11,7 +11,8 @@
 #   make test-apps  - build the GTK4 applications used by some tests
 #                     (needs GTK4 development packages; nothing else does)
 #   make test-desktop - run the tests that drive a real desktop
-#                     (opens windows and types on your session — see below)
+#                     (opens windows and types on your session — see below.
+#                     Start it and walk away; nothing here waits for you)
 #   make clean      - remove build artifacts
 #
 # Installs to ~/.cargo/bin. If you've set CARGO_INSTALL_ROOT or CARGO_HOME
@@ -167,9 +168,25 @@ test-apps: check-gtk
 # They are marked ignored so that an ordinary 'cargo test' never starts them by
 # accident, and run one at a time because two of them driving the keyboard at
 # once would each receive the other's keystrokes.
+#
+# You can start this and walk away. Everything here runs on its own.
+#
+# One test is deliberately left out: the emergency-key test needs somebody to
+# press Escape on a real keyboard, so it would sit here waiting for a minute
+# rather than finishing. The kill-switch line below names the one test it wants
+# instead of running the whole file, so that adding a test to that file never
+# drags the manual one in by accident. To run the manual one yourself:
+#
+#   cargo test -p wgaf-daemon --test kill_switch -- --ignored --nocapture \
+#       --test-threads=1 a_synthesized_escape
+#
+# It tells you on screen when it is your turn, and the key press has to go to
+# some window other than the terminal you started it from.
 test-desktop: test-apps
 	cargo test -p wgaf-daemon --test keyboard_coverage --test keyboard_layout \
 		--test window_management --test pointer --test combined -- --ignored --test-threads=1
+	cargo test -p wgaf-daemon --test kill_switch -- --ignored --test-threads=1 \
+		stop_during_a_long_type_text
 
 clean:
 	cargo clean

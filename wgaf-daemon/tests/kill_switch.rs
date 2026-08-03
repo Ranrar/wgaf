@@ -629,6 +629,98 @@ async fn poll_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Does the daemon still provide what the extension asks it for?
+// ---------------------------------------------------------------------------
+
+/// The extension's source, read at compile time.
+const EXTENSION_SOURCE: &str = include_str!("../../extension/extension.js");
+
+/// Every `name="…"` inside the extension's `DAEMON_INTERFACE_XML` block.
+///
+/// Deliberately crude: it collects method and property names without caring
+/// which is which, because the failure being guarded against is a member
+/// disappearing or being renamed, and that reads the same either way.
+fn members_the_extension_expects() -> Vec<String> {
+    let block = EXTENSION_SOURCE
+        .split_once("const DAEMON_INTERFACE_XML")
+        .expect("extension.js must declare DAEMON_INTERFACE_XML")
+        .1
+        .split_once("`;")
+        .expect("DAEMON_INTERFACE_XML must be a terminated template literal")
+        .0;
+
+    let names: Vec<String> = block
+        .match_indices("name=\"")
+        .filter_map(|(at, needle)| {
+            let rest = &block[at + needle.len()..];
+            rest.find('"').map(|end| rest[..end].to_string())
+        })
+        // The interface's own name="org.wgaf.Daemon1" is not a member.
+        .filter(|name| !name.contains('.'))
+        .collect();
+
+    assert!(
+        !names.is_empty(),
+        "parsed no members out of the extension's DAEMON_INTERFACE_XML — the \
+         parser has drifted from the file's shape and is now guarding nothing"
+    );
+    names
+}
+
+/// **The daemon must provide every member the extension asks it for.**
+///
+/// The extension is a *client* of `org.wgaf.Daemon1` for exactly two things:
+/// `Stop`, which is the emergency key, and `InputDeviceActive`, which tells it
+/// when to grab that key. This is the opposite direction from the drift test in
+/// `windows/proxy.rs`, which guards the daemon's use of the extension — and
+/// until now nothing guarded this way round.
+///
+/// **Why it matters more than a normal contract test.** Rename or remove
+/// `InputDeviceActive` on the daemon side and nothing shouts. The extension
+/// reads the property, gets nothing, treats that as "wgaf cannot type right
+/// now", and so never registers the shortcut. The emergency key silently stops
+/// existing. The only test that would notice needs a human to press a key, so
+/// CI never runs it.
+///
+/// **If you are changing `org.wgaf.Daemon1` and this test failed:** the fix is
+/// to change `DAEMON_INTERFACE_XML` in `extension/extension.js` to match, not
+/// to relax this test.
+#[tokio::test]
+async fn the_daemon_provides_every_member_the_extension_asks_for() {
+    let (_daemon, bus_name, _device) =
+        spawn_daemon("Contract", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
+    let connection = harness::wait_for_daemon(&bus_name).await;
+
+    // Asked of a running daemon rather than parsed out of the Rust source, so
+    // that what is checked is what a client actually sees on the bus.
+    let xml: String = harness::call(
+        &connection,
+        &bus_name,
+        wgaf_common::OBJECT_PATH,
+        "org.freedesktop.DBus.Introspectable",
+        "Introspect",
+        &(),
+    )
+    .await
+    .expect("the daemon must answer Introspect");
+
+    for member in members_the_extension_expects() {
+        assert!(
+            xml.contains(&format!("name=\"{member}\"")),
+            "extension/extension.js asks {} for `{member}`, and the daemon does \
+             not provide it.\n\n\
+             The extension uses these to know when to grab the emergency key. A \
+             missing member does not raise an error there — it reads as \"wgaf \
+             is not typing\", so the key is never grabbed and the emergency stop \
+             silently stops existing.\n\n\
+             Fix extension.js's DAEMON_INTERFACE_XML to match the daemon, rather \
+             than relaxing this test.",
+            wgaf_common::INTERFACE_NAME
+        );
+    }
+}
+
 // ===========================================================================
 // Does the emergency key tell wgaf's own `Escape` from the developer's?
 //

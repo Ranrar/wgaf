@@ -227,6 +227,10 @@ wgaf stop      # same thing, from a terminal
 wgaf release   # allow input automation again
 ```
 
+Escape only belongs to wgaf while automation is actually running. The rest of
+the time it is your applications' key as normal — dialogs close, menus dismiss,
+and your editor leaves insert mode exactly as they always did.
+
 ## Configuration
 
 Two TOML files in `~/.config/wgaf/`, which the daemon finds on its own:
