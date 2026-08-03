@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-03
+
 ### Fixed
+
+- **`wgaf status` no longer hangs when one subsystem stops answering.** It checks the GNOME Shell Extension, `/dev/uinput` and the accessibility system before reporting, and one of those checks could stall indefinitely — taking the whole report with it, including the input, permission and configuration sections that had nothing to do with the problem. That is the worst possible moment for it, since `wgaf status` is what you run when something is already wrong.
+
+  Each check now gives up after three seconds and says so, and they run at the same time rather than one after another. A subsystem that does not answer is reported as unavailable with the reason, distinct from one that answered with a failure — you can tell "it never replied" from "it said no", which point at different fixes.
 
 - **Escape is your applications' key again, except while automation is actually running.** Enabling the GNOME Shell Extension used to take Escape away from the entire desktop for as long as it stayed enabled — dialogs would not close, vim never left insert mode, fullscreen video would not exit — and it did this even while the wgaf daemon was idle or not running at all. A GNOME keyboard shortcut is an interception rather than a notification: whichever thing claims the key takes it, and nothing else ever sees it.
 

@@ -2,9 +2,11 @@ pub mod accessibility_api;
 pub mod input_api;
 pub mod windows_api;
 
+use std::fmt::Display;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wgaf_common::DaemonStatus;
 use wgaf_common::dict::DaemonStatusDict;
@@ -70,6 +72,50 @@ fn path_string(path: Option<&PathBuf>) -> String {
 /// being applied".
 fn path_present(path: Option<&PathBuf>) -> bool {
     path.map(|p| p.exists()).unwrap_or(false)
+}
+
+/// How long any one subsystem probe may take before [`Daemon::status`] gives up
+/// on it.
+///
+/// Every probe is a local D-Bus round trip or a file open, so a healthy one
+/// answers in milliseconds — this is roughly a hundredfold headroom, not a
+/// tuned value. It exists because a probe can hang *indefinitely*: the
+/// accessibility probe was observed stalling mid-handshake against an a11y bus
+/// that was answering other clients perfectly at the same moment, and `Status`
+/// never returned.
+///
+/// Erring long is the right direction. A probe wrongly reported unavailable is
+/// a misleading line in one report; a probe allowed to hang takes the entire
+/// report with it, at the exact moment the user is trying to find out what is
+/// wrong.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Runs one subsystem probe, turning both failure *and* hanging into a
+/// reportable answer.
+///
+/// The distinction matters to whoever reads the output: "unavailable because it
+/// said so" and "unavailable because it never replied" are different faults
+/// with different fixes, so the timeout says which one happened.
+/// The timeout is a parameter rather than reaching for [`PROBE_TIMEOUT`]
+/// directly so that the tests can prove the hang path in milliseconds instead
+/// of spending three real seconds each demonstrating a property about time.
+async fn probe<E: Display>(
+    subsystem: &str,
+    timeout: Duration,
+    probe: impl Future<Output = Result<(), E>>,
+) -> (bool, String) {
+    match tokio::time::timeout(timeout, probe).await {
+        Ok(Ok(())) => (true, String::new()),
+        Ok(Err(error)) => (false, error.to_string()),
+        Err(_elapsed) => (
+            false,
+            format!(
+                "the {subsystem} probe did not answer within {}s and was abandoned. \
+                 Everything else in this report is unaffected.",
+                timeout.as_secs_f32()
+            ),
+        ),
+    }
 }
 
 // Interface name must match `wgaf_common::INTERFACE_NAME` (zbus requires a
@@ -150,19 +196,33 @@ impl Daemon {
         // Each probe is deliberately the non-caching variant: they must
         // report what is true now, not what was true the first time the
         // subsystem was used. See each `probe_*` method's doc comment.
-        let (extension_available, extension_detail) = match self.windows.probe_available().await {
-            Ok(()) => (true, String::new()),
-            Err(e) => (false, e.to_string()),
-        };
-        let (uinput_accessible, uinput_detail) = match self.input.probe_device_access().await {
-            Ok(()) => (true, String::new()),
-            Err(e) => (false, e.to_string()),
-        };
-        let (accessibility_available, accessibility_detail) =
-            match self.accessibility.probe_bus().await {
-                Ok(()) => (true, String::new()),
-                Err(e) => (false, e.to_string()),
-            };
+        //
+        // Concurrently, and each under its own timeout. Both halves of that
+        // matter. **The timeout is the fix for a real fault** — one subsystem
+        // that never answers used to withhold every other section of this
+        // report, including the input, permission and configuration ones that
+        // had nothing to do with it, and `wgaf status` is precisely what
+        // someone runs when something is already wrong. Running them together
+        // then bounds the whole method at one timeout rather than three, and
+        // is safe because these are independent read-only probes that mutate
+        // nothing and do not depend on each other's results.
+        let (
+            (extension_available, extension_detail),
+            (uinput_accessible, uinput_detail),
+            (accessibility_available, accessibility_detail),
+        ) = tokio::join!(
+            probe(
+                "GNOME Shell extension",
+                PROBE_TIMEOUT,
+                self.windows.probe_available()
+            ),
+            probe("uinput", PROBE_TIMEOUT, self.input.probe_device_access()),
+            probe(
+                "accessibility",
+                PROBE_TIMEOUT,
+                self.accessibility.probe_bus()
+            ),
+        );
 
         let status = DaemonStatus {
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -211,5 +271,65 @@ impl Daemon {
         };
 
         status.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A probe timeout short enough to keep these tests instant.
+    const INSTANTLY: Duration = Duration::from_millis(10);
+
+    /// The fault this exists for: a probe that never answers must be reported,
+    /// not awaited.
+    #[tokio::test]
+    async fn a_probe_that_never_answers_is_reported_rather_than_awaited() {
+        let (available, detail) = probe(
+            "test",
+            INSTANTLY,
+            std::future::pending::<Result<(), String>>(),
+        )
+        .await;
+
+        assert!(!available, "a probe that never answered is not available");
+        assert!(
+            detail.contains("did not answer"),
+            "the detail must say the probe hung rather than that it failed — \
+             they are different faults with different fixes. Got: {detail}"
+        );
+        assert!(
+            detail.contains("Everything else in this report is unaffected"),
+            "the detail must tell the reader the rest of the report is still \
+             good, because the whole point is that one subsystem no longer \
+             withholds the others. Got: {detail}"
+        );
+    }
+
+    /// A probe that answers with a failure keeps reporting *its own* reason.
+    /// The timeout must not flatten every unavailable subsystem into "hung".
+    #[tokio::test]
+    async fn a_probe_that_fails_reports_its_own_reason() {
+        let (available, detail) = probe(
+            "test",
+            INSTANTLY,
+            std::future::ready(Err::<(), _>("no such device".to_string())),
+        )
+        .await;
+
+        assert!(!available);
+        assert_eq!(detail, "no such device");
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_succeeds_reports_no_detail() {
+        let (available, detail) =
+            probe("test", INSTANTLY, std::future::ready(Ok::<(), String>(()))).await;
+
+        assert!(available);
+        assert!(
+            detail.is_empty(),
+            "a working subsystem has nothing to explain"
+        );
     }
 }
