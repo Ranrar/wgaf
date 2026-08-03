@@ -324,4 +324,63 @@ mod tests {
         // expectations if this holds.
         assert_eq!(size_of::<libc::uinput_setup>(), 92);
     }
+
+    // -----------------------------------------------------------------
+    // Drift guard against the GNOME Shell Extension
+    // -----------------------------------------------------------------
+
+    /// The extension's source, read at compile time. `include_str!` resolves
+    /// relative to this file; the path is stable because both live in the same
+    /// repository and ship together.
+    ///
+    /// Test-only, so the daemon build does not depend on the extension source —
+    /// the same arrangement `windows/proxy.rs` uses for its own drift test.
+    const EXTENSION_SOURCE: &str = include_str!("../../../extension/extension.js");
+
+    /// Value of a hex-literal JS `const`, e.g. `WGAF_VENDOR_ID` → `0x57ae`.
+    fn js_hex_const(name: &str) -> u16 {
+        let needle = format!("const {name} = 0x");
+        let start = EXTENSION_SOURCE
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no `const {name} = 0x...` in extension/extension.js"))
+            + needle.len();
+        let rest = &EXTENSION_SOURCE[start..];
+        let end = rest
+            .find(';')
+            .unwrap_or_else(|| panic!("unterminated `const {name}` in extension/extension.js"));
+        u16::from_str_radix(rest[..end].trim(), 16).unwrap_or_else(|e| {
+            panic!("`const {name}` in extension/extension.js is not a u16 hex literal: {e}")
+        })
+    }
+
+    /// The extension must recognize the device this file creates.
+    ///
+    /// **This pairing is load-bearing and otherwise unguarded.** The extension's
+    /// emergency-key handler ignores presses whose source device reports these
+    /// identifiers, which is what stops `wgaf key press escape` from tripping
+    /// wgaf's own kill switch. Change one side alone and the handler stops
+    /// recognizing wgaf's keystrokes, the self-kill returns, and **nothing else
+    /// fails**: the acceptance test that would catch it
+    /// (`tests/kill_switch_device_origin.rs`) needs a human to press a real key,
+    /// so it is `#[ignore]`d and never runs in CI.
+    ///
+    /// See `adr/adr-0006-emergency-key-armed-on-device-and-checked-by-origin.md`.
+    #[test]
+    fn extension_agrees_with_the_ids_this_device_advertises() {
+        assert_eq!(
+            js_hex_const("WGAF_VENDOR_ID"),
+            VENDOR_ID,
+            "extension/extension.js and input/device.rs disagree about the \
+             virtual keyboard's vendor id. The extension uses it to tell wgaf's \
+             own keystrokes from the user's; while they disagree, `wgaf key \
+             press escape` will stop the run that sent it."
+        );
+        assert_eq!(
+            js_hex_const("WGAF_PRODUCT_ID"),
+            PRODUCT_ID,
+            "extension/extension.js and input/device.rs disagree about the \
+             virtual keyboard's product id — see the vendor id assertion above \
+             for what breaks."
+        );
+    }
 }
