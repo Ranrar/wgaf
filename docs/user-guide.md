@@ -229,9 +229,6 @@ Two things follow from that, both only while a run is in progress:
   which survives the dialog moving or being restyled in a way a keystroke does
   not.
 
-To use a different key, or none at all, see
-[Configuration](configuration.md).
-
 ### Why `wgaf release` is required
 
 Just like a car's handbrake does not release itself, wgaf never resumes

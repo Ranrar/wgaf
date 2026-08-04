@@ -275,6 +275,109 @@ async fn stop_refuses_every_kind_of_synthesis_and_release_restores_it() {
         .expect("synthesis works again after Release");
 }
 
+/// Asserts a call was **not** refused by the kill switch.
+///
+/// Deliberately tolerant of the call failing for other reasons. On a machine
+/// with no accessibility bus or no GNOME Shell Extension — CI, for one — these
+/// calls fail with `BusUnavailable` or `ExtensionUnavailable`, and that is
+/// fine. The property under test is *which* error, not whether one occurred, so
+/// this stays meaningful everywhere instead of needing a desktop.
+fn assert_not_stopped<T>(result: zbus::Result<T>, what: &str) {
+    let Err(err) = result else {
+        return;
+    };
+
+    if let zbus::Error::MethodError(name, _, _) = &err {
+        assert_ne!(
+            name.as_str(),
+            wgaf_common::INPUT_ERROR_STOPPED,
+            "{what} was refused by the kill switch. The brake is for synthesized input only; \
+             the user guide promises window and accessibility commands keep working while input \
+             is stopped, and a user whose script has just been stopped needs them to — they are \
+             how the desktop is inspected, and how a dialog gets dismissed when `Escape` cannot \
+             reach it"
+        );
+    }
+}
+
+/// The other half of the kill switch's contract: it brakes **input**, and
+/// nothing else.
+///
+/// `CHANGELOG.md` states this as a user-facing promise — "Window, workspace and
+/// accessibility commands keep working" — and nothing tested it. The stop is
+/// enforced in `input/mod.rs` alone, which is correct and also easy to
+/// "harden" later by moving the check up to the D-Bus layer, at which point the
+/// promise would quietly become false. This is the test that would object.
+///
+/// It matters beyond documentation accuracy. The recovery route from a runaway
+/// script is to stop it and then look at what happened, and both halves of
+/// looking — `wgaf window list` and the `wgaf a11y` queries — are exactly the
+/// commands this asserts still answer.
+///
+/// **The mutating accessibility actions keep working too, and that is
+/// load-bearing rather than an oversight.** While a run is in progress the
+/// emergency key is held by wgaf, so a script cannot press `Escape` at a dialog
+/// and the dialog stays open. The documented remedy is to press the dialog's
+/// own Cancel or Close button with `wgaf a11y` — which only works because
+/// `InvokeAction` is outside the brake. A "hardening" that gated the mutating
+/// accessibility actions would take away the escape route the user guide sends
+/// people to, so this asserting only the read-only calls is a deliberate
+/// boundary, not a gap left to fill in later.
+#[tokio::test]
+async fn stopping_does_not_refuse_window_or_accessibility_commands() {
+    let (_daemon, bus_name, _device) = spawn_daemon("Scope", ALLOW_EVERYTHING, EVENTS_GO_NOWHERE);
+    let connection = harness::wait_for_daemon(&bus_name).await;
+
+    daemon_call(&connection, &bus_name, "Stop")
+        .await
+        .expect("Stop must succeed");
+
+    // The stop is engaged — established against input, so a passing assertion
+    // below cannot be explained by the brake never having been applied.
+    assert_stopped(
+        harness::input::<(), _>(&connection, &bus_name, "TypeText", &("hello",)).await,
+        "TypeText",
+    );
+
+    assert_not_stopped(
+        harness::accessibility::<Vec<wgaf_common::AppRecord>, _>(
+            &connection,
+            &bus_name,
+            "ListApps",
+            &(),
+        )
+        .await,
+        "a11y ListApps",
+    );
+    assert_not_stopped(
+        harness::accessibility::<Vec<wgaf_common::ElementRecord>, _>(
+            &connection,
+            &bus_name,
+            "FindElements",
+            &("no-such-application-xyz", "", "", "", 0i32),
+        )
+        .await,
+        "a11y FindElements",
+    );
+    assert_not_stopped(
+        harness::windows::<Vec<wgaf_common::dict::WindowRecordDict>, _>(
+            &connection,
+            &bus_name,
+            "ListWindows",
+            &(),
+        )
+        .await,
+        "ListWindows",
+    );
+
+    // Transparency is ungated by design — a status query that the emergency
+    // state could suppress would defeat the point of having one.
+    assert!(
+        status(&connection, &bus_name).await.input_stopped,
+        "`wgaf status` must keep answering, and must say the stop is engaged"
+    );
+}
+
 /// Stopping must leave nothing registered with the kernel — a virtual keyboard
 /// that survives the panic key is exactly what the user was trying to be rid of.
 #[tokio::test]

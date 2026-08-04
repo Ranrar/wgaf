@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "3"
-members = ["report", "window-test", "input-test"]
+members = ["report", "window-test", "input-test", "accessibility-test"]
 
 [workspace.package]
 version = "0.8.0"

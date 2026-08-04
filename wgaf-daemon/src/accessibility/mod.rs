@@ -358,22 +358,41 @@ async fn accessible_proxy_for<'a>(
         .await?)
 }
 
-/// Maps a D-Bus method-error reply indicating the destination object/service
-/// no longer exists (`org.freedesktop.DBus.Error.UnknownObject`/
-/// `.ServiceUnknown` — what a stale [`ElementRef`] looks like once the
-/// widget's destroyed or the application's exited) to
-/// [`AccessibilityError::ElementNotFound`]. Mirrors
+/// Maps a D-Bus error indicating the destination object/service no longer
+/// exists (`org.freedesktop.DBus.Error.UnknownObject`/`.ServiceUnknown` — what
+/// a stale [`ElementRef`] looks like once the widget's destroyed or the
+/// application's exited) to [`AccessibilityError::ElementNotFound`]. Mirrors
 /// `windows::translate_window_error`'s "translate the specific known case,
 /// pass everything else through" pattern.
+///
+/// **Both `MethodError` and `FDO` are matched, and missing the second one was a
+/// real bug.** zbus reports the same bus error under either variant depending
+/// on how the call was made: a *method* call gives `MethodError`, while reading
+/// a *property* gives `FDO`. `GetElementInfo` begins by reading `Accessible`'s
+/// `Name` property, so an element whose application had exited came back as a
+/// generic D-Bus failure while the identical fault on `InvokeAction` — which
+/// calls a method first — was reported correctly as `ElementNotFound`. Found by
+/// `tests/accessibility.rs` killing the application it had just queried; the
+/// two paths had never been compared before, because nothing tested the second.
 fn translate_element_error(err: zbus::Error) -> AccessibilityError {
-    if let zbus::Error::MethodError(name, description, _) = &err
-        && is_stale_object_error_name(name.as_str())
-    {
-        return AccessibilityError::ElementNotFound(
-            description.clone().unwrap_or_else(|| err.to_string()),
-        );
+    let stale_detail = match &err {
+        zbus::Error::MethodError(name, description, _)
+            if is_stale_object_error_name(name.as_str()) =>
+        {
+            Some(description.clone().unwrap_or_else(|| err.to_string()))
+        }
+        zbus::Error::FDO(fdo)
+            if is_stale_object_error_name(zbus::DBusError::name(&**fdo).as_str()) =>
+        {
+            Some(fdo.to_string())
+        }
+        _ => None,
+    };
+
+    match stale_detail {
+        Some(detail) => AccessibilityError::ElementNotFound(detail),
+        None => AccessibilityError::DBus(err),
     }
-    AccessibilityError::DBus(err)
 }
 
 /// Whether a D-Bus error name indicates the destination object/service no
@@ -446,6 +465,49 @@ mod tests {
         ));
         assert!(!is_stale_object_error_name(
             "org.freedesktop.DBus.Error.AccessDenied"
+        ));
+    }
+
+    /// The regression test for the bug `tests/accessibility.rs` found: reading
+    /// a *property* off a gone application surfaces the bus error as
+    /// [`zbus::Error::FDO`], not [`zbus::Error::MethodError`], and only the
+    /// latter used to be translated. `GetElementInfo` starts with a property
+    /// read, so it reported a generic D-Bus failure where `InvokeAction`
+    /// correctly reported `ElementNotFound` for the identical fault.
+    ///
+    /// Worth having here rather than only in that suite: the suite needs a live
+    /// GNOME session and can never run in CI, and this variant is exactly the
+    /// sort of thing a `zbus` upgrade could change underneath us.
+    #[test]
+    fn a_property_read_against_a_gone_application_is_element_not_found() {
+        let err = zbus::Error::FDO(Box::new(zbus::fdo::Error::ServiceUnknown(
+            "The name :1.42 was not provided by any .service files".to_string(),
+        )));
+
+        match translate_element_error(err) {
+            AccessibilityError::ElementNotFound(detail) => {
+                assert!(
+                    detail.contains(":1.42"),
+                    "the detail must name what is gone"
+                );
+            }
+            other => panic!("expected ElementNotFound, got {other:?}"),
+        }
+    }
+
+    /// The other half of the same guard: an error that is *not* about a missing
+    /// destination must still pass through as a D-Bus failure, so widening the
+    /// match above cannot quietly start reporting unrelated faults as stale
+    /// elements.
+    #[test]
+    fn an_unrelated_fdo_error_is_not_reported_as_a_missing_element() {
+        let err = zbus::Error::FDO(Box::new(zbus::fdo::Error::AccessDenied(
+            "not permitted".to_string(),
+        )));
+
+        assert!(matches!(
+            translate_element_error(err),
+            AccessibilityError::DBus(_)
         ));
     }
 }

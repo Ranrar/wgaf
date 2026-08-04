@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **"That element is gone" now says so, whichever command you asked.** If you found an element with `wgaf a11y find`, and the application closed before you used it, `wgaf a11y click` correctly told you the element was gone — while `wgaf a11y info` on the same reference reported a raw D-Bus failure that named no element and suggested no remedy. Same situation, two different answers, and only one of them useful.
+
+  Both now report the element as not found. The cause was that the two commands ask the application different kinds of question, and the underlying library reports the same failure differently depending on which; wgaf recognized only one of the two forms.
+
+### Changed
+
+- **The accessibility tests now drive an application built for the purpose.** They used to drive `gtk4-demo`, which meant they only ran where it happened to be installed, and their expectations were facts someone had discovered by hand about an application this project does not control — so a GTK update could silently make them check the wrong things.
+
+  The new `accessibility-test` application declares its own elements, and every test that changes something now confirms the result by reading what the application itself observed rather than by asking wgaf again. That is what caught the fix above: nothing had previously checked what `wgaf a11y info` says about an element whose application has exited.
+
+  This is testing infrastructure and changes nothing about how wgaf behaves, beyond the fix above.
+
 ## [0.8.0] - 2026-08-03
 
 ### Fixed

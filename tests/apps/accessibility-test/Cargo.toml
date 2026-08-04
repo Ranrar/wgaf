@@ -1,0 +1,18 @@
+[package]
+name = "accessibility-test"
+description = "A GTK4 application with a fixed, fully specified accessible tree, for testing wgaf's AT-SPI automation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+report = { workspace = true }
+# `v4_10` is needed for the API that sets an accessible name and description on
+# a widget explicitly. This application sets every one of them by hand rather
+# than letting GTK derive them, so its accessible tree is the same on every
+# machine. GTK 4.10 was released in March 2023; nothing else in wgaf needs it.
+gtk4 = { workspace = true, features = ["v4_10"] }
+serde = { workspace = true }
+clap = { workspace = true }

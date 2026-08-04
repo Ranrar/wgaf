@@ -93,6 +93,86 @@ pub fn require_uinput() {
     }
 }
 
+/// Fails unless the session has a reachable AT-SPI accessibility bus.
+///
+/// Checked here because the failure is otherwise invisible: with accessibility
+/// off, a GTK4 application starts, maps its window and writes its report
+/// perfectly well — it simply never registers an accessible tree. Every
+/// assertion then fails as "the application never appeared in `ListApps`",
+/// which reads as a wgaf fault and is not one.
+///
+/// The address is asked for **the same way the daemon asks for it** — an
+/// untyped `zbus::Proxy` calling `org.a11y.Bus.GetAddress` on the session bus,
+/// mirroring `accessibility::connection::diagnose` — and then the socket behind
+/// it is checked.
+///
+/// Both halves are needed, and the second is the one that earns its keep:
+/// `org.a11y.Bus` goes on answering with an address after the bus behind it has
+/// exited, so a reply proves nothing on its own. That stale-address case has
+/// cost this project time twice; see the accessibility notes in `issues.md`.
+///
+/// Deliberately not a `busctl` subprocess. A first version shelled out, which
+/// worked and was still wrong twice over: it puts an external tool where a
+/// library the tests already link does the job — the last resort in the
+/// project's preference order standing in for the third — and it cannot tell
+/// "accessibility is off" from "`busctl` is not installed", so a machine
+/// missing systemd's client tools would have been told its accessibility was
+/// broken.
+pub async fn require_a11y_bus() {
+    let session = zbus::Connection::session().await.unwrap_or_else(|err| {
+        panic!(
+            "this suite needs a session bus to look the accessibility bus up on, and connecting \
+             to it failed ({err}). This usually means the tests are running outside a desktop \
+             session."
+        )
+    });
+
+    let proxy = zbus::Proxy::new(&session, A11Y_BUS_SERVICE, A11Y_BUS_PATH, A11Y_BUS_SERVICE)
+        .await
+        .unwrap_or_else(|err| panic!("failed to build a proxy for `{A11Y_BUS_SERVICE}`: {err}"));
+
+    let address: String = proxy.call("GetAddress", &()).await.unwrap_or_else(|err| {
+        panic!(
+            "this suite needs an AT-SPI accessibility bus, and \
+             `{A11Y_BUS_SERVICE}.GetAddress` failed ({err}). Enable accessibility with \
+             `gsettings set org.gnome.desktop.interface toolkit-accessibility true`."
+        )
+    });
+
+    // An address such as `unix:path=/run/user/1000/at-spi/bus,guid=…`. An
+    // address that names no filesystem socket — abstract, or a non-`unix:`
+    // transport — is perfectly valid and simply not checkable here, so it
+    // passes rather than failing on something that is not evidence.
+    if let Some(path) = a11y_socket_path(&address)
+        && !Path::new(path).exists()
+    {
+        panic!(
+            "this suite needs an AT-SPI accessibility bus. `{A11Y_BUS_SERVICE}.GetAddress` \
+             answered with `{path}`, but no socket exists there — the bus it names has exited and \
+             the address is stale. Logging out and back in restores it."
+        );
+    }
+}
+
+/// Session-bus coordinates of the service publishing the accessibility bus
+/// address, matching `accessibility::connection`'s own constants.
+const A11Y_BUS_SERVICE: &str = "org.a11y.Bus";
+const A11Y_BUS_PATH: &str = "/org/a11y/bus";
+
+/// Extracts the socket path from a D-Bus address, or `None` when the address
+/// names no filesystem socket.
+///
+/// The `guid=` parameter that follows the path on a real GNOME session is
+/// exactly what a `strip_prefix`-only parser swallows, which is why this splits
+/// on `,` rather than taking the rest of the string.
+fn a11y_socket_path(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("unix:")?
+        .split(',')
+        .find_map(|param| param.strip_prefix("path="))
+        .filter(|path| !path.is_empty())
+}
+
 /// Resolves a `tests/apps/` binary, failing with the command that builds it.
 ///
 /// The applications are a separate Cargo workspace, deliberately excluded from
@@ -395,6 +475,20 @@ impl TestApp {
         }
     }
 
+    /// Kills the application and waits for it to exit.
+    ///
+    /// For the one case a test cannot arrange any other way: an element
+    /// reference whose owning application is gone. Dropping the guard would do
+    /// the same thing, but only at the end of the test, which is too late to
+    /// then assert anything about what wgaf says.
+    ///
+    /// Safe to call more than once, and safe to leave uncalled — [`Drop`] does
+    /// the same work.
+    pub fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
     /// Waits for any new report after `baseline`.
     pub async fn wait_for_change(&self, baseline: u64) -> Report {
         self.wait_for(&format!("a report newer than seq {baseline}"), |report| {
@@ -546,6 +640,37 @@ where
         args,
     )
     .await
+}
+
+/// Calls a method on `org.wgaf.Accessibility1`.
+pub async fn accessibility<R, A>(
+    connection: &Connection,
+    bus_name: &str,
+    method: &str,
+    args: &A,
+) -> zbus::Result<R>
+where
+    R: serde::de::DeserializeOwned + zbus::zvariant::Type,
+    A: serde::Serialize + zbus::zvariant::Type,
+{
+    call(
+        connection,
+        bus_name,
+        wgaf_common::ACCESSIBILITY_OBJECT_PATH,
+        wgaf_common::ACCESSIBILITY_INTERFACE_NAME,
+        method,
+        args,
+    )
+    .await
+}
+
+/// The D-Bus error name a failed call carries, or `None` if it failed some
+/// other way (a transport fault rather than a reply saying no).
+pub fn dbus_error_name(err: &zbus::Error) -> Option<&str> {
+    match err {
+        zbus::Error::MethodError(name, _, _) => Some(name.as_str()),
+        _ => None,
+    }
 }
 
 /// Calls a method on `org.wgaf.Windows1`.

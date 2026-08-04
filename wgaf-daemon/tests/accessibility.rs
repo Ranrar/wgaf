@@ -1,316 +1,397 @@
-//! Integration tests for the daemon's `org.wgaf.Accessibility1` D-Bus API
-//! against a **real** `gtk4-demo` process and the **real** AT-SPI
-//! accessibility bus — not a stub, per this project's established
-//! "attempt real verification before falling back to a stub/mock" precedent
-//! (`windows_stub.rs` had to fake the GNOME Shell Extension only because no
-//! real GNOME Shell session was available; `input.rs` used a real
-//! `/dev/uinput` device because it was genuinely writable). Here, this
-//! environment turned out to have a real, live GNOME Wayland session with
-//! AT-SPI already enabled and working — confirmed directly
-//! (`org.a11y.Bus.GetAddress` resolves, and `gtk4-demo`, the same reference
-//! app used for earlier manual verification, registers a real accessible
-//! tree) — so these tests exercise the real `wgaf-daemon` binary,
-//! its real `org.wgaf.Accessibility1` interface, the real `atspi` crate, and
-//! a real spawned `gtk4-demo` process end-to-end.
+//! Integration tests for `org.wgaf.Accessibility1` against the deterministic
+//! `accessibility-test` application, the real AT-SPI bus, and the real daemon
+//! binary.
 //!
-//! What this confirms for real:
-//!   - `ListApps` sees `gtk4-demo` as a genuinely-registered accessible
-//!     application (not synthesized test data).
-//!   - `FindElements`/`GetTree` walk `gtk4-demo`'s real accessible tree
-//!     (a real GTK4 widget hierarchy, discovered by exploring it by hand
-//!     with `gdbus` first — see the module's development notes) and return
-//!     real role/name data (e.g. the demo window's real search entry, role
-//!     `"search"`, name `"Search"`).
-//!   - `InvokeAction`/`SetText` against real widgets correctly report
-//!     `ActionNotSupported` when the real widget genuinely can't perform the
-//!     operation (GTK4's search entry implements `Action` but advertises
-//!     zero actions; the demo's embedded source-code view implements
-//!     `EditableText` but is read-only, so `SetTextContents` genuinely
-//!     returns `false`) — this is real negative-path coverage against a
-//!     real toolkit's real AT-SPI implementation, not a synthetic error.
+//! # What changed, and why it matters
 //!
-//! What is a documented gap, investigated directly (not assumed): every
-//! widget in `gtk4-demo`'s real accessible tree that was tried (see the
-//! development notes: a breadth-first scan of ~95 real nodes) returns
-//! `org.freedesktop.DBus.Error.NotSupported` from `Component.GrabFocus`,
-//! including widgets that otherwise report the `Component` interface as
-//! present. This appears to be a genuine limitation of this GTK4/AT-SPI
-//! bridge version's `GrabFocus` implementation, not a bug in this daemon —
-//! `focus_element_reports_a_dbus_error_against_this_gtk4_bridge` below
-//! confirms the call completes (doesn't hang/panic) and surfaces as an
-//! error, but does **not** claim a successful focus grab was demonstrated.
-//! Confirming a real successful `GrabFocus` would need a different
-//! toolkit/widget or a newer AT-SPI bridge — out of scope for this
-//! sandboxed run, same category of gap as `input.rs`'s per-event-readback
-//! `EACCES` limitation.
+//! This suite used to drive `gtk4-demo`. Two problems came with that, and both
+//! are gone:
+//!
+//! - **Its expectations were discovered rather than declared.** That a
+//!   particular entry advertised zero actions, that a particular view was
+//!   read-only — facts established by hand-scanning roughly ninety-five nodes
+//!   of an application this project does not control, which a GTK upgrade could
+//!   invalidate without anything here changing. `tests/apps/accessibility-test`
+//!   states its tree in its own source, so a failure here means wgaf changed.
+//! - **Every assertion travelled back through AT-SPI.** The only way to know
+//!   whether a click had worked was to ask AT-SPI what the widget looked like
+//!   afterwards, so one bug in the layer under test could produce a pass. The
+//!   application now writes what it observed to a report file, and the
+//!   mutating tests below assert on that file — a path wgaf is not part of.
+//!   That is this project's first rule, and this suite is where it was hardest
+//!   to obey.
+//!
+//! # Two limitations of the toolkit, measured rather than assumed
+//!
+//! Both were established on GNOME 50 / GTK 4.22.4 by driving this application,
+//! and both are recorded in `issues.md`. Tests below assert what actually
+//! happens and say so, rather than asserting what should happen and being
+//! marked as failures nobody acts on:
+//!
+//! - **`FocusElement` cannot succeed against any GTK4 application.** The
+//!   toolkit's AT-SPI bridge answers `Component.GrabFocus` with
+//!   `org.freedesktop.DBus.Error.NotSupported`. The same was true of
+//!   `gtk4-demo` under the previous suite, so this is a property of GTK rather
+//!   than of the application or of wgaf.
+//! - **A destroyed widget does not produce `ElementNotFound`.** It answers
+//!   `org.freedesktop.DBus.Error.UnknownMethod`, which the daemon does not
+//!   currently classify as a stale element. An exited *application* does
+//!   produce `ElementNotFound` correctly, and both cases have a test.
+//!
+//! # Why this suite is `#[ignore]`d
+//!
+//! It opens real windows on a real GNOME session and needs a real accessibility
+//! bus, so a plain `cargo test` must not start it. Run it deliberately:
+//!
+//! ```text
+//! make test-desktop
+//! ```
+//!
+//! It does **not** synthesize input, so it is safe alongside a session in use
+//! in a way the keyboard suites are not.
 
-use std::process::{Child, Command};
+mod harness;
+
+use harness::{TestApp, accessibility, dbus_error_name, spawn_daemon, wait_for_daemon};
 use std::time::Duration;
-
-use wgaf_common::{AppRecord, ElementRecord, TreeNode};
+use wgaf_common::{AppRecord, ElementRecord, ElementRef, TreeNode};
 use zbus::Connection;
 
-/// Kills the spawned daemon (and, via `Drop` order, is paired with a
-/// separate guard for the `gtk4-demo` child) even if an assertion panics
-/// mid-test. Config file kept alive until dropped — same convention as
-/// `ping.rs`/`windows_stub.rs`/`input.rs`.
-struct DaemonGuard {
-    child: Child,
-    config_path: std::path::PathBuf,
+/// The AT-SPI application name, which is the binary's name.
+const APP: &str = "accessibility-test";
+
+// The accessible names `accessibility-test` fixes. These are its contract with
+// this suite — see its source, which explains what each element is for and why
+// the buttons carry their contract name as a visible label.
+const ACTIVATE: &str = "wgaf activate";
+const INERT: &str = "wgaf inert";
+const ENTRY: &str = "wgaf editable entry";
+const READONLY: &str = "wgaf read-only entry";
+const REMOVE: &str = "wgaf remove";
+const DISPOSABLE: &str = "wgaf disposable";
+const FOCUS_TARGET: &str = "wgaf focus target";
+const DEEP_LEAF: &str = "wgaf deep leaf";
+const WIDE_ITEM_PREFIX: &str = "wgaf wide item";
+
+/// What the application's read-only entry contains, and must go on containing.
+const READONLY_TEXT: &str = "read-only";
+
+/// The description set on the activate button, and on nothing else.
+const ACTIVATE_DESCRIPTION: &str = "Increments the activation counter";
+
+// Roles as `GetRoleName` reports them for this toolkit — measured, not guessed.
+// The daemon deliberately reports `GetRoleName`'s string rather than the fixed
+// numeric-enum name (see `accessibility/tree.rs`), so these are the friendly
+// names an AT tool would show: a `GtkButton` is `button`, not `push button`.
+const ROLE_BUTTON: &str = "button";
+const ROLE_TEXT_BOX: &str = "text box";
+const ROLE_GROUP: &str = "group";
+const ROLE_LABEL: &str = "label";
+
+/// The daemon's default `GetTree` depth, `DEFAULT_TREE_DEPTH`.
+///
+/// Written here rather than imported because it is private to the daemon's
+/// accessibility module. The application's own `deep_nesting` report is what
+/// keeps this honest: it says how deep the tree actually goes, and the test
+/// below asserts the relationship between the two rather than either number
+/// alone.
+const DAEMON_DEFAULT_TREE_DEPTH: u32 = 10;
+
+/// The daemon's default `FindElements` result cap, `DEFAULT_FIND_RESULTS`.
+const DAEMON_DEFAULT_FIND_RESULTS: usize = 100;
+
+/// How long to wait for the application to register with AT-SPI.
+///
+/// Registration happens after the window maps, so the harness returning from
+/// `TestApp::spawn` is not enough. Generous on purpose: this bounds a failure,
+/// not a success.
+const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Everything a test needs: a running daemon, a running application, and a
+/// connection to talk to the daemon over.
+struct Fixture {
+    connection: Connection,
+    bus_name: String,
+    app: TestApp,
+    // Dropped last, killing the daemon. Named rather than `_daemon` because a
+    // field that is never read is exactly what the underscore is for, and this
+    // one genuinely is not read.
+    _daemon: harness::DaemonGuard,
 }
 
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.config_path);
-    }
-}
+impl Fixture {
+    /// Starts the daemon and the application, and waits until AT-SPI has the
+    /// application's tree.
+    ///
+    /// `tag` distinguishes this test's daemon bus name from every other's, so
+    /// the suite does not depend on being run single-threaded even though
+    /// `make test-desktop` does run it that way.
+    async fn start(tag: &str) -> Self {
+        harness::require_wayland_session();
+        harness::require_a11y_bus().await;
 
-/// Kills the spawned `gtk4-demo` process on drop.
-struct DemoGuard(Child);
+        let bus_name = format!("org.wgaf.Test.A11y.{tag}{}", std::process::id());
+        let daemon = spawn_daemon("a11y", &bus_name, "");
+        let connection = wait_for_daemon(&bus_name).await;
+        let app = TestApp::spawn(APP).await;
 
-impl Drop for DemoGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn spawn_daemon(daemon_bus_name: &str, nonce: &str) -> DaemonGuard {
-    let config_path =
-        std::env::temp_dir().join(format!("wgaf-daemon-accessibility-test-{nonce}.toml"));
-    std::fs::write(
-        &config_path,
-        format!("bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\n"),
-    )
-    .expect("failed to write test config");
-    // The daemon requires both files to exist and to not be group/world
-    // writable; `fs::write` honours the umask (002 on many distros -> 0664).
-    std::fs::set_permissions(
-        &config_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )
-    .expect("failed to tighten test config permissions");
-
-    // The daemon requires a policy file; an empty [capabilities] table is the
-    // explicit way to say "allow everything". Given its own unique path
-    // rather than relying on the config sibling, because every test config
-    // lives directly in the temp dir and would otherwise share one file.
-    let permissions_path =
-        std::env::temp_dir().join(format!("wgaf-a11y-permissions-{}.toml", std::process::id()));
-    std::fs::write(&permissions_path, "[capabilities]\n").expect("failed to write test policy");
-    // Explicit mode: the daemon rejects a group/world-writable policy file,
-    // and `fs::write` honours the umask (002 on many distros -> 0664).
-    std::fs::set_permissions(
-        &permissions_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )
-    .expect("failed to tighten test policy permissions");
-
-    let child = Command::new(env!("CARGO_BIN_EXE_wgaf-daemon"))
-        .arg("--config")
-        .arg(&config_path)
-        .arg("--permissions")
-        .arg(&permissions_path)
-        .spawn()
-        .expect("failed to start wgaf-daemon");
-    DaemonGuard { child, config_path }
-}
-
-fn spawn_gtk4_demo() -> DemoGuard {
-    let child = Command::new("gtk4-demo")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("failed to start gtk4-demo — is it installed?");
-    DemoGuard(child)
-}
-
-/// AT-SPI's application-name namespace is a machine-global resource with no
-/// per-instance identifier this daemon/test can set — unlike
-/// `Config::input_device_name` for `uinput` devices, `gtk4-demo` has no
-/// "give this instance a unique name" flag. Running this file's tests
-/// concurrently (the default, both within this binary and across
-/// `cargo test --workspace`'s other test binaries) let one test's
-/// `FindElements`/`GetTree` — which resolve `app` by *name*, via
-/// `query::find_matching_app`'s "first match wins" — resolve to a
-/// *different*, concurrently-running test's `gtk4-demo` instance (both
-/// register under the identical application name). If that other test's
-/// instance had already exited (its `DemoGuard` dropped) by the time the
-/// D-Bus call reached it, the call failed with a raw
-/// `NoReply`/"disconnected from message bus" error — confirmed directly by
-/// running the full workspace suite (as opposed to this file in isolation,
-/// where it reliably passed) and observing exactly that failure mode.
-/// Since there's no test-unique identifier to hand `gtk4-demo`, the fix is
-/// serializing this file's `gtk4-demo`-spawning tests against each other
-/// instead — each acquires this lock for its entire body before spawning
-/// its own instance. `unknown_app_reports_app_not_found` doesn't touch
-/// `gtk4-demo` at all and deliberately doesn't take this lock.
-async fn lock_a11y_test() -> tokio::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await
-}
-
-async fn wait_for_daemon(bus_name: &str) -> Connection {
-    let connection = Connection::session().await.expect("connect to session bus");
-    for _ in 0..50 {
-        let reply = connection
-            .call_method(
-                Some(bus_name),
-                wgaf_common::OBJECT_PATH,
-                Some(wgaf_common::INTERFACE_NAME),
-                "Ping",
-                &(),
-            )
-            .await;
-        if reply.is_ok() {
-            return connection;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("daemon did not respond to Ping in time");
-}
-
-async fn call<R, A>(
-    connection: &Connection,
-    bus_name: &str,
-    method: &str,
-    args: &A,
-) -> zbus::Result<R>
-where
-    R: serde::de::DeserializeOwned + zbus::zvariant::Type,
-    A: serde::Serialize + zbus::zvariant::Type,
-{
-    let reply = connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::ACCESSIBILITY_OBJECT_PATH,
-            Some(wgaf_common::ACCESSIBILITY_INTERFACE_NAME),
-            method,
-            args,
-        )
-        .await?;
-    reply.body().deserialize()
-}
-
-fn dbus_error_name(err: &zbus::Error) -> Option<&str> {
-    match err {
-        zbus::Error::MethodError(name, _, _) => Some(name.as_str()),
-        _ => None,
-    }
-}
-
-/// Polls `ListApps` until an application named `gtk4-demo` appears (real
-/// AT-SPI registration after process spawn isn't instantaneous), returning
-/// its [`AppRecord`].
-async fn wait_for_gtk4_demo_app(connection: &Connection, bus_name: &str) -> AppRecord {
-    for _ in 0..100 {
-        let apps: Vec<AppRecord> = call(connection, bus_name, "ListApps", &())
-            .await
-            .expect("ListApps should succeed against the real AT-SPI bus");
-        if let Some(app) = apps.into_iter().find(|a| a.name == "gtk4-demo") {
-            return app;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!(
-        "gtk4-demo did not appear in ListApps within the timeout — either it failed to start, \
-         or AT-SPI registration is not working in this environment"
-    );
-}
-
-/// Polls `FindElements` for `gtk4-demo`'s real search entry (role `search`,
-/// present in every GTK4 `gtk4-demo` build) until it's found — the demo's
-/// widgets may not be fully realized/registered with AT-SPI the instant the
-/// process starts responding to `ListApps`.
-async fn wait_for_search_entry(connection: &Connection, bus_name: &str) -> ElementRecord {
-    for _ in 0..100 {
-        let elements: Vec<ElementRecord> = call(
+        let fixture = Self {
             connection,
             bus_name,
-            "FindElements",
-            &("gtk4-demo", "search", "", "", 0i32),
-        )
-        .await
-        .expect("FindElements should succeed against the real AT-SPI bus");
-        if let Some(entry) = elements.into_iter().next() {
-            return entry;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+            app,
+            _daemon: daemon,
+        };
+        fixture.wait_until_registered().await;
+        fixture
     }
-    panic!("gtk4-demo's search entry did not appear within the timeout");
+
+    /// Polls `ListApps` until the application's accessible tree is exported.
+    ///
+    /// **Not the same thing as the application being up.** It writes its first
+    /// report as soon as its window is presented, which is what `TestApp::spawn`
+    /// waits for; AT-SPI registration follows some time after that. A test that
+    /// starts querying at the earlier moment fails with `AppNotFound` and looks
+    /// like a daemon bug.
+    async fn wait_until_registered(&self) -> AppRecord {
+        let deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
+        loop {
+            let apps: Vec<AppRecord> = self
+                .call("ListApps", &())
+                .await
+                .expect("ListApps should succeed against a healthy accessibility bus");
+            if let Some(app) = apps.into_iter().find(|app| app.name == APP) {
+                return app;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "`{APP}` never registered with AT-SPI within {REGISTRATION_TIMEOUT:?}. It is \
+                 running and reporting, so this is an accessibility-bus problem rather than an \
+                 application one."
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn call<R, A>(&self, method: &str, args: &A) -> zbus::Result<R>
+    where
+        R: serde::de::DeserializeOwned + zbus::zvariant::Type,
+        A: serde::Serialize + zbus::zvariant::Type,
+    {
+        accessibility(&self.connection, &self.bus_name, method, args).await
+    }
+
+    /// `FindElements` with the role and name filters this suite uses.
+    async fn find(&self, role: &str, name: &str) -> Vec<ElementRecord> {
+        self.call("FindElements", &(APP, role, name, "", 0i32))
+            .await
+            .expect("FindElements should succeed")
+    }
+
+    /// The one element matching `role` and `name`, failing if there is not
+    /// exactly one.
+    ///
+    /// The count is asserted rather than the first match taken, because
+    /// `FindElements` matches names by substring: a second element whose name
+    /// contained this one would silently make every later assertion about a
+    /// different widget. **A button's own child label carries the same
+    /// accessible name**, which is precisely why the role filter is not
+    /// optional here.
+    async fn element(&self, role: &str, name: &str) -> ElementRef {
+        let found = self.find(role, name).await;
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one `{role}` named `{name}`, got {}: {:?}",
+            found.len(),
+            found.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
+        found[0].element.clone()
+    }
 }
 
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+/// The read-only surface in one fixture: the application registers, its
+/// elements are findable by each filter the daemon offers, and a reference can
+/// be re-read afterwards.
+///
+/// Grouped deliberately. These share a fixture and assert nothing that can
+/// affect each other, and a separate daemon and GTK4 window per assertion would
+/// cost seconds apiece to tell four failures apart that a single failure
+/// message already distinguishes.
 #[tokio::test]
-async fn lists_gtk4_demo_as_a_real_accessible_application() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.ListApps{pid}");
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn finds_the_applications_elements_by_role_name_and_description() {
+    let fixture = Fixture::start("Find").await;
 
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("listapps{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
+    // By role and name together.
+    let activate = fixture.element(ROLE_BUTTON, ACTIVATE).await;
 
-    let app = wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-    assert_eq!(app.name, "gtk4-demo");
+    // By description, which only the activate button carries.
+    let by_description: Vec<ElementRecord> = fixture
+        .call("FindElements", &(APP, "", "", ACTIVATE_DESCRIPTION, 0i32))
+        .await
+        .expect("FindElements by description should succeed");
+    assert_eq!(
+        by_description.len(),
+        1,
+        "only the activate button carries that description, got: {:?}",
+        by_description.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert_eq!(by_description[0].element, activate);
+
+    // By role alone, for the roles this application deliberately contains. The
+    // assertion is "at least one", not an exact count: the window's own header
+    // bar contributes buttons and labels of its own, and pinning a total would
+    // be pinning GNOME's titlebar rather than anything wgaf does.
+    for role in [ROLE_BUTTON, ROLE_TEXT_BOX, ROLE_GROUP, ROLE_LABEL] {
+        let found = fixture.find(role, "").await;
+        assert!(!found.is_empty(), "no element with role `{role}` was found");
+        assert!(
+            found.iter().all(|element| element.role == role),
+            "a filter for `{role}` returned something else"
+        );
+    }
+
+    // And a found reference can be re-read without re-running the search.
+    let info: ElementRecord = fixture
+        .call("GetElementInfo", &(activate.clone(),))
+        .await
+        .expect("GetElementInfo should succeed against a live element");
+    assert_eq!(info.element, activate);
+    assert_eq!(info.name, ACTIVATE);
+    assert_eq!(info.role, ROLE_BUTTON);
+    assert_eq!(info.description, ACTIVATE_DESCRIPTION);
+}
+
+/// `FindElements` returns the daemon's default number of results when asked for
+/// none, and fewer when asked for fewer.
+///
+/// The application's wide list exists so that there are genuinely more matches
+/// than the cap. Its own `wide_item_count` report is what proves that — a cap
+/// tested against a list shorter than the cap would pass while testing nothing,
+/// and this asserts the premise rather than assuming it.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn find_elements_caps_results_at_the_daemons_default_and_honours_a_smaller_cap() {
+    let fixture = Fixture::start("Cap").await;
+
+    let available = fixture
+        .app
+        .read()
+        .expect("the application reports")
+        .u64("wide_item_count") as usize;
     assert!(
-        app.element.bus_name.starts_with(':'),
-        "expected a D-Bus unique name, got `{}`",
-        app.element.bus_name
+        available > DAEMON_DEFAULT_FIND_RESULTS,
+        "the application offers {available} matching elements, which is not more than the \
+         daemon's default cap of {DAEMON_DEFAULT_FIND_RESULTS} — this test would pass without \
+         the cap being applied at all"
+    );
+
+    let capped: Vec<ElementRecord> = fixture
+        .call("FindElements", &(APP, "", WIDE_ITEM_PREFIX, "", 0i32))
+        .await
+        .expect("FindElements should succeed");
+    assert_eq!(
+        capped.len(),
+        DAEMON_DEFAULT_FIND_RESULTS,
+        "asking for no particular number must give the daemon's default"
+    );
+
+    let five: Vec<ElementRecord> = fixture
+        .call("FindElements", &(APP, "", WIDE_ITEM_PREFIX, "", 5i32))
+        .await
+        .expect("FindElements should succeed");
+    assert_eq!(five.len(), 5);
+
+    // A request above the number available returns everything, which is what
+    // separates "the cap applied" from "the search stopped early".
+    let all: Vec<ElementRecord> = fixture
+        .call("FindElements", &(APP, "", WIDE_ITEM_PREFIX, "", 1000i32))
+        .await
+        .expect("FindElements should succeed");
+    assert_eq!(all.len(), available);
+}
+
+/// `GetTree` descends to the daemon's default depth when asked for none, and
+/// further when asked for more.
+///
+/// As with the result cap, the application reports how deep it actually is, so
+/// the premise — that its tree is deeper than a default walk goes — is
+/// asserted rather than assumed.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn get_tree_stops_at_the_default_depth_and_a_deeper_request_reaches_the_leaf() {
+    let fixture = Fixture::start("Tree").await;
+
+    let nesting = fixture
+        .app
+        .read()
+        .expect("the application reports")
+        .u64("deep_nesting") as u32;
+    assert!(
+        nesting > DAEMON_DEFAULT_TREE_DEPTH,
+        "the application nests {nesting} deep, which does not exceed the daemon's default walk \
+         depth of {DAEMON_DEFAULT_TREE_DEPTH} — this test would pass without any clamping"
+    );
+
+    let default: Vec<TreeNode> = fixture
+        .call("GetTree", &(APP, 0i32))
+        .await
+        .expect("GetTree should succeed");
+    let deepest = default.iter().map(|node| node.depth).max().unwrap_or(0);
+    assert_eq!(
+        deepest, DAEMON_DEFAULT_TREE_DEPTH,
+        "a default walk must stop at the daemon's default depth"
+    );
+    assert!(
+        !default.iter().any(|node| node.name == DEEP_LEAF),
+        "the deep leaf is below the default depth and must not be reached by a default walk"
+    );
+
+    // The root is the application object itself, which is what every element
+    // reference in the tree hangs off.
+    assert_eq!(default[0].depth, 0);
+    assert_eq!(default[0].role, "application");
+    assert_eq!(default[0].name, APP);
+
+    let deep: Vec<TreeNode> = fixture
+        .call("GetTree", &(APP, 30i32))
+        .await
+        .expect("GetTree should succeed");
+    let leaf = deep
+        .iter()
+        .find(|node| node.name == DEEP_LEAF)
+        .unwrap_or_else(|| panic!("a walk 30 deep must reach `{DEEP_LEAF}`"));
+    assert!(
+        leaf.depth > DAEMON_DEFAULT_TREE_DEPTH,
+        "the leaf is at depth {} — it must be below the default depth for this test to mean \
+         anything",
+        leaf.depth
     );
 }
 
 #[tokio::test]
-async fn finds_the_real_search_entry_by_role() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.Find{pid}");
+#[ignore = "spawns a daemon; run via `make test-desktop`"]
+async fn an_unknown_application_reports_app_not_found() {
+    // Deliberately no application and no accessibility precondition: this
+    // asserts what the daemon says about a name nothing answers to, which is
+    // true whether or not anything is registered.
+    harness::require_wayland_session();
+    let bus_name = format!("org.wgaf.Test.A11y.NoApp{}", std::process::id());
+    let _daemon = spawn_daemon("a11y", &bus_name, "");
+    let connection = wait_for_daemon(&bus_name).await;
 
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("find{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
-
-    wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-    let entry = wait_for_search_entry(&connection, &daemon_bus_name).await;
-
-    assert_eq!(entry.role, "search");
-    assert_eq!(entry.name, "Search");
-
-    // Also confirm the daemon's own name/description substring filters work
-    // against this same real element.
-    let by_name: Vec<ElementRecord> = call(
+    let err = accessibility::<Vec<ElementRecord>, _>(
         &connection,
-        &daemon_bus_name,
+        &bus_name,
         "FindElements",
-        &("gtk4-demo", "", "sear", "", 0i32),
+        &("no-such-application-xyz", "", "", "", 0i32),
     )
     .await
-    .expect("FindElements by name substring should succeed");
-    assert!(
-        by_name.iter().any(|e| e.element == entry.element),
-        "expected the search entry among name-substring-filtered results"
-    );
-}
-
-#[tokio::test]
-async fn unknown_app_reports_app_not_found() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.AppNotFound{pid}");
-
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("appnotfound{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
-
-    let err = call::<Vec<ElementRecord>, _>(
-        &connection,
-        &daemon_bus_name,
-        "FindElements",
-        &("nonexistent-app-xyz", "", "", "", 0i32),
-    )
-    .await
-    .expect_err("FindElements against an unknown app should fail");
+    .expect_err("FindElements against an unknown application must fail");
 
     assert_eq!(
         dbus_error_name(&err),
@@ -318,193 +399,278 @@ async fn unknown_app_reports_app_not_found() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Actions — every assertion here terminates in the application's report
+// ---------------------------------------------------------------------------
+
+/// `InvokeAction` activates the button, and **the application says so**.
+///
+/// This is the test the previous suite could not write. Verifying a click by
+/// asking AT-SPI what the widget looks like afterwards lets one bug in the
+/// layer under test produce a pass; the activation counter is written by the
+/// application to a file wgaf never touches.
 #[tokio::test]
-async fn gets_tree_rooted_at_the_real_application_object() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.Tree{pid}");
-
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("tree{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
-
-    wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-
-    // Depth 1: just the application root (depth 0) and its window
-    // (depth 1) — poll since the window may not be attached the instant
-    // the app registers.
-    let mut nodes: Vec<TreeNode> = Vec::new();
-    for _ in 0..100 {
-        nodes = call(
-            &connection,
-            &daemon_bus_name,
-            "GetTree",
-            &("gtk4-demo", 1i32),
-        )
-        .await
-        .expect("GetTree should succeed against the real AT-SPI bus");
-        if nodes.len() >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn invoking_the_default_action_activates_the_button_and_the_application_reports_it() {
+    let fixture = Fixture::start("Click").await;
+    let activate = fixture.element(ROLE_BUTTON, ACTIVATE).await;
 
     assert_eq!(
-        nodes.len(),
-        2,
-        "expected exactly [application, window] at depth<=1, got: {nodes:?}"
+        fixture
+            .app
+            .read()
+            .expect("the application reports")
+            .u64("activate_count"),
+        0,
+        "nothing has activated it yet"
     );
-    assert_eq!(nodes[0].role, "application");
-    assert_eq!(nodes[0].name, "gtk4-demo");
-    assert_eq!(nodes[0].depth, 0);
-    assert_eq!(nodes[1].role, "window");
-    assert_eq!(nodes[1].depth, 1);
+
+    // An empty action name means the element's default action, AT-SPI's own
+    // convention and what `wgaf a11y click` sends.
+    fixture
+        .call::<(), _>("InvokeAction", &(activate, ""))
+        .await
+        .expect("InvokeAction should succeed against a button");
+
+    let report = fixture
+        .app
+        .wait_for("the activation to reach the button", |report| {
+            report.u64("activate_count") == 1
+        })
+        .await;
+    assert_eq!(report.u64("activate_count"), 1);
 }
 
+/// `SetText` replaces the entry's contents, and **the application says so**.
 #[tokio::test]
-async fn get_element_info_rereads_a_real_element_by_ref() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.Info{pid}");
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn setting_text_replaces_the_entry_contents_and_the_application_reports_it() {
+    let fixture = Fixture::start("SetText").await;
+    let entry = fixture.element(ROLE_TEXT_BOX, ENTRY).await;
 
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("info{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
+    const TEXT: &str = "set through the accessibility bus";
+    fixture
+        .call::<(), _>("SetText", &(entry, TEXT))
+        .await
+        .expect("SetText should succeed against an editable entry");
 
-    wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-    let entry = wait_for_search_entry(&connection, &daemon_bus_name).await;
-
-    let info: ElementRecord = call(
-        &connection,
-        &daemon_bus_name,
-        "GetElementInfo",
-        &(entry.element.clone(),),
-    )
-    .await
-    .expect("GetElementInfo should succeed against the real element");
-    assert_eq!(info.role, "search");
-    assert_eq!(info.name, "Search");
+    fixture
+        .app
+        .wait_for("the entry to hold the text that was set", |report| {
+            report.str("entry_text") == TEXT
+        })
+        .await;
 }
 
+/// An element offering no `Action` and no `EditableText` refuses both, with the
+/// daemon's own named error rather than a raw D-Bus fault.
+///
+/// The target is a **container**, not a label. A `GtkLabel` implements `Action`
+/// and can be clicked successfully — measured, after a first version of this
+/// suite assumed otherwise — so a label cannot stand for "an element that
+/// cannot be clicked".
 #[tokio::test]
-async fn invoke_action_on_a_real_widget_with_zero_actions_reports_action_not_supported() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.InvokeAction{pid}");
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn an_inert_element_refuses_both_an_action_and_a_text_change() {
+    let fixture = Fixture::start("Inert").await;
+    let inert = fixture.element(ROLE_GROUP, INERT).await;
 
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("invokeaction{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
-
-    wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-    // The real search entry implements `org.a11y.atspi.Action` but (in this
-    // GTK4 version) advertises zero actions — confirmed by hand with
-    // `gdbus` before writing this test (see module docs).
-    let entry = wait_for_search_entry(&connection, &daemon_bus_name).await;
-
-    let err = call::<(), _>(
-        &connection,
-        &daemon_bus_name,
-        "InvokeAction",
-        &(entry.element, ""),
-    )
-    .await
-    .expect_err("InvoceAction on a zero-action element should fail");
-
+    let action_err = fixture
+        .call::<(), _>("InvokeAction", &(inert.clone(), ""))
+        .await
+        .expect_err("an inert element must refuse an action");
     assert_eq!(
-        dbus_error_name(&err),
+        dbus_error_name(&action_err),
+        Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED)
+    );
+
+    let text_err = fixture
+        .call::<(), _>("SetText", &(inert, "nothing should happen"))
+        .await
+        .expect_err("an element without EditableText must refuse a text change");
+    assert_eq!(
+        dbus_error_name(&text_err),
         Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED)
     );
 }
 
+/// The read-only entry refuses a text change **and is unchanged afterwards**.
+///
+/// Both halves are asserted deliberately. This element implements
+/// `EditableText` and declines by returning failure, which is a different
+/// branch of the daemon's handling from an element that never offered the
+/// interface — and an implementation that reported the error while writing the
+/// text anyway would pass a test that checked only the error.
 #[tokio::test]
-async fn set_text_on_a_real_read_only_editable_text_widget_reports_action_not_supported() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.SetText{pid}");
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn setting_text_on_the_read_only_entry_is_refused_and_leaves_it_unchanged() {
+    let fixture = Fixture::start("ReadOnly").await;
+    let readonly = fixture.element(ROLE_TEXT_BOX, READONLY).await;
 
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("settext{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
-
-    wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-
-    // Find the demo's embedded, read-only source-code view: implements
-    // `org.a11y.atspi.EditableText` but its real `SetTextContents` genuinely
-    // returns `false` (confirmed by hand with `gdbus` — see module docs) —
-    // this is real negative-path coverage of the `SetText` D-Bus call
-    // against a real toolkit, not a synthetic error.
-    let mut text_box = None;
-    for _ in 0..100 {
-        let elements: Vec<ElementRecord> = call(
-            &connection,
-            &daemon_bus_name,
-            "FindElements",
-            &("gtk4-demo", "text box", "", "", 0i32),
-        )
+    let err = fixture
+        .call::<(), _>("SetText", &(readonly, "this must not be written"))
         .await
-        .expect("FindElements should succeed");
-        if let Some(e) = elements.into_iter().next() {
-            text_box = Some(e);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let text_box = text_box.expect("gtk4-demo should expose a `text box`-role element");
+        .expect_err("a read-only entry must refuse a text change");
+    assert_eq!(
+        dbus_error_name(&err),
+        Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED)
+    );
 
-    let err = call::<(), _>(
-        &connection,
-        &daemon_bus_name,
-        "SetText",
-        &(
-            text_box.element,
-            "hello from wgaf's accessibility integration test",
+    // The application rewrites its report whenever either entry changes, so a
+    // write that got through would have produced a new report by now. Reading
+    // once is enough: there is nothing to wait for, and waiting for an absence
+    // is how a test becomes slow rather than how it becomes correct.
+    assert_eq!(
+        fixture
+            .app
+            .read()
+            .expect("the application reports")
+            .str("readonly_text"),
+        READONLY_TEXT,
+        "the refused text was written anyway"
+    );
+}
+
+/// `FocusElement` completes and surfaces a failure against this toolkit.
+///
+/// **This does not assert that focus was grabbed, because on GTK4 it cannot
+/// be.** The toolkit's AT-SPI bridge answers `Component.GrabFocus` with
+/// `org.freedesktop.DBus.Error.NotSupported` for every widget — established
+/// against `gtk4-demo` under the previous suite and re-measured here on GTK
+/// 4.22.4, so it is a property of GTK rather than of this application.
+///
+/// What is asserted is what a user can still rely on: the call returns rather
+/// than hanging, it reports failure rather than claiming success, and the
+/// application's focus is left where it was. The application reports
+/// `focused_widget` so that the day the bridge does implement this, the
+/// assertion to write is already obvious — and `issues.md` carries the fact
+/// that wgaf currently passes the toolkit's refusal through as a raw D-Bus
+/// error with an empty message.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn focus_element_completes_against_this_gtk4_bridge() {
+    let fixture = Fixture::start("Focus").await;
+    let target = fixture.element(ROLE_BUTTON, FOCUS_TARGET).await;
+
+    let before = fixture.app.read().expect("the application reports");
+    assert_eq!(
+        before.json().get("focused_widget").and_then(|v| v.as_str()),
+        Some("entry"),
+        "the application focuses its entry at startup, so a successful grab elsewhere would be \
+         visible as a change"
+    );
+
+    let result = fixture.call::<(), _>("FocusElement", &(target,)).await;
+
+    match result {
+        Ok(()) => panic!(
+            "FocusElement succeeded against a GTK4 widget. That is a better outcome than this \
+             test expects — GTK's bridge has answered NotSupported on every version measured — \
+             so update this test and the entry in issues.md rather than silencing it."
         ),
-    )
-    .await
-    .expect_err("SetText on the real read-only text box should fail");
+        Err(err) => {
+            // The point is that it came back at all, and as a failure. The
+            // specific error name is the toolkit's, not wgaf's, so pinning it
+            // would be pinning GTK.
+            eprintln!("FocusElement reported, as expected on GTK4: {err}");
+        }
+    }
 
     assert_eq!(
-        dbus_error_name(&err),
-        Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED)
+        fixture
+            .app
+            .read()
+            .expect("the application reports")
+            .json()
+            .get("focused_widget")
+            .and_then(|v| v.as_str()),
+        Some("entry"),
+        "a refused focus grab must not have moved the focus"
     );
 }
 
-/// Documented gap (investigated, not assumed): every widget tried in
-/// `gtk4-demo`'s real tree returns `NotSupported` from `Component.GrabFocus`
-/// in this environment's GTK4/AT-SPI bridge version — see the module docs
-/// for the breadth-first scan that established this. This test confirms
-/// `FocusElement` completes and surfaces *some* error against a real
-/// `Component`-interface element, without claiming a successful focus grab
-/// was demonstrated.
+// ---------------------------------------------------------------------------
+// Stale references
+// ---------------------------------------------------------------------------
+
+/// A reference to a widget the application destroyed stops answering.
+///
+/// The application destroys it on request — activating its remove button drops
+/// the label and the last reference to it — so this is a genuinely stale
+/// reference in a **live** application, which is the case a script hits when a
+/// dialog closes between finding an element and using it.
+///
+/// **It is asserted as a failure rather than as `ElementNotFound`**, because
+/// the daemon does not currently produce that here: GTK's bridge answers
+/// `org.freedesktop.DBus.Error.UnknownMethod`, which
+/// `is_stale_object_error_name` does not recognise. Filed in `issues.md`. When
+/// that is fixed, tighten this to the named error — the next test shows what
+/// that assertion looks like.
 #[tokio::test]
-async fn focus_element_completes_against_a_real_component_element() {
-    let pid = std::process::id();
-    let daemon_bus_name = format!("org.wgaf.Test.A11y.Focus{pid}");
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn a_reference_to_a_destroyed_widget_stops_answering() {
+    let fixture = Fixture::start("Destroyed").await;
+    let disposable = fixture.element(ROLE_LABEL, DISPOSABLE).await;
+    let remove = fixture.element(ROLE_BUTTON, REMOVE).await;
 
-    let _lock = lock_a11y_test().await;
-    let _demo = spawn_gtk4_demo();
-    let _daemon = spawn_daemon(&daemon_bus_name, &format!("focus{pid}"));
-    let connection = wait_for_daemon(&daemon_bus_name).await;
+    // It answers while it exists — otherwise a later failure would prove
+    // nothing about the destruction.
+    fixture
+        .call::<ElementRecord, _>("GetElementInfo", &(disposable.clone(),))
+        .await
+        .expect("the element must answer before it is destroyed");
 
-    wait_for_gtk4_demo_app(&connection, &daemon_bus_name).await;
-    let entry = wait_for_search_entry(&connection, &daemon_bus_name).await;
+    fixture
+        .call::<(), _>("InvokeAction", &(remove, ""))
+        .await
+        .expect("InvokeAction should succeed against the remove button");
+    fixture
+        .app
+        .wait_for("the application to drop the disposable label", |report| {
+            !report.bool("disposable_present")
+        })
+        .await;
 
-    let result = call::<(), _>(
-        &connection,
-        &daemon_bus_name,
-        "FocusElement",
-        &(entry.element,),
-    )
-    .await;
+    fixture
+        .call::<ElementRecord, _>("GetElementInfo", &(disposable,))
+        .await
+        .expect_err("a destroyed element must not go on answering");
+}
 
-    // Not asserting success (see this test's doc comment) — just that the
-    // daemon completed the round trip instead of hanging, and that if it
-    // failed, it wasn't silently swallowed as a panic.
-    if let Err(err) = result {
-        eprintln!(
-            "FocusElement against the real search entry returned an error (expected in this \
-             environment, see module docs): {err}"
+/// A reference outliving its application reports `ElementNotFound`.
+///
+/// This is the path the daemon's named error is actually produced on today: a
+/// gone application means a gone bus name, which arrives as
+/// `ServiceUnknown` and is classified correctly.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn a_reference_outliving_its_application_reports_element_not_found() {
+    let mut fixture = Fixture::start("Exited").await;
+    let entry = fixture.element(ROLE_TEXT_BOX, ENTRY).await;
+
+    fixture.app.stop();
+
+    // The bus name does not disappear the instant the process does, so the
+    // first call after the kill can still be answered by a connection that has
+    // not been reaped yet. Retry until the daemon reports the element gone, or
+    // fail with whatever it said instead.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let result = fixture
+            .call::<ElementRecord, _>("GetElementInfo", &(entry.clone(),))
+            .await;
+
+        if let Err(err) = &result
+            && dbus_error_name(err) == Some(wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND)
+        {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the daemon never reported the element of an exited application as not found; \
+             last answer: {result:?}"
         );
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

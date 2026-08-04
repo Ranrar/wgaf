@@ -93,9 +93,9 @@ jobs:
       # a comment at the top of the file is a precondition that gets violated
       # silently; this makes the workflow state it where it is needed.
       #
-      # The accessibility tests are not here: they drive a real gtk4-demo
-      # window, so run them on your desktop with
-      # `cargo test -p wgaf-daemon --test accessibility`.
+      # The accessibility tests are not here: they open a real GTK4 window and
+      # need a live AT-SPI accessibility bus, so they run on a desktop through
+      # `make test-desktop` alongside the other suites that drive one.
       - name: Integration tests (real /dev/uinput)
         if: ${{ env.ACT }}
         run: |

@@ -12,6 +12,7 @@ own lockfile and a build step of their own.
 |---|---|
 | `window-test` | A fixed set of three windows: `wgaf window list`, `focus`, `resize`, `close` |
 | `input-test` | A text entry and a button: `wgaf type`, `key press`/`release`, `mouse click`/`move`/`scroll` |
+| `accessibility-test` | A tree of elements with fixed accessible names: `wgaf a11y find`, `tree`, `info`, `click`, `focus`, `set-text` |
 
 ## Running the tests that use them
 
@@ -19,10 +20,8 @@ own lockfile and a build step of their own.
 make test-desktop
 ```
 
-One command: it builds the applications and runs the two suites that drive them
-— `wgaf-daemon/tests/keyboard_coverage.rs` and
-`wgaf-daemon/tests/window_management.rs` — through the shared harness in
-`wgaf-daemon/tests/harness/`.
+One command: it builds the applications and runs every suite that drives them,
+through the shared harness in `wgaf-daemon/tests/harness/`.
 
 They run against your live session, which is the point, and it takes a few
 seconds. Two things follow from that. They are `#[ignore]`d, so a plain
@@ -30,9 +29,14 @@ seconds. Two things follow from that. They are `#[ignore]`d, so a plain
 sharing one keyboard focus would each read the other's keystrokes.
 
 Anything they need of the machine is checked up front — a Wayland session, a
-writable `/dev/uinput`, the GNOME Shell Extension, a built application — and
-reported as the missing requirement rather than as whatever symptom shows up
-first.
+writable `/dev/uinput`, an accessibility bus, the GNOME Shell Extension, a built
+application — and reported as the missing requirement rather than as whatever
+symptom shows up first.
+
+`wgaf-daemon/tests/accessibility.rs` is the one suite here that synthesizes no
+input at all: AT-SPI reaches an application directly, so it needs no keyboard
+focus and cannot type into anything of yours. It still opens windows, so it
+belongs with the rest.
 
 ## Why these exist
 
@@ -81,6 +85,14 @@ writing a new application, and use it rather than inventing a second shape.
 
 `app` and `seq` are the envelope every report carries; everything else is the
 application's own state.
+
+`accessibility-test`'s state is what makes accessibility testable under the
+first rule at all. Every mutating `wgaf a11y` command has a field here that only
+moves if the command actually reached the widget — `activate_count` for `click`,
+`entry_text` for `set-text`, `focused_widget` for `focus`. It also reports
+`deep_nesting` and `wide_item_count`, which describe the shape of its own tree,
+so a test asserting that wgaf's default walk stops short of the bottom can check
+that premise instead of assuming it.
 
 `input-test`'s state is shaped for diagnosis rather than convenience. It reports
 the entry's text *and* the raw key events side by side, because an empty event
@@ -131,6 +143,24 @@ Some things are not missing features and will not be added:
 - **A click aimed at a particular widget.** wgaf has no absolute pointer
   positioning yet, so a test cannot put the pointer on the button. `input-test`
   captures clicks across the whole window for that reason.
+- **A successful `wgaf a11y focus`.** GTK4's AT-SPI bridge answers
+  `Component.GrabFocus` with `NotSupported` for every widget, on every version
+  measured so far, so no GTK4 application can demonstrate a focus grab.
+  `accessibility-test` reports `focused_widget` anyway, so the assertion is
+  ready the day that changes.
+
+Three things about the toolkit are worth knowing before writing an
+accessibility test, all of them measured on GTK 4.22.4 after a first draft
+assumed otherwise:
+
+- **A `GtkLabel` can be clicked through AT-SPI.** It implements `Action`, so it
+  cannot stand for "an element that refuses an action". `accessibility-test`
+  uses a container for that.
+- **A `GtkCheckButton` cannot.** It implements no `Action` at all, so a check
+  box cannot be toggled through the accessibility bus.
+- **A button's accessible name is its visible label**, whatever name is set on
+  it explicitly — and its child label carries the same name, so a search by name
+  alone matches both. Filter by role as well.
 
 One thing that *is* comparable, contrary to what this file previously said:
 **the size an application reports and the size `wgaf window list` reports match

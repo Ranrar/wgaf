@@ -184,7 +184,8 @@ test-apps: check-gtk
 # some window other than the terminal you started it from.
 test-desktop: test-apps
 	cargo test -p wgaf-daemon --test keyboard_coverage --test keyboard_layout \
-		--test window_management --test pointer --test combined -- --ignored --test-threads=1
+		--test window_management --test pointer --test combined \
+		--test accessibility -- --ignored --test-threads=1
 	cargo test -p wgaf-daemon --test kill_switch -- --ignored --test-threads=1 \
 		stop_during_a_long_type_text
 

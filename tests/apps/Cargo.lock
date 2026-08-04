@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "accessibility-test"
+version = "0.8.0"
+dependencies = [
+ "clap",
+ "gtk4",
+ "report",
+ "serde",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
