@@ -172,6 +172,55 @@ Transient surfaces — tooltips, open menus, combo-box dropdowns — are
 deliberately left out, since they aren't things you'd sensibly focus, move,
 resize, or close. If a menu is open when you run this, it won't be listed.
 
+### `wgaf window watch`
+
+Streams window events as they happen, until you stop it with Ctrl-C. One line
+per event:
+
+```
+created       242
+focus-changed 242
+closed        242
+```
+
+Three things are reported: a window opening, a window closing, and keyboard
+focus moving to a window.
+
+**Each event carries the window's id and nothing else.** Run `wgaf window list`
+if you need the title or geometry. That is not an oversight: a window has no
+title and no size at the instant it is created — the compositor announces it
+before the application has drawn anything — so a title reported here would be
+blank. Looking it up afterwards also gives you an honest answer when the window
+has already gone.
+
+With `--json`, each event is a single line of JSON rather than one big array:
+
+```json
+{"event":"created","id":242}
+{"event":"focus-changed","id":242}
+```
+
+That is deliberate, so it can be piped into something that reads a line at a
+time:
+
+```sh
+wgaf window watch --json | while read -r line; do
+    echo "$line" | jq -r '"\(.event) \(.id)"'
+done
+```
+
+An array would only be closed when the command ended, so nothing downstream
+would see anything until you stopped it — and nothing at all if it were killed.
+
+**There is no replay.** You see what happens from the moment the command starts.
+Anything before that is gone and cannot be asked for; `wgaf window list` is the
+snapshot, this is the feed.
+
+Needs the GNOME Shell extension installed and enabled, and the `WatchWindows`
+permission. If your policy denies it, the command says so and names
+`permissions.toml` rather than sitting there showing nothing — on a quiet
+desktop those two look identical, which is why it fails out loud.
+
 ### `wgaf window focus <id>`
 
 Focuses (activates) the window with the given id.

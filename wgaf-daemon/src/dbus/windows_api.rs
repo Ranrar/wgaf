@@ -14,8 +14,10 @@ use zbus::message::Header;
 
 use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
 
+use futures_util::StreamExt;
+
 use crate::permissions::{Capability, PermissionError, PermissionGate};
-use crate::windows::{WindowManager, WindowsError};
+use crate::windows::{WindowEvent, WindowManager, WindowsError};
 
 /// D-Bus error names for `org.wgaf.Windows1`, matching
 /// `wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND`/
@@ -85,6 +87,112 @@ impl WindowsApi {
 }
 
 // Interface name must match `wgaf_common::WINDOWS_INTERFACE_NAME` (zbus
+/// How long to wait before re-subscribing after the extension's event stream
+/// ends or could not be established.
+///
+/// Seconds rather than milliseconds: the thing being waited for is a human
+/// enabling an extension or logging back in, not a transient blip, and a tight
+/// retry would spend the daemon's life introspecting a bus name that is not
+/// there.
+const RESUBSCRIBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Re-emits the extension's window signals on `org.wgaf.Windows1`, forever.
+///
+/// # Why the daemon re-emits instead of the CLI subscribing upstream
+///
+/// The CLI only ever talks to the daemon. Letting it subscribe to the extension
+/// directly would duplicate the availability check, the error translation and
+/// the `WindowRecordDict` → `WindowRecord` conversion in a second place, and
+/// would mean a `wgaf` command that works without the daemon running — which is
+/// not a shape this project has anywhere else.
+///
+/// # The re-subscribe loop replaces a bet on `NameOwnerChanged`
+///
+/// Disabling and re-enabling the extension changes its unique bus name. `zbus`
+/// is documented to track `NameOwnerChanged` for well-known-name destinations,
+/// so the streams *should* survive that — but "should" is how a watch silently
+/// stops working, and it is the single most likely source of that failure. This
+/// loop re-subscribes whenever the stream ends, which is correct whether or not
+/// the tracking works, and costs one wakeup every few seconds in the case where
+/// the extension is genuinely absent.
+///
+/// It also covers the extension not being installed when the daemon starts and
+/// appearing later, which is the same no-restart-required behaviour
+/// `ensure_extension_available` already gives every other window call.
+///
+/// # No bounded channel, deliberately
+///
+/// The plan called for one with a drop-and-warn policy, on the reasoning that a
+/// burst of window events must not block the daemon's other interfaces. It is
+/// not needed here and would be a queue in front of a queue: **emitting a D-Bus
+/// signal does not wait for any consumer** — it is fire-and-forget from the
+/// sender — so a slow or absent `wgaf window watch` cannot apply back-pressure.
+/// The only place a burst can pile up is the upstream stream from the
+/// extension, and `zbus` already bounds that and drops from it. Adding a channel
+/// would move where events are discarded without changing whether they are.
+pub async fn forward_window_events(
+    manager: Arc<WindowManager>,
+    emitter: zbus::object_server::SignalEmitter<'static>,
+) {
+    loop {
+        match manager.subscribe_events().await {
+            Ok(stream) => {
+                tracing::debug!("subscribed to the extension's window signals");
+                pump_window_events(stream, &emitter).await;
+                // Reached only when the stream ends, which means the extension
+                // went away. Logged at info because it is a real change in what
+                // the daemon can report, and a user chasing a dead `watch`
+                // needs it to be visible at the default level.
+                tracing::info!(
+                    "the extension's window signal stream ended; will re-subscribe in {}s",
+                    RESUBSCRIBE_INTERVAL.as_secs()
+                );
+            }
+            Err(err) => {
+                // Debug, not warn: on a session with no extension installed this
+                // is the steady state, and warning every few seconds forever
+                // would make the log useless for finding real faults.
+                tracing::debug!(
+                    error = %err,
+                    "cannot subscribe to window events yet; will retry in {}s",
+                    RESUBSCRIBE_INTERVAL.as_secs()
+                );
+            }
+        }
+
+        tokio::time::sleep(RESUBSCRIBE_INTERVAL).await;
+    }
+}
+
+/// Drains one subscription, emitting each event, until the stream ends.
+async fn pump_window_events(
+    stream: impl futures_util::Stream<Item = WindowEvent>,
+    emitter: &zbus::object_server::SignalEmitter<'_>,
+) {
+    let mut stream = std::pin::pin!(stream);
+
+    while let Some(event) = stream.next().await {
+        let emitted = match event {
+            WindowEvent::Created(id) => WindowsApi::window_created(emitter, id).await,
+            WindowEvent::Closed(id) => WindowsApi::window_closed(emitter, id).await,
+            WindowEvent::FocusChanged(id) => WindowsApi::window_focus_changed(emitter, id).await,
+        };
+
+        // A failed emission is not worth ending the subscription over: the next
+        // event may well succeed, and dropping the whole stream because one
+        // signal could not be written would turn a transient bus problem into a
+        // permanently dead watch.
+        if let Err(err) = emitted {
+            tracing::warn!(
+                error = %err,
+                kind = event.kind(),
+                window = event.window_id(),
+                "failed to re-emit a window event"
+            );
+        }
+    }
+}
+
 // requires a string literal here, so it can't reference the constant
 // directly) — see the existing convention in `dbus/mod.rs`.
 #[interface(name = "org.wgaf.Windows1")]
@@ -93,6 +201,73 @@ impl WindowsApi {
         let windows = self.manager.list_windows().await?;
         Ok(windows.into_iter().map(WindowRecordDict::from).collect())
     }
+
+    /// Asks permission to watch, before a caller starts consuming the signals
+    /// below. `wgaf window watch` calls this first and reports what it says.
+    ///
+    /// # Why a method exists at all for a signal-based feature
+    ///
+    /// D-Bus signals are **broadcast**: any client on the session bus can add a
+    /// match rule and receive them without the daemon being asked. So there is
+    /// nowhere to put a check on the delivery path, and this method is where the
+    /// policy is consulted and the audit line written instead.
+    ///
+    /// **That makes `WatchWindows` a policy statement, not an enforcement
+    /// boundary**, and it must not be described as one. A process that ignores
+    /// this method and subscribes to the bus directly still receives the events.
+    /// The same is true of `input_max_events_per_second` — anything running as
+    /// this user can open `/dev/uinput` without involving wgaf — and the honest
+    /// framing is the same: it makes the intent explicit, writes it down in the
+    /// audit trail, and lets a user say "no" in a file, rather than making the
+    /// events unreachable.
+    ///
+    /// What it does buy is real: a denied watch **fails loudly and names the
+    /// file**, instead of a caller sitting on a silent stream that is
+    /// indistinguishable from an idle desktop.
+    async fn watch_windows(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::WatchWindows, connection, &header)
+            .await?;
+
+        // Surfaces an absent extension here rather than leaving the caller on a
+        // stream that will never carry anything. Without this, "the extension is
+        // not installed" and "nothing has happened yet" look identical.
+        self.manager.probe_available().await?;
+        Ok(())
+    }
+
+    /// A window appeared. Carries its id only.
+    ///
+    /// **Not the record**, though the extension's own signal does carry one.
+    /// Measured against GNOME Shell 50.1: the extension emits inside Mutter's
+    /// `window-created` handler, before the client has set a title or committed
+    /// a surface, so every record arrives blank — `title: ""`, `app_id: ""`,
+    /// `0x0 at (0,0)`. Call `ListWindows` for detail, which also answers
+    /// honestly when the window has already gone. See
+    /// [`crate::windows::WindowEvent`] for the full reasoning.
+    #[zbus(signal)]
+    pub async fn window_created(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
+
+    /// The window with this id went away.
+    #[zbus(signal)]
+    pub async fn window_closed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
+
+    /// Keyboard focus moved to the window with this id.
+    #[zbus(signal)]
+    pub async fn window_focus_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
 
     async fn focus_window(
         &self,

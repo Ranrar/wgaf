@@ -8,6 +8,7 @@
 pub mod display_config;
 mod proxy;
 
+use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::{OnceCell, RwLock};
 use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
@@ -38,6 +39,17 @@ const REQUIRED_EXTENSION_METHODS: &[&str] = &[
     "WarpPointer",
     "GetPointer",
 ];
+
+/// Signals the extension must declare, checked alongside the methods above.
+///
+/// **A missing signal fails worse than a missing method**, which is why
+/// ADR-0002 requires this list as well. An outdated extension without these
+/// answers every method call perfectly and simply never emits: the daemon
+/// subscribes successfully, `wgaf window watch` starts and prints nothing, and
+/// on an idle desktop that is exactly what a working watch looks like. A missing
+/// *method* at least fails at the moment it is called.
+const REQUIRED_EXTENSION_SIGNALS: &[&str] =
+    &["WindowCreated", "WindowClosed", "WindowFocusChanged"];
 
 /// Errors surfaced by the daemon's window-management layer.
 #[derive(Debug, Error)]
@@ -98,6 +110,70 @@ impl WindowsError {
             bus_name: bus_name.to_string(),
             object_path: object_path.to_string(),
             interface: interface.to_string(),
+        }
+    }
+}
+
+/// One thing that happened to a window, as the extension reported it.
+///
+/// Deliberately mirrors the extension's three signals one-for-one rather than
+/// inventing a richer vocabulary on top. The daemon does not know about window
+/// states the extension does not announce, and a variant the compositor cannot
+/// produce would be a promise nothing keeps.
+///
+/// # Every variant carries an id and nothing else — measured, not assumed
+///
+/// `Created` originally carried the whole [`WindowRecord`], on the reasoning
+/// that a consumer nearly always wants the title and geometry and that fetching
+/// them afterwards is a race the window can lose by closing first.
+///
+/// **That was wrong, and a live run against GNOME Shell 50.1 showed it.** The
+/// extension emits `WindowCreated` synchronously inside Mutter's
+/// `window-created` handler, which is the earliest moment a window exists —
+/// before the client has set a title or committed a surface. Every record
+/// arrived as `title: "", app_id: "", 0x0 at (0,0)`, on all three of
+/// `window-test`'s windows. The payload cost bytes and carried nothing.
+///
+/// So the record is dropped and the id kept. A consumer that wants detail calls
+/// `ListWindows`, which is a round trip it controls — and which can honestly
+/// answer "that window is already gone", where a pre-filled record could only
+/// have lied.
+///
+/// **The alternative was rejected deliberately.** Having the daemon poll
+/// `ListWindows` until the record filled would produce a better payload and
+/// reintroduce the readiness-gate race this project has been bitten by twice,
+/// with a new ordering hazard on top: a short-lived window could emit `Closed`
+/// before its own `Created`, or a `Created` that never arrives at all. Ordering
+/// is worth more than convenience the caller can get for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowEvent {
+    /// A window appeared. Its detail is not available yet — see above.
+    Created(u32),
+    /// The window with this id went away.
+    Closed(u32),
+    /// Keyboard focus moved to the window with this id.
+    FocusChanged(u32),
+}
+
+impl WindowEvent {
+    /// The event name as it appears on `org.wgaf.Windows1` and in `--json`.
+    ///
+    /// One definition, so the D-Bus signal, the CLI's human output and its JSON
+    /// cannot drift into three spellings of the same event.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            WindowEvent::Created(_) => "created",
+            WindowEvent::Closed(_) => "closed",
+            WindowEvent::FocusChanged(_) => "focus-changed",
+        }
+    }
+
+    /// The id of the window the event is about.
+    pub const fn window_id(&self) -> u32 {
+        match self {
+            WindowEvent::Created(id) | WindowEvent::Closed(id) | WindowEvent::FocusChanged(id) => {
+                *id
+            }
         }
     }
 }
@@ -267,6 +343,18 @@ impl WindowManager {
             )));
         }
 
+        if let Some(missing) = REQUIRED_EXTENSION_SIGNALS
+            .iter()
+            .find(|signal| !xml.contains(&format!("signal name=\"{signal}\"")))
+        {
+            return Err(unavailable(format!(
+                "extension is running but its `{}` interface declares no `{missing}` signal — the \
+                 installed wgaf GNOME Shell Extension is older than this daemon and needs \
+                 updating. Window watching would start and silently report nothing until it does",
+                self.extension_interface_name
+            )));
+        }
+
         Ok(())
     }
 
@@ -298,6 +386,68 @@ impl WindowManager {
         self.ensure_extension_available().await?;
         let dicts = self.proxy.list_windows().await?;
         Ok(dicts.into_iter().map(WindowRecordDict::into).collect())
+    }
+
+    /// Subscribes to the extension's window signals as one typed stream.
+    ///
+    /// # All three are subscribed before this returns
+    ///
+    /// Not an implementation detail — it is the contract. `zbus` installs the
+    /// bus match rule when the signal stream is *created*, so anything emitted
+    /// between subscribing to the first stream and the third would reach only
+    /// some of them. Subscribing all three up front and merging afterwards
+    /// closes that window. `permissions/notify.rs` shipped the opposite ordering
+    /// once — it subscribed after the call that triggers the reply — and the
+    /// symptom was a user's deliberate click being silently dropped.
+    ///
+    /// # The creation record is discarded on purpose
+    ///
+    /// The extension's `WindowCreated` carries a full `WindowRecordDict`, and it
+    /// is empty at the moment it fires — see [`WindowEvent`] for the
+    /// measurement. Only the id survives the conversion. Reading the record here
+    /// and passing it on would hand callers blank titles that look like a wgaf
+    /// bug rather than a property of when the signal is emitted.
+    ///
+    /// # No replay, and no buffering before the first poll
+    ///
+    /// D-Bus signals are fire-and-forget. A caller that subscribes late has
+    /// missed everything prior and there is no way to ask for it. `zbus`'s
+    /// streams do buffer once created, so events are not lost between this
+    /// returning and the first `next()`, but nothing before it exists at all.
+    pub async fn subscribe_events(
+        &self,
+    ) -> Result<impl futures_util::Stream<Item = WindowEvent> + Send + use<>, WindowsError> {
+        self.ensure_extension_available().await?;
+
+        let created = self.proxy.receive_window_created().await?;
+        let closed = self.proxy.receive_window_closed().await?;
+        let focus_changed = self.proxy.receive_window_focus_changed().await?;
+
+        // A signal whose body does not decode is dropped rather than ending the
+        // stream. The alternative — treating it as fatal — would let one
+        // malformed emission from a mismatched extension silently stop every
+        // later event, which is the "watch quietly stopped working" failure this
+        // whole item has to avoid. The drift test is what catches a genuine
+        // shape change, at `cargo test` rather than at runtime.
+        let created = created.filter_map(|signal| async move {
+            signal.args().ok().map(|args| {
+                // Only the id is kept; the rest of the record is blank this
+                // early. Converting through `WindowRecord` rather than reaching
+                // into the dict keeps one definition of how the wire shape maps.
+                WindowEvent::Created(WindowRecord::from(args.window.clone()).id)
+            })
+        });
+        let closed = closed.filter_map(|signal| async move {
+            signal.args().ok().map(|a| WindowEvent::Closed(a.id))
+        });
+        let focus_changed = focus_changed.filter_map(|signal| async move {
+            signal.args().ok().map(|a| WindowEvent::FocusChanged(a.id))
+        });
+
+        Ok(futures_util::stream::select(
+            futures_util::stream::select(created, closed),
+            focus_changed,
+        ))
     }
 
     pub async fn focus_window(&self, id: u32) -> Result<(), WindowsError> {

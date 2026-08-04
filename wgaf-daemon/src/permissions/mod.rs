@@ -76,19 +76,33 @@ pub use policy::{Capability, PolicyMap, PolicyValue};
 pub enum PermissionError {
     /// The configured policy (`permissions.toml`) denies this capability
     /// outright.
-    #[error(
-        "operation `{capability}` denied by permission policy — see `permissions.toml`; an \
-         administrator can change this capability's policy value to `Allow` or `Prompt` if this \
-         restriction was unintentional"
-    )]
+    ///
+    /// # Worded as a decision, not a fault
+    ///
+    /// A denial is the permission system working, not failing: the policy said
+    /// no and wgaf obeyed it. So the message states what happened and where the
+    /// rule lives, and stops there. It used to continue "an administrator can
+    /// change this capability's policy value to `Allow` or `Prompt` if this
+    /// restriction was unintentional", which reads as an apology for a
+    /// malfunction and guesses that the reader did not mean it — on a tool whose
+    /// policy file is almost always edited by the person now running the
+    /// command.
+    ///
+    /// **The file is still named**, and deliberately: ADR-0003 requires a denied
+    /// watch to say so *and* name `permissions.toml`, because the alternative is
+    /// a user who cannot find the rule that stopped them. What was dropped is
+    /// the advice, not the location — the audit trail carries the rest.
+    #[error("`{capability}` denied by permission policy (permissions.toml)")]
     Denied { capability: &'static str },
 
     /// The capability is configured as `Prompt`, and the user declined (or
     /// didn't respond to, within the timeout) the resulting notification.
-    #[error(
-        "operation `{capability}` denied: the user declined the permission prompt (or it timed \
-         out)"
-    )]
+    ///
+    /// The three cases — clicked Deny, dismissed, timed out — are deliberately
+    /// one outcome here, because the gate is fail-closed and treats them
+    /// identically. The message says so rather than claiming the user chose,
+    /// since on a timeout nobody did.
+    #[error("`{capability}` denied: the prompt was declined or went unanswered")]
     DeniedByPrompt { capability: &'static str },
 
     /// A D-Bus-level failure while resolving the caller's identity (for

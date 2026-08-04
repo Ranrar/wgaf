@@ -197,3 +197,34 @@ where
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
+
+/// Prints one record of a stream as a single line of JSON, and flushes.
+///
+/// # Why this is not [`print_json`]
+///
+/// A streaming command emits **newline-delimited JSON — one object per line,
+/// never a JSON array.** An array cannot be produced incrementally: its closing
+/// bracket only arrives when the stream ends, and a command like
+/// `wgaf window watch` is expected to run until interrupted. A consumer piping
+/// it into `jq` would get nothing at all until the process died, and nothing
+/// ever if it was killed. One object per line is readable a line at a time,
+/// which is the whole point of a stream.
+///
+/// Compact rather than pretty for the same reason: pretty-printing spreads one
+/// record over several lines, and "one line per event" is what makes the output
+/// greppable and splittable.
+///
+/// The explicit flush matters when stdout is a pipe. Rust line-buffers a
+/// terminal but block-buffers a pipe, so without it `wgaf window watch --json |
+/// jq` would sit silent until 8 KB had accumulated — which on an idle desktop
+/// is indistinguishable from a watch that is not working.
+pub fn print_json_line<T>(value: &T) -> Result<(), Box<dyn std::error::Error>>
+where
+    T: serde::Serialize + ?Sized,
+{
+    use std::io::Write;
+
+    println!("{}", serde_json::to_string(value)?);
+    std::io::stdout().flush()?;
+    Ok(())
+}

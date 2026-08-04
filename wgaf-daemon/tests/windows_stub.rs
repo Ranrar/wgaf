@@ -98,6 +98,35 @@ struct StubExtension {
 
 #[interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
 impl StubExtension {
+    /// The three window signals, declared so the stub looks like a *current*
+    /// extension to the daemon's member-presence check.
+    ///
+    /// Not optional decoration: `REQUIRED_EXTENSION_SIGNALS` makes an extension
+    /// without these fail `ensure_extension_available`, so a stub that omitted
+    /// them would be rejected as outdated and every test here would fail with
+    /// `ExtensionUnavailable`. That is the check doing its job — it caught this
+    /// stub the moment the signal requirement landed.
+    ///
+    /// Declaring them also makes them emittable, which is what lets a test drive
+    /// the daemon's re-emission path with no GNOME Shell anywhere.
+    #[zbus(signal)]
+    async fn window_created(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        window: WindowRecordDict,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn window_closed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn window_focus_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
+
     fn warp_pointer(&self, x: i32, y: i32) -> (i32, i32) {
         let mut pointer = self.pointer.lock().expect("stub pointer lock");
         *pointer = (x, y);
@@ -296,7 +325,21 @@ async fn start_stub_display_config(bus_name: &str) {
 /// bus) and leaks the connection for the test's lifetime — the process
 /// exiting cleans it up.
 async fn start_stub_extension(bus_name: &str) {
-    let connection = zbus::connection::Builder::session()
+    // Leak: keeps the stub alive for the rest of this test process. Each
+    // test uses its own unique bus name, so leaking across tests in the
+    // same binary is harmless.
+    std::mem::forget(start_stub_extension_with_handle(bus_name).await);
+}
+
+/// As [`start_stub_extension`], but hands the connection back so a test can
+/// *emit* from the stub rather than only answer calls on it.
+///
+/// The caller must hold the returned connection for as long as the stub is
+/// needed — dropping it unregisters the bus name, and the daemon then reports
+/// the extension as unavailable rather than as silent, which is a confusing way
+/// for a signal test to fail.
+async fn start_stub_extension_with_handle(bus_name: &str) -> zbus::Connection {
+    zbus::connection::Builder::session()
         .expect("session bus builder")
         .name(bus_name)
         .expect("valid bus name")
@@ -304,17 +347,26 @@ async fn start_stub_extension(bus_name: &str) {
         .expect("serve stub extension")
         .build()
         .await
-        .expect("stub extension registers on session bus");
-    // Leak: keeps the stub alive for the rest of this test process. Each
-    // test uses its own unique bus name, so leaking across tests in the
-    // same binary is harmless.
-    std::mem::forget(connection);
+        .expect("stub extension registers on session bus")
 }
 
 /// Spawns the real `wgaf-daemon` binary with a config pointing its own bus
 /// name and its expected extension bus name at test-private, unique names.
 fn spawn_daemon(daemon_bus_name: &str, extension_bus_name: &str, nonce: &str) -> DaemonGuard {
-    spawn_daemon_with_display_config(daemon_bus_name, extension_bus_name, None, nonce)
+    spawn_daemon_with_display_config(daemon_bus_name, extension_bus_name, None, nonce, ALLOW_ALL)
+}
+
+/// An empty capability table — the explicit way to say "allow everything".
+const ALLOW_ALL: &str = "[capabilities]\n";
+
+/// As [`spawn_daemon`], but with a policy of the test's choosing.
+fn spawn_daemon_with_policy(
+    daemon_bus_name: &str,
+    extension_bus_name: &str,
+    nonce: &str,
+    policy: &str,
+) -> DaemonGuard {
+    spawn_daemon_with_display_config(daemon_bus_name, extension_bus_name, None, nonce, policy)
 }
 
 /// As [`spawn_daemon`], but also pointing the daemon's monitor-layout lookup at
@@ -328,6 +380,7 @@ fn spawn_daemon_with_display_config(
     extension_bus_name: &str,
     display_config_bus_name: Option<&str>,
     nonce: &str,
+    policy: &str,
 ) -> DaemonGuard {
     let config_path = std::env::temp_dir().join(format!("wgaf-daemon-windows-test-{nonce}.toml"));
     let display_config_line = display_config_bus_name
@@ -352,9 +405,8 @@ fn spawn_daemon_with_display_config(
     // explicit way to say "allow everything". Given its own unique path
     // rather than relying on the config sibling, because every test config
     // lives directly in the temp dir and would otherwise share one file.
-    let permissions_path =
-        std::env::temp_dir().join(format!("wgaf-stub-permissions-{}.toml", std::process::id()));
-    std::fs::write(&permissions_path, "[capabilities]\n").expect("failed to write test policy");
+    let permissions_path = std::env::temp_dir().join(format!("wgaf-stub-permissions-{nonce}.toml"));
+    std::fs::write(&permissions_path, policy).expect("failed to write test policy");
     // Explicit mode: the daemon rejects a group/world-writable policy file,
     // and `fs::write` honours the umask (002 on many distros -> 0664).
     std::fs::set_permissions(
@@ -440,6 +492,156 @@ async fn list_windows_and_get_workspaces_via_stub() {
             .expect("GetWorkspaces should succeed");
     let workspaces: Vec<WorkspaceRecord> = workspaces.into_iter().map(Into::into).collect();
     assert_eq!(workspaces, vec![canned_workspace()]);
+}
+
+/// Every signal the extension emits comes back out on `org.wgaf.Windows1`.
+///
+/// This is the whole of W6's forwarding path exercised with **no GNOME Shell
+/// anywhere**: stub emits → daemon's proxy subscription → typed conversion →
+/// re-emission. The equivalent against a real Shell needs a live session and so
+/// can never run in CI, which is the argument for testing at the daemon
+/// boundary rather than only end to end.
+#[tokio::test]
+async fn the_daemon_re_emits_every_window_signal_the_extension_sends() {
+    use futures_util::StreamExt;
+
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.Watch{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.Watch{pid}");
+
+    // Held, not leaked: emitting needs the connection the stub is served on.
+    let stub = start_stub_extension_with_handle(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("watch{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    // Subscribed before anything is emitted. The daemon's forwarding task
+    // retries on an interval, so it may not have subscribed upstream yet — the
+    // retry loop below covers that, and is why this asserts on *eventually
+    // arriving* rather than on a single emission.
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(daemon_bus_name.as_str())
+        .expect("valid sender")
+        .path(wgaf_common::WINDOWS_OBJECT_PATH)
+        .expect("valid path")
+        .interface(wgaf_common::WINDOWS_INTERFACE_NAME)
+        .expect("valid interface")
+        .build();
+    let mut events = zbus::MessageStream::for_match_rule(rule, &connection, None)
+        .await
+        .expect("subscribe to the daemon's window signals");
+
+    let emitter =
+        zbus::object_server::SignalEmitter::new(&stub, wgaf_common::EXTENSION_OBJECT_PATH)
+            .expect("emitter for the stub's object path");
+
+    let mut seen: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+
+    while seen.len() < 3 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the daemon never re-emitted all three signals; saw {seen:?}"
+        );
+
+        // Re-emitted every round rather than once, because the daemon's
+        // subscription is established by a retrying background task and a
+        // signal sent before it subscribes is simply gone — D-Bus signals are
+        // fire-and-forget, so there is nothing to replay.
+        StubExtension::window_created(&emitter, canned_window().into())
+            .await
+            .expect("emit WindowCreated");
+        StubExtension::window_closed(&emitter, 4242)
+            .await
+            .expect("emit WindowClosed");
+        StubExtension::window_focus_changed(&emitter, 777)
+            .await
+            .expect("emit WindowFocusChanged");
+
+        let collect_until = tokio::time::Instant::now() + std::time::Duration::from_millis(700);
+        while let Ok(Some(Ok(message))) =
+            tokio::time::timeout_at(collect_until, events.next()).await
+        {
+            let Some(member) = message.header().member().map(|m| m.to_string()) else {
+                continue;
+            };
+            if let Ok(id) = message.body().deserialize::<u32>() {
+                seen.insert(member, id);
+            }
+        }
+    }
+
+    assert_eq!(
+        seen.get("WindowCreated").copied(),
+        Some(canned_window().id),
+        "WindowCreated must carry the created window's id"
+    );
+    assert_eq!(seen.get("WindowClosed").copied(), Some(4242));
+    assert_eq!(seen.get("WindowFocusChanged").copied(), Some(777));
+}
+
+/// A denied watch fails loudly instead of returning an empty stream.
+///
+/// ADR-0003 requires this and nothing else in the suite would catch it: a
+/// `WatchWindows` that quietly succeeded under a `Deny` policy would leave the
+/// caller subscribed to a feed that never carries anything, which on an idle
+/// desktop is indistinguishable from a watch that is working.
+#[tokio::test]
+async fn a_denied_watch_is_refused_rather_than_silently_empty() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WatchDeny{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WatchDeny{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("watchdeny{pid}"),
+        "[capabilities]\nWatchWindows = \"Deny\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let err = call_windows::<(), _>(&connection, &daemon_bus_name, "WatchWindows", &())
+        .await
+        .expect_err("a denied WatchWindows must fail");
+
+    match err {
+        zbus::Error::MethodError(name, _, _) => assert_eq!(
+            name.as_str(),
+            wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED,
+            "expected PermissionDenied, got {name}"
+        ),
+        other => panic!("expected a MethodError, got {other:?}"),
+    }
+}
+
+/// The same call succeeds when the policy allows it.
+///
+/// Paired with the test above deliberately: a `WatchWindows` that failed for
+/// some unrelated reason — no extension, a typo in the method name — would
+/// satisfy the denial test on its own while proving nothing about the policy.
+#[tokio::test]
+async fn an_allowed_watch_is_accepted() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WatchAllow{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WatchAllow{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("watchallow{pid}"),
+        "[capabilities]\nWatchWindows = \"Allow\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    call_windows::<(), _>(&connection, &daemon_bus_name, "WatchWindows", &())
+        .await
+        .expect("an allowed WatchWindows should succeed");
 }
 
 #[tokio::test]
@@ -566,6 +768,7 @@ async fn pointer_test_daemon(label: &str) -> (DaemonGuard, zbus::Connection, Str
         &extension_bus_name,
         Some(&display_config_bus_name),
         &format!("{label}{pid}"),
+        ALLOW_ALL,
     );
     let connection = wait_for_daemon(&daemon_bus_name).await;
     (daemon, connection, daemon_bus_name)

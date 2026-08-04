@@ -7,6 +7,12 @@ FocusWindow = "Allow"
 MoveWindow = "Allow"
 ResizeWindow = "Allow"
 CloseWindow = "Allow"
+# Watching windows open, close and take focus, as `wgaf window watch` does.
+# Unlike the entries above it does not change anything — it is a live feed of
+# every window that appears, including its title, for as long as the command
+# runs. Denying it stops `wgaf window watch` and leaves `wgaf window list`
+# working, so a one-off look at what is open is still available.
+WatchWindows = "Allow"
 
 # Input synthesis
 TypeText = "Allow"

@@ -1271,6 +1271,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "futures-util",
  "serde",
  "serde_json",
  "tokio",

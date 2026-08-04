@@ -259,7 +259,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // for why the two live on one interface despite that.
             dbus::input_api::InputApi::new(
                 input_backend,
-                window_manager,
+                Arc::clone(&window_manager),
                 Arc::clone(&permission_gate),
             ),
         )?
@@ -276,6 +276,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(announce_device_presence(
         connection.clone(),
         device_presence,
+    ));
+
+    // Re-emits the extension's window signals on `org.wgaf.Windows1`. Spawned
+    // unconditionally and never awaited: it retries forever, so a session with
+    // no extension installed — or one installed after the daemon started —
+    // costs a wakeup every few seconds and nothing else. That mirrors how every
+    // other window call recovers without a daemon restart.
+    tokio::spawn(dbus::windows_api::forward_window_events(
+        window_manager,
+        zbus::object_server::SignalEmitter::new(&connection, wgaf_common::WINDOWS_OBJECT_PATH)?,
     ));
 
     tracing::info!(

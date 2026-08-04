@@ -62,6 +62,33 @@ pub(crate) trait ShellExtension {
 
     /// The pointer's current position in global logical pixels.
     fn get_pointer(&self) -> zbus::Result<(i32, i32)>;
+
+    /// A window appeared, carrying the same record shape `ListWindows` returns.
+    ///
+    /// **The record is blank at this point, and the daemon keeps only the id.**
+    /// The extension emits this synchronously inside Mutter's `window-created`
+    /// handler — the earliest moment a window exists, before the client has set
+    /// a title or committed a surface. Measured on GNOME Shell 50.1: all three
+    /// of `window-test`'s windows arrived as `title: ""`, `app_id: ""`,
+    /// `0x0 at (0,0)`.
+    ///
+    /// The shape stays as the extension defines it, since changing it would be a
+    /// signature change and therefore an ADR-0002 `V2`. `WindowManager::subscribe_events`
+    /// discards everything but the id; see [`super::WindowEvent`].
+    #[zbus(signal)]
+    fn window_created(&self, window: WindowRecordDict) -> zbus::Result<()>;
+
+    /// A window went away, identified by the stable sequence id.
+    ///
+    /// An id rather than a record, and necessarily so: by the time this fires the
+    /// `Meta.Window` is unmanaged and there is nothing left to describe. A
+    /// consumer that needs to know *what* closed must have been tracking it.
+    #[zbus(signal)]
+    fn window_closed(&self, id: u32) -> zbus::Result<()>;
+
+    /// Keyboard focus moved to the window with this id.
+    #[zbus(signal)]
+    fn window_focus_changed(&self, id: u32) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -383,8 +410,34 @@ mod tests {
         );
     }
 
-    /// The extension's signals are pinned even though the proxy does not yet
-    /// subscribe to them, so their shape cannot drift out from under the
+    /// The signal half of the check above, and the one with the worse failure
+    /// if it rots.
+    ///
+    /// A signal missing from `REQUIRED_EXTENSION_SIGNALS` means an outdated
+    /// extension passes the availability check, the daemon subscribes happily,
+    /// and `wgaf window watch` prints nothing forever — which on an idle desktop
+    /// is indistinguishable from working. A missing *method* at least fails
+    /// when called.
+    #[test]
+    fn the_required_signal_list_covers_every_signal_the_extension_exposes() {
+        let declared: std::collections::BTreeSet<&str> = crate::windows::REQUIRED_EXTENSION_SIGNALS
+            .iter()
+            .copied()
+            .collect();
+        let interface = extension_interface();
+        let in_xml: std::collections::BTreeSet<&str> =
+            interface.signals.keys().map(String::as_str).collect();
+
+        assert_eq!(
+            declared, in_xml,
+            "REQUIRED_EXTENSION_SIGNALS and the extension's interface XML disagree — a signal \
+             present in one and absent from the other either breaks the outdated-extension check \
+             or makes it reject a perfectly current extension"
+        );
+    }
+
+    /// The extension's signals are pinned in shape as well as presence, so they
+    /// cannot drift out from under the
     /// subscription work before it lands. Add matching `#[zbus(signal)]`
     /// declarations to the trait above when it does.
     #[test]

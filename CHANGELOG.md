@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`wgaf window watch` — see windows open, close and take focus as it happens.** Until now wgaf could only answer "what is open right now"; there was no way to react to something opening, and a script that wanted to wait for a window had to ask repeatedly and hope it caught it. The GNOME Shell Extension has been announcing these events since the beginning and nothing was listening.
+
+  Each line carries the window's id, and `wgaf window list` gives you the rest. That split is not a shortcut: **a window has no title and no size at the moment it is created** — the compositor announces it before the application has drawn anything — so a title reported here would simply be empty. Measured rather than assumed, against a real session: every window arrived with a blank title, a blank application id and a size of 0×0. Looking the window up afterwards also gives you a truthful answer when it has already closed again.
+
+  With `--json` each event is one line rather than one large array, so it can be piped into something that reads a line at a time. An array could only be closed when the command ended, which for a command you stop with Ctrl-C means nothing downstream would ever see it.
+
+  **There is no replay.** You see what happens from the moment you start watching; anything earlier is gone. This is stated plainly in the documentation because the alternative is a script that silently misses the window it was waiting for.
+
+  Watching is covered by a new `WatchWindows` permission, allowed by default, so this behaves exactly as if it were ungated unless you go looking. It is the first thing wgaf gates that only *observes* rather than acts, and the reason it is gated at all is that a subscription is different from a question: `wgaf window list` is one answer you asked for, while a watch is a continuous feed of every window title that appears for as long as it runs. Denying it stops the watch and leaves `wgaf window list` working. **A denied watch says so and names `permissions.toml`** instead of showing you nothing, because on a quiet desktop a refused watch and a working one look exactly alike.
+
+  The daemon also now refuses to start watching against an extension too old to send these events, naming what is missing. Without that check the watch would begin, report nothing, and be indistinguishable from a desktop where nothing was happening.
+
+### Changed
+
+- **A refused operation is no longer worded as though something went wrong.** Denying a capability in `permissions.toml` produced `operation \`X\` denied by permission policy — see \`permissions.toml\`; an administrator can change this capability's policy value to \`Allow\` or \`Prompt\` if this restriction was unintentional`. That reads as an apology for a malfunction, and it guesses that you did not mean the rule you wrote — on a tool where the person editing the policy is usually the person now running the command. It now says `` `X` denied by permission policy (permissions.toml)`` and stops there. The file is still named, because a refusal you cannot trace back to a rule is worse than a loud one; what went is the advice, not the location.
+
+  The prompt case changed for a different reason: it said "the user declined the permission prompt (or it timed out)", which claims you chose something. On a timeout nobody chose anything — wgaf simply waited and gave up. It now says the prompt "was declined or went unanswered", which is what actually happened. The audit log continues to record `denied` and `prompted-deny` separately, so how a refusal was reached is still recoverable.
+
 ### Fixed
 
 - **"That element is gone" now says so, whichever command you asked.** If you found an element with `wgaf a11y find`, and the application closed before you used it, `wgaf a11y click` correctly told you the element was gone — while `wgaf a11y info` on the same reference reported a raw D-Bus failure that named no element and suggested no remedy. Same situation, two different answers, and only one of them useful.

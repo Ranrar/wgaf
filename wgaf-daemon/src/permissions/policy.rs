@@ -54,6 +54,21 @@ pub enum Capability {
     MoveWindow,
     ResizeWindow,
     CloseWindow,
+    /// Subscribing to the window event stream — `wgaf window watch`.
+    ///
+    /// **The first capability that gates observing rather than acting**, which
+    /// is why it is worth a variant of its own rather than being left ungated
+    /// like the other read-only calls. `ListWindows` is a snapshot the caller
+    /// asked for; a subscription is an open feed of every window title that
+    /// appears on the desktop for as long as it stays open, and an ungated one
+    /// would leave no trace in the audit trail. Decided in
+    /// [ADR-0003](../../../.vscode/Documentation/adr/adr-0003-window-signal-gating.md).
+    ///
+    /// Defaults to `Allow`, so nobody who does not go looking sees any
+    /// difference from it having been ungated. What it buys is that
+    /// `WatchWindows = "deny"` is a sentence a user can write, and that
+    /// subscriptions appear in `permissions::audit`.
+    WatchWindows,
     // org.wgaf.Input1
     TypeText,
     KeyPress,
@@ -84,6 +99,7 @@ impl Capability {
             Capability::MoveWindow => "MoveWindow",
             Capability::ResizeWindow => "ResizeWindow",
             Capability::CloseWindow => "CloseWindow",
+            Capability::WatchWindows => "WatchWindows",
             Capability::TypeText => "TypeText",
             Capability::KeyPress => "KeyPress",
             Capability::KeyRelease => "KeyRelease",

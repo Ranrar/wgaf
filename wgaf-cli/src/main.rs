@@ -281,6 +281,19 @@ enum WindowCommand {
     /// List all windows.
     List,
 
+    /// Stream window events as they happen, until interrupted with Ctrl-C.
+    ///
+    /// Reports windows opening, closing and taking focus. Each line carries the
+    /// window's id; run `wgaf window list` for its title and geometry, since a
+    /// window has neither at the instant it is created.
+    ///
+    /// There is no replay: events that happened before this command started are
+    /// gone. With --json each event is one line of JSON, so it can be piped
+    /// straight into a program that reads a line at a time.
+    ///
+    /// Needs the GNOME Shell extension, and the WatchWindows permission.
+    Watch,
+
     /// Focus (activate) a window by id.
     Focus(WindowId),
 
@@ -374,6 +387,7 @@ async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
         Command::Release => commands::release(bus_name, json).await?,
         Command::Window { command } => match command {
             WindowCommand::List => commands::window::list(bus_name, json).await?,
+            WindowCommand::Watch => commands::window::watch(bus_name, json).await?,
             WindowCommand::Focus(WindowId { id }) => {
                 commands::window::focus(bus_name, id, json).await?
             }
