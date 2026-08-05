@@ -7,9 +7,9 @@
 use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
 use wgaf_common::{WindowRecord, WorkspaceRecord};
 
-use super::{connect, map_err};
+use super::{CliResult, connect, map_err};
 
-pub async fn list(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(bus_name: &str, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let reply = connection
         .call_method(
@@ -63,7 +63,7 @@ pub async fn list(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::
 /// D-Bus signals are fire-and-forget. Whatever happened before this command
 /// started is gone and cannot be asked for. `wgaf window list` is the snapshot;
 /// this is the feed.
-pub async fn watch(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn watch(bus_name: &str, json: bool) -> CliResult<()> {
     use futures_util::StreamExt;
 
     let connection = connect().await?;
@@ -156,7 +156,7 @@ pub async fn watch(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error:
     }
 }
 
-pub async fn focus(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn focus(bus_name: &str, id: u32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(
@@ -172,13 +172,7 @@ pub async fn focus(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-pub async fn move_window(
-    bus_name: &str,
-    id: u32,
-    x: i32,
-    y: i32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn move_window(bus_name: &str, id: u32, x: i32, y: i32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(
@@ -194,13 +188,7 @@ pub async fn move_window(
     Ok(())
 }
 
-pub async fn resize(
-    bus_name: &str,
-    id: u32,
-    width: i32,
-    height: i32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resize(bus_name: &str, id: u32, width: i32, height: i32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(
@@ -216,7 +204,7 @@ pub async fn resize(
     Ok(())
 }
 
-pub async fn close(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn close(bus_name: &str, id: u32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(
@@ -232,7 +220,7 @@ pub async fn close(bus_name: &str, id: u32, json: bool) -> Result<(), Box<dyn st
     Ok(())
 }
 
-pub async fn workspaces(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn workspaces(bus_name: &str, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let reply = connection
         .call_method(

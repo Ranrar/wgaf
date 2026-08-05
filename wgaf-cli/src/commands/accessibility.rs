@@ -8,7 +8,7 @@
 use wgaf_common::{AppRecord, ElementRecord, ElementRef, TreeNode};
 use zbus::Connection;
 
-use super::{connect, map_err};
+use super::{CliResult, connect, map_err};
 
 async fn call<R, A>(
     connection: &Connection,
@@ -32,7 +32,7 @@ where
     reply.body().deserialize()
 }
 
-pub async fn list_apps(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list_apps(bus_name: &str, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let apps: Vec<AppRecord> = call(&connection, bus_name, "ListApps", &())
         .await
@@ -59,7 +59,7 @@ pub async fn find(
     description: &str,
     max_results: i32,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
     let elements: Vec<ElementRecord> = call(
         &connection,
@@ -85,12 +85,7 @@ pub async fn find(
     Ok(())
 }
 
-pub async fn tree(
-    bus_name: &str,
-    app: &str,
-    max_depth: i32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn tree(bus_name: &str, app: &str, max_depth: i32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let nodes: Vec<TreeNode> = call(&connection, bus_name, "GetTree", &(app, max_depth))
         .await
@@ -109,11 +104,7 @@ pub async fn tree(
     Ok(())
 }
 
-pub async fn get_element_info(
-    bus_name: &str,
-    element: &ElementRef,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn get_element_info(bus_name: &str, element: &ElementRef, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let info: ElementRecord = call(&connection, bus_name, "GetElementInfo", &(element.clone(),))
         .await
@@ -137,7 +128,7 @@ pub async fn click(
     element: &ElementRef,
     action: &str,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
     call::<(), _>(
         &connection,
@@ -156,7 +147,7 @@ pub async fn set_text(
     element: &ElementRef,
     text: &str,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
     call::<(), _>(&connection, bus_name, "SetText", &(element.clone(), text))
         .await
@@ -165,11 +156,7 @@ pub async fn set_text(
     Ok(())
 }
 
-pub async fn focus(
-    bus_name: &str,
-    element: &ElementRef,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn focus(bus_name: &str, element: &ElementRef, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     call::<(), _>(&connection, bus_name, "FocusElement", &(element.clone(),))
         .await

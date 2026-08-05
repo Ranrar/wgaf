@@ -1,7 +1,9 @@
 mod commands;
+mod error;
 mod output;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use error::{CliResult, Verdict};
 
 /// wgaf — Wayland GNOME automation framework CLI.
 #[derive(Parser)]
@@ -70,6 +72,15 @@ enum Command {
     Type {
         /// The text to type.
         text: String,
+
+        /// Type into this window specifically, correcting focus first if
+        /// needed, instead of whatever currently has keyboard focus.
+        ///
+        /// Only enforced when `verification_level` in `config.toml` is not
+        /// `none` — see that setting's docs. Omitting this flag behaves
+        /// exactly as before it existed.
+        #[arg(long)]
+        window: Option<u32>,
     },
 
     /// Low-level single-key press/release, by evdev key name (`a`, `enter`,
@@ -121,6 +132,15 @@ enum KeyCommand {
         /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`, `up`,
         /// `f5`, `altgr`, `kp0`).
         key: String,
+
+        /// Press into this window specifically, correcting focus first if
+        /// needed, instead of whatever currently has keyboard focus.
+        ///
+        /// Only enforced when `verification_level` in `config.toml` is not
+        /// `none` — see that setting's docs. Omitting this flag behaves
+        /// exactly as before it existed.
+        #[arg(long)]
+        window: Option<u32>,
     },
 
     /// Release a previously-pressed key.
@@ -128,6 +148,15 @@ enum KeyCommand {
         /// Evdev key name (e.g. `a`, `KEY_A`, `enter`, `leftshift`, `up`,
         /// `f5`, `altgr`, `kp0`).
         key: String,
+
+        /// Release into this window specifically, correcting focus first if
+        /// needed, instead of whatever currently has keyboard focus.
+        ///
+        /// Only enforced when `verification_level` in `config.toml` is not
+        /// `none` — see that setting's docs. Omitting this flag behaves
+        /// exactly as before it existed.
+        #[arg(long)]
+        window: Option<u32>,
     },
 
     /// Press a key combination — all keys held, then released in reverse.
@@ -141,6 +170,16 @@ enum KeyCommand {
         /// Key names, in the order they should be held (e.g. `ctrl shift t`).
         #[arg(required = true, num_args = 1..)]
         keys: Vec<String>,
+
+        /// Press this combination into this window specifically, correcting
+        /// focus first if needed, instead of whatever currently has
+        /// keyboard focus.
+        ///
+        /// Only enforced when `verification_level` in `config.toml` is not
+        /// `none` — see that setting's docs. Omitting this flag behaves
+        /// exactly as before it existed.
+        #[arg(long)]
+        window: Option<u32>,
     },
 }
 
@@ -334,16 +373,39 @@ struct WindowId {
 
 #[tokio::main]
 async fn main() {
+    // Parsed here, rather than inside `run`, so `--json` is known even when
+    // `run` returns an `Err` — the three-outcome taxonomy below (ADR-0007,
+    // `plan-first-release.md` §16) needs it to choose between the plain-text
+    // and JSON failure shapes.
+    let cli = Cli::parse();
+    let json = cli.json;
+
     // Errors are printed here rather than returned from `main`, because
     // Rust's `Termination` impl for `Result` formats the error with `Debug`,
     // not `Display` — which wrapped every message in quotes (`Error: "unknown
     // key ..."`) and would print the raw struct for any error type that isn't
-    // a plain string. `commands::describe_dbus_error` works hard to produce a
-    // readable sentence; handing it to `Debug` undid that.
-    match run().await {
+    // a plain string. `crate::error::describe_dbus_error` works hard to
+    // produce a readable sentence; handing it to `Debug` undid that.
+    match run(cli).await {
         Err(err) => {
-            eprintln!("error: {err}");
-            std::process::exit(1);
+            if json {
+                output::print_outcome_error(err.verdict, &err.message);
+            } else {
+                match err.verdict {
+                    // A genuine error: unchanged from before this taxonomy
+                    // existed, `error:` on stderr.
+                    Verdict::Error => eprintln!("error: {}", err.message),
+                    // A policy denial or a verification failure is not a
+                    // fault — per ADR-0007, framing it as one tells a user
+                    // their own `permissions.toml` rule (or an honestly
+                    // reported focus mismatch) is a bug. The daemon's own
+                    // wording already reads as a standalone sentence (e.g.
+                    // `` `FocusWindow` denied by permission policy
+                    // (permissions.toml)``), so it is printed as-is.
+                    Verdict::Denied | Verdict::Unverified => eprintln!("{}", err.message),
+                }
+            }
+            std::process::exit(err.verdict.exit_code());
         }
         // `wgaf status` reports an unhealthy subsystem by exiting non-zero
         // while still printing its full report, so it can gate a setup script
@@ -361,8 +423,7 @@ enum Outcome {
     Unhealthy,
 }
 
-async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> CliResult<Outcome> {
     let json = cli.json;
     // ADDED: `--bus-name` defaults to the daemon's own default rather than
     // being baked into a clap `default_value`, so the "customized bus name"
@@ -406,13 +467,19 @@ async fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
             }
             WindowCommand::Workspaces => commands::window::workspaces(bus_name, json).await?,
         },
-        Command::Type { text } => commands::input::type_text(bus_name, &text, json).await?,
+        Command::Type { text, window } => {
+            commands::input::type_text(bus_name, &text, window, json).await?
+        }
         Command::Key { command } => match command {
-            KeyCommand::Press { key } => commands::input::key_press(bus_name, &key, json).await?,
-            KeyCommand::Release { key } => {
-                commands::input::key_release(bus_name, &key, json).await?
+            KeyCommand::Press { key, window } => {
+                commands::input::key_press(bus_name, &key, window, json).await?
             }
-            KeyCommand::Combo { keys } => commands::input::hotkey(bus_name, &keys, json).await?,
+            KeyCommand::Release { key, window } => {
+                commands::input::key_release(bus_name, &key, window, json).await?
+            }
+            KeyCommand::Combo { keys, window } => {
+                commands::input::hotkey(bus_name, &keys, window, json).await?
+            }
         },
         Command::Mouse { command } => match command {
             MouseCommand::Move { dx, dy } => {
@@ -605,7 +672,22 @@ mod tests {
     fn parses_type() {
         let cli = Cli::try_parse_from(["wgaf", "type", "hello world"]).expect("parse");
         match cli.command {
-            Command::Type { text } => assert_eq!(text, "hello world"),
+            Command::Type { text, window } => {
+                assert_eq!(text, "hello world");
+                assert_eq!(window, None);
+            }
+            _ => panic!("expected Type"),
+        }
+    }
+
+    #[test]
+    fn parses_type_with_window() {
+        let cli = Cli::try_parse_from(["wgaf", "type", "hello", "--window", "42"]).expect("parse");
+        match cli.command {
+            Command::Type { text, window } => {
+                assert_eq!(text, "hello");
+                assert_eq!(window, Some(42));
+            }
             _ => panic!("expected Type"),
         }
     }
@@ -615,17 +697,70 @@ mod tests {
         let cli = Cli::try_parse_from(["wgaf", "key", "press", "a"]).expect("parse");
         match cli.command {
             Command::Key {
-                command: KeyCommand::Press { key },
-            } => assert_eq!(key, "a"),
+                command: KeyCommand::Press { key, window },
+            } => {
+                assert_eq!(key, "a");
+                assert_eq!(window, None);
+            }
             _ => panic!("expected Key(Press)"),
         }
 
         let cli = Cli::try_parse_from(["wgaf", "key", "release", "leftshift"]).expect("parse");
         match cli.command {
             Command::Key {
-                command: KeyCommand::Release { key },
-            } => assert_eq!(key, "leftshift"),
+                command: KeyCommand::Release { key, window },
+            } => {
+                assert_eq!(key, "leftshift");
+                assert_eq!(window, None);
+            }
             _ => panic!("expected Key(Release)"),
+        }
+    }
+
+    #[test]
+    fn parses_key_press_with_window() {
+        let cli =
+            Cli::try_parse_from(["wgaf", "key", "press", "a", "--window", "7"]).expect("parse");
+        match cli.command {
+            Command::Key {
+                command: KeyCommand::Press { key, window },
+            } => {
+                assert_eq!(key, "a");
+                assert_eq!(window, Some(7));
+            }
+            _ => panic!("expected Key(Press)"),
+        }
+    }
+
+    #[test]
+    fn parses_key_release_with_window() {
+        let cli =
+            Cli::try_parse_from(["wgaf", "key", "release", "a", "--window", "7"]).expect("parse");
+        match cli.command {
+            Command::Key {
+                command: KeyCommand::Release { key, window },
+            } => {
+                assert_eq!(key, "a");
+                assert_eq!(window, Some(7));
+            }
+            _ => panic!("expected Key(Release)"),
+        }
+    }
+
+    #[test]
+    fn parses_key_combo_with_window() {
+        let cli = Cli::try_parse_from([
+            "wgaf", "key", "combo", "ctrl", "shift", "t", "--window", "7",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::Key {
+                command: KeyCommand::Combo { keys, window },
+            } => {
+                assert_eq!(keys, vec!["ctrl", "shift", "t"]);
+                assert_eq!(window, Some(7));
+            }
+            _ => panic!("expected Key(Combo)"),
         }
     }
 

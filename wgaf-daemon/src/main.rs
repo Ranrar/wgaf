@@ -4,6 +4,7 @@ mod dbus;
 mod input;
 mod permissions;
 mod secure_file;
+mod verification;
 mod windows;
 
 use std::path::PathBuf;
@@ -261,6 +262,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 input_backend,
                 Arc::clone(&window_manager),
                 Arc::clone(&permission_gate),
+                config.verification_level,
             ),
         )?
         .serve_at(

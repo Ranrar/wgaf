@@ -8,98 +8,188 @@
 //! (the daemon's `org.wgaf.Input1` methods all return `()` on success) —
 //! `--json` therefore just wraps a `{"ok": true, "message": ...}` status,
 //! emitted by the shared `crate::output::print_ok`.
+//!
+//! `type`/`key press`/`key release`/`key combo` additionally take an
+//! optional `--window`, routed here to the daemon's `*At` method variant
+//! (`TypeTextAt`/`KeyPressAt`/`KeyReleaseAt`/`HotkeyAt`) instead of the
+//! untargeted one — see each function's doc comment. `wgaf mouse ...` does
+//! not get this flag: mouse delivery is arbitrated by pointer position, not
+//! keyboard focus, and needs a different mechanism (`backlog.md` §2) that
+//! was deliberately filed separately and is not built.
 
-use super::{connect, map_err};
+use super::{CliResult, connect, map_err};
 
+/// `window` selects between the daemon's untargeted method and its `*At`
+/// counterpart (`wgaf-daemon/src/dbus/input_api.rs`). `None` sends byte-for-
+/// byte the same method name and argument tuple as before this parameter
+/// existed, so a script that never passes `--window` is unaffected by
+/// `verification_level` — see that setting's docs in `config.toml`.
 pub async fn type_text(
     bus_name: &str,
     text: &str,
+    window: Option<u32>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
-    connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::INPUT_OBJECT_PATH,
-            Some(wgaf_common::INPUT_INTERFACE_NAME),
-            "TypeText",
-            &(text,),
-        )
-        .await
-        .map_err(map_err)?;
-    crate::output::print_ok(
-        json,
-        &format!("typed {} character(s)", text.chars().count()),
-    );
+    let message = match window {
+        Some(window) => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "TypeTextAt",
+                    &(text, window),
+                )
+                .await
+                .map_err(map_err)?;
+            format!(
+                "typed {} character(s) into window {window}",
+                text.chars().count()
+            )
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "TypeText",
+                    &(text,),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("typed {} character(s)", text.chars().count())
+        }
+    };
+    crate::output::print_ok(json, &message);
     Ok(())
 }
 
+/// See [`type_text`]'s doc comment for what `window` does and the
+/// `None`-is-unchanged guarantee.
 pub async fn key_press(
     bus_name: &str,
     key: &str,
+    window: Option<u32>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
-    connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::INPUT_OBJECT_PATH,
-            Some(wgaf_common::INPUT_INTERFACE_NAME),
-            "KeyPress",
-            &(key,),
-        )
-        .await
-        .map_err(map_err)?;
-    crate::output::print_ok(json, &format!("pressed key `{key}`"));
+    let message = match window {
+        Some(window) => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "KeyPressAt",
+                    &(key, window),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("pressed key `{key}` into window {window}")
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "KeyPress",
+                    &(key,),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("pressed key `{key}`")
+        }
+    };
+    crate::output::print_ok(json, &message);
     Ok(())
 }
 
+/// See [`type_text`]'s doc comment for what `window` does and the
+/// `None`-is-unchanged guarantee.
 pub async fn key_release(
     bus_name: &str,
     key: &str,
+    window: Option<u32>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
-    connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::INPUT_OBJECT_PATH,
-            Some(wgaf_common::INPUT_INTERFACE_NAME),
-            "KeyRelease",
-            &(key,),
-        )
-        .await
-        .map_err(map_err)?;
-    crate::output::print_ok(json, &format!("released key `{key}`"));
+    let message = match window {
+        Some(window) => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "KeyReleaseAt",
+                    &(key, window),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("released key `{key}` into window {window}")
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "KeyRelease",
+                    &(key,),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("released key `{key}`")
+        }
+    };
+    crate::output::print_ok(json, &message);
     Ok(())
 }
 
+/// See [`type_text`]'s doc comment for what `window` does and the
+/// `None`-is-unchanged guarantee.
 pub async fn hotkey(
     bus_name: &str,
     keys: &[String],
+    window: Option<u32>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CliResult<()> {
     let connection = connect().await?;
-    connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::INPUT_OBJECT_PATH,
-            Some(wgaf_common::INPUT_INTERFACE_NAME),
-            "Hotkey",
-            &(keys,),
-        )
-        .await
-        .map_err(map_err)?;
-    crate::output::print_ok(json, &format!("pressed `{}`", keys.join("+")));
+    let message = match window {
+        Some(window) => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "HotkeyAt",
+                    &(keys, window),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("pressed `{}` into window {window}", keys.join("+"))
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "Hotkey",
+                    &(keys,),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("pressed `{}`", keys.join("+"))
+        }
+    };
+    crate::output::print_ok(json, &message);
     Ok(())
 }
 
-pub async fn mouse_move(
-    bus_name: &str,
-    dx: i32,
-    dy: i32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_move(bus_name: &str, dx: i32, dy: i32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(
@@ -122,12 +212,7 @@ pub async fn mouse_move(
 /// every ordinary case; printing the reply means that if they ever differ, the
 /// user sees where the pointer really is instead of being told what they
 /// already typed.
-pub async fn mouse_move_to(
-    bus_name: &str,
-    x: i32,
-    y: i32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_move_to(bus_name: &str, x: i32, y: i32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let reply = connection
         .call_method(
@@ -153,7 +238,7 @@ pub async fn mouse_move_to(
 }
 
 /// Prints the pointer's current screen position.
-pub async fn mouse_position(bus_name: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_position(bus_name: &str, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     let reply = connection
         .call_method(
@@ -185,11 +270,7 @@ struct PointerPosition {
     y: i32,
 }
 
-pub async fn mouse_click(
-    bus_name: &str,
-    button: &str,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_click(bus_name: &str, button: &str, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(
@@ -205,12 +286,7 @@ pub async fn mouse_click(
     Ok(())
 }
 
-pub async fn mouse_scroll(
-    bus_name: &str,
-    dx: i32,
-    dy: i32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mouse_scroll(bus_name: &str, dx: i32, dy: i32, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     connection
         .call_method(

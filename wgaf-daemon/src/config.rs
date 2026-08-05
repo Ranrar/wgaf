@@ -94,6 +94,21 @@ pub struct Config {
     /// Resolved once at daemon startup and held. Changing the desktop's layout
     /// afterwards means restarting the daemon.
     pub input_keyboard_layout: String,
+    /// How much pre-condition checking a gated input/window action performs
+    /// before running.
+    ///
+    /// `none` reproduces the daemon's behaviour from before this setting
+    /// existed, exactly. `basic` (the default) refuses to synthesize input
+    /// against a *named* target that is not focused, attempting to correct
+    /// focus first rather than merely refusing — with no target named,
+    /// nothing consults the Shell extension, so `wgaf type` keeps working on
+    /// a session without one. `strict` is reserved for AT-SPI post-checks
+    /// that don't exist yet; naming it here makes [`Self::load_required`]
+    /// (and [`Self::load`]) refuse to start rather than silently behave
+    /// like `basic`.
+    ///
+    /// See [`crate::verification::VerificationLevel`].
+    pub verification_level: crate::verification::VerificationLevel,
 }
 
 impl Default for Config {
@@ -108,6 +123,7 @@ impl Default for Config {
             input_max_type_text_chars: crate::input::DEFAULT_MAX_TYPE_TEXT_CHARS,
             input_device_settle_ms: crate::input::DEFAULT_DEVICE_SETTLE_MS,
             input_keyboard_layout: crate::input::DEFAULT_KEYBOARD_LAYOUT.to_string(),
+            verification_level: crate::verification::DEFAULT_VERIFICATION_LEVEL,
         }
     }
 }
@@ -121,7 +137,9 @@ impl Config {
         match path {
             Some(path) if path.exists() => {
                 let text = std::fs::read_to_string(path)?;
-                Ok(toml::from_str(&text)?)
+                let config: Self = toml::from_str(&text)?;
+                config.validate()?;
+                Ok(config)
             }
             _ => Ok(Self::default()),
         }
@@ -147,11 +165,38 @@ impl Config {
                 path.display()
             ),
         )?;
-        toml::from_str(&text).map_err(|source| crate::secure_file::SecureFileError::Malformed {
-            kind: "configuration",
-            path: path.display().to_string(),
-            reason: source.to_string(),
-        })
+        let config: Self = toml::from_str(&text).map_err(|source| {
+            crate::secure_file::SecureFileError::Malformed {
+                kind: "configuration",
+                path: path.display().to_string(),
+                reason: source.to_string(),
+            }
+        })?;
+        config
+            .validate()
+            .map_err(|reason| crate::secure_file::SecureFileError::Unsupported {
+                kind: "configuration",
+                path: path.display().to_string(),
+                reason,
+            })?;
+        Ok(config)
+    }
+
+    /// Rejects config values that parse as valid TOML but aren't supported —
+    /// distinct from the syntax errors [`toml::from_str`] already catches.
+    ///
+    /// Currently the only such value is `verification_level = "strict"`: see
+    /// [`crate::verification::VerificationLevel::Strict`].
+    fn validate(&self) -> Result<(), String> {
+        if self.verification_level == crate::verification::VerificationLevel::Strict {
+            return Err(
+                "verification_level = \"strict\" is not yet implemented; it is reserved for a \
+                 future release, once the AT-SPI post-checks it needs exist. Use \"none\" or \
+                 \"basic\" instead."
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -282,5 +327,57 @@ mod tests {
         let config: Config =
             toml::from_str("input_device_settle_ms = 1234\n").expect("config should parse");
         assert_eq!(config.input_device_settle_ms, 1234);
+    }
+
+    /// `basic` protects everyone who never touches `config.toml`; `none`
+    /// would change nothing. See plan-first-release.md's "Action
+    /// verification" entry for why this default was chosen deliberately
+    /// rather than left at `none`.
+    #[test]
+    fn verification_level_defaults_to_basic() {
+        assert_eq!(
+            Config::default().verification_level,
+            crate::verification::VerificationLevel::Basic
+        );
+    }
+
+    #[test]
+    fn verification_level_is_read_from_the_config_file() {
+        use crate::verification::VerificationLevel;
+
+        let config: Config =
+            toml::from_str("verification_level = \"none\"\n").expect("config should parse");
+        assert_eq!(config.verification_level, VerificationLevel::None);
+
+        let config: Config =
+            toml::from_str("verification_level = \"basic\"\n").expect("config should parse");
+        assert_eq!(config.verification_level, VerificationLevel::Basic);
+
+        let config: Config =
+            toml::from_str("verification_level = \"strict\"\n").expect("config should parse");
+        assert_eq!(config.verification_level, VerificationLevel::Strict);
+    }
+
+    /// `strict` must not be silently treated as `basic` — it names AT-SPI
+    /// post-checks that don't exist yet, so a config asking for it has to
+    /// fail loudly instead of quietly running with weaker checking than the
+    /// user thinks they configured.
+    #[test]
+    fn strict_verification_level_is_rejected_by_load() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "wgaf-config-test-strict-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "verification_level = \"strict\"\n").expect("write test config.toml");
+
+        let err = Config::load(Some(&path))
+            .expect_err("strict must be rejected, not silently downgraded to basic");
+        assert!(
+            err.to_string().contains("not yet implemented"),
+            "error should say strict isn't implemented yet, got: {err}"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

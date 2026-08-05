@@ -8,6 +8,8 @@
 pub mod display_config;
 mod proxy;
 
+use std::time::Duration;
+
 use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::{OnceCell, RwLock};
@@ -177,6 +179,53 @@ impl WindowEvent {
         }
     }
 }
+
+/// The result of asking [`WindowManager::ensure_focused`] to make sure a
+/// window has keyboard focus before an action runs against it.
+///
+/// Every variant is a normal, successful outcome. `ensure_focused` never
+/// treats "the window still isn't focused" as an error — the window not
+/// gaining focus in time is not a malfunction, see [`FocusOutcome::TimedOut`].
+/// Whether that verdict should go on to block the action it was checked for
+/// is a policy question for the caller, decided elsewhere; this type only
+/// reports what actually happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusOutcome {
+    /// The window already had focus. Nothing was done: no `FocusWindow`
+    /// call, no waiting.
+    AlreadyFocused,
+    /// The window did not have focus, `FocusWindow` was called, and a
+    /// matching `WindowFocusChanged` arrived before the timeout.
+    Corrected,
+    /// The window did not have focus, `FocusWindow` was called, and no
+    /// matching `WindowFocusChanged` arrived before the timeout.
+    ///
+    /// Most often this is Mutter's focus-stealing prevention legitimately
+    /// declining the request — expected, normal behaviour, not a bug in wgaf
+    /// and not a fault worth an error variant. Classifying it as a
+    /// policy-level verification failure belongs to a later phase; this type
+    /// just states the fact plainly.
+    TimedOut,
+}
+
+/// Upper bound on how long [`WindowManager::ensure_focused`] waits for a
+/// `WindowFocusChanged` signal after asking the extension to focus a window.
+///
+/// **This is not the guessing pattern flagged elsewhere for
+/// `input_device_settle_ms`.** That constant stands in for a readiness
+/// condition the daemon never actually observes, so every caller pays the
+/// full wait regardless of how soon the device was really ready. This
+/// constant guards a wait that is already event-driven: `ensure_focused`
+/// returns the instant the real `WindowFocusChanged` signal arrives,
+/// however fast that is. The constant only exists to end the wait if the
+/// signal never arrives at all — which is expected, not exceptional, since
+/// focus-stealing prevention can legitimately and silently sit on a focus
+/// request forever.
+///
+/// Two seconds is generous on purpose: a safety bound, not a tuned latency
+/// figure. It has not been measured against real focus-stealing-prevention
+/// behaviour and could be revisited if that ever matters.
+pub(crate) const DEFAULT_FOCUS_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Wraps the GNOME Shell Extension's D-Bus interface: version/availability
 /// discovery, window-management delegation, and error translation. One
@@ -458,6 +507,112 @@ impl WindowManager {
             .map_err(|e| translate_window_error(e, id))
     }
 
+    /// Makes sure a window has keyboard focus before an action runs against
+    /// it, correcting focus if it does not and *confirming* the correction
+    /// actually took — rather than trusting [`Self::focus_window`]'s
+    /// fire-and-forget reply, which cannot tell a real focus change from a
+    /// request Mutter silently declined.
+    ///
+    /// # Why `focus_window` alone is not enough
+    ///
+    /// The extension's `FocusWindow` asks Mutter to activate a window and
+    /// returns as soon as the request is sent; it does not and cannot confirm
+    /// the window actually became focused. Mutter's focus-stealing prevention
+    /// can legitimately and silently decline the request, so a caller that
+    /// treated a successful `FocusWindow` reply as "focus is now there" would
+    /// be wrong in exactly that case.
+    ///
+    /// # The subscribe-before-act ordering is load-bearing
+    ///
+    /// The focus-changed signal stream is subscribed to **before**
+    /// [`Self::focus_window`] is called, not after. `zbus` installs the bus
+    /// match rule the instant that subscription's `.await` completes, and
+    /// from that moment the connection queues any matching signal whether or
+    /// not anything is polling the stream yet — the same guarantee
+    /// [`Self::subscribe_events`] relies on for the same reason. Subscribing
+    /// only after calling `focus_window` would race a fast, real focus
+    /// change: a signal fired before the subscription exists is gone, D-Bus
+    /// signals being fire-and-forget, and every such loss would surface as a
+    /// spurious [`FocusOutcome::TimedOut`] under perfectly normal conditions.
+    ///
+    /// # `TimedOut` is a normal outcome, not a fault
+    ///
+    /// See [`FocusOutcome::TimedOut`]. This method reports the fact plainly
+    /// through `Ok((_, FocusOutcome::TimedOut))` rather than an `Err`.
+    ///
+    /// # No permission awareness here, deliberately
+    ///
+    /// This method does not know about `Capability`/`PermissionGate`, and
+    /// never should — see `permissions/mod.rs`'s module doc for why
+    /// permission checks stay out of domain logic like this one. A caller
+    /// wiring this into the input path is responsible for checking
+    /// `Capability::FocusWindow` *before* calling this: calling it
+    /// unconditionally would let any targeted input silently move focus
+    /// regardless of policy.
+    pub async fn ensure_focused(
+        &self,
+        id: u32,
+        timeout: Duration,
+    ) -> Result<(WindowRecord, FocusOutcome), WindowsError> {
+        let record = self
+            .list_windows()
+            .await?
+            .into_iter()
+            .find(|window| window.id == id)
+            .ok_or(WindowsError::WindowNotFound(id))?;
+
+        if record.focused {
+            return Ok((record, FocusOutcome::AlreadyFocused));
+        }
+
+        // Subscribed before `focus_window` is called below — see this
+        // method's doc comment for why the order is the entire point.
+        // `list_windows` above already went through
+        // `ensure_extension_available`, so this does not need to repeat it.
+        let mut focus_changed = self.proxy.receive_window_focus_changed().await?;
+
+        self.focus_window(id).await?;
+
+        // `true` only if a signal naming this id was actually seen; a closed
+        // stream (e.g. the extension going away mid-wait) must not be
+        // mistaken for confirmation just because the loop ended without
+        // hitting the timeout.
+        let matched = tokio::time::timeout(timeout, async {
+            loop {
+                match focus_changed.next().await {
+                    Some(signal) => {
+                        if let Ok(args) = signal.args()
+                            && args.id == id
+                        {
+                            return true;
+                        }
+                    }
+                    None => return false,
+                }
+            }
+        })
+        .await;
+
+        if !matches!(matched, Ok(true)) {
+            return Ok((record, FocusOutcome::TimedOut));
+        }
+
+        // A fresh fetch rather than trusting the signal's bare id: the
+        // window could in principle have changed further — or closed —
+        // between the snapshot above and the signal arriving, and
+        // `WindowEvent`'s doc comment already established this file's
+        // preference for a caller-controlled round trip over a payload that
+        // can only ever describe the wrong moment. If it is gone by the time
+        // this asks, that is `WindowNotFound`, not a fabricated record.
+        let record = self
+            .list_windows()
+            .await?
+            .into_iter()
+            .find(|window| window.id == id)
+            .ok_or(WindowsError::WindowNotFound(id))?;
+        Ok((record, FocusOutcome::Corrected))
+    }
+
     pub async fn move_window(&self, id: u32, x: i32, y: i32) -> Result<(), WindowsError> {
         self.ensure_extension_available().await?;
         self.proxy
@@ -573,4 +728,228 @@ fn translate_window_error(err: zbus::Error, id: u32) -> WindowsError {
         return WindowsError::WindowNotFound(id);
     }
     WindowsError::from(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use zbus::object_server::SignalEmitter;
+
+    // These tests need a session bus — the whole `wgaf-daemon` integration
+    // suite already does (see `tests/ping.rs`), and they deliberately do NOT
+    // skip when one is absent, the same call `permissions/notify.rs`'s tests
+    // make.
+
+    /// The id `StubExtension`'s one canned window answers to.
+    const STUB_WINDOW_ID: u32 = 1;
+
+    /// A stand-in extension sized for exactly what `ensure_focused` needs,
+    /// not for the whole surface `tests/windows_stub.rs`'s `StubExtension`
+    /// covers.
+    ///
+    /// It still has to implement every member `ensure_extension_available`'s
+    /// introspection check requires — see `REQUIRED_EXTENSION_METHODS`/
+    /// `REQUIRED_EXTENSION_SIGNALS` — or `WindowManager` rejects it as an
+    /// outdated extension before any test gets to exercise `ensure_focused`
+    /// at all. Everything below `list_windows`/`focus_window` is a stub only
+    /// to satisfy that check.
+    struct StubExtension {
+        /// Whether the canned window currently has focus, read back through
+        /// `ListWindows`.
+        focused: AtomicBool,
+        /// If set, a `FocusWindow` call whose `id` equals this value marks
+        /// the canned window focused and emits `WindowFocusChanged` for it —
+        /// **synchronously, inside the same method call, before its D-Bus
+        /// reply** — the fastest a real signal could ever arrive, and
+        /// exactly the case that would be lost if `ensure_focused`
+        /// subscribed after calling `FocusWindow` instead of before.
+        ///
+        /// A `FocusWindow` call for a *different* id than this one still
+        /// emits — for that other id — but leaves `focused` untouched,
+        /// which is what the timeout test uses to also exercise "ignore
+        /// focus-changed events for other ids" in the same test.
+        ///
+        /// `None` models focus-stealing prevention silently declining the
+        /// request: `FocusWindow` succeeds and nothing else happens.
+        focus_succeeds_and_emits_for: Option<u32>,
+    }
+
+    #[zbus::interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
+    impl StubExtension {
+        fn list_windows(&self) -> Vec<WindowRecordDict> {
+            vec![
+                WindowRecord {
+                    id: STUB_WINDOW_ID,
+                    title: "Stub".to_string(),
+                    app_id: "org.wgaf.Stub".to_string(),
+                    workspace: 0,
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 100,
+                    focused: self.focused.load(Ordering::SeqCst),
+                    maximized: false,
+                }
+                .into(),
+            ]
+        }
+
+        async fn focus_window(&self, id: u32, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
+            let Some(emit_for) = self.focus_succeeds_and_emits_for else {
+                return;
+            };
+            if emit_for == id {
+                self.focused.store(true, Ordering::SeqCst);
+            }
+            // Reported, not swallowed: a failed emission would make the
+            // affected test fail anyway (with an unexpected `TimedOut`), and
+            // this makes that failure legible instead of mysterious.
+            if let Err(e) = Self::window_focus_changed(&emitter, emit_for).await {
+                eprintln!("stub failed to emit WindowFocusChanged: {e}");
+            }
+        }
+
+        fn move_window(&self, _id: u32, _x: i32, _y: i32) {}
+        fn resize_window(&self, _id: u32, _width: i32, _height: i32) {}
+        fn close_window(&self, _id: u32) {}
+        fn get_workspaces(&self) -> Vec<WorkspaceRecordDict> {
+            vec![]
+        }
+        fn warp_pointer(&self, x: i32, y: i32) -> (i32, i32) {
+            (x, y)
+        }
+        fn get_pointer(&self) -> (i32, i32) {
+            (0, 0)
+        }
+
+        #[zbus(signal)]
+        async fn window_created(
+            emitter: &SignalEmitter<'_>,
+            window: WindowRecordDict,
+        ) -> zbus::Result<()>;
+
+        #[zbus(signal)]
+        async fn window_closed(emitter: &SignalEmitter<'_>, id: u32) -> zbus::Result<()>;
+
+        #[zbus(signal)]
+        async fn window_focus_changed(emitter: &SignalEmitter<'_>, id: u32) -> zbus::Result<()>;
+    }
+
+    /// Starts a `StubExtension` on a private, unique bus name (leaked for the
+    /// test process's lifetime, same rationale as
+    /// `tests/windows_stub.rs`'s `start_stub_extension`) and returns a
+    /// `WindowManager` freshly connected to it.
+    ///
+    /// `tag` keeps each test's bus name distinct, since these run
+    /// concurrently by default and a bus name is a session-global resource —
+    /// the same convention `tests/windows_stub.rs` and
+    /// `permissions/notify.rs`'s tests already use.
+    async fn manager_against_stub(
+        tag: &str,
+        focused: bool,
+        focus_succeeds_and_emits_for: Option<u32>,
+    ) -> WindowManager {
+        let bus_name = format!("org.wgaf.Test.EnsureFocused{tag}{}", std::process::id());
+        let stub_connection = zbus::connection::Builder::session()
+            .expect("session bus builder")
+            .name(bus_name.as_str())
+            .expect("valid bus name")
+            .serve_at(
+                wgaf_common::EXTENSION_OBJECT_PATH,
+                StubExtension {
+                    focused: AtomicBool::new(focused),
+                    focus_succeeds_and_emits_for,
+                },
+            )
+            .expect("serve stub extension")
+            .build()
+            .await
+            .expect("stub extension registers on the session bus");
+        std::mem::forget(stub_connection);
+
+        let client_connection = zbus::Connection::session()
+            .await
+            .expect("connect to session bus");
+        WindowManager::connect_to(
+            client_connection,
+            &bus_name,
+            wgaf_common::EXTENSION_OBJECT_PATH,
+            wgaf_common::EXTENSION_INTERFACE_NAME,
+            // Never read by `ensure_focused`; a real Mutter or another
+            // stub is not needed for these tests to be meaningful.
+            "org.gnome.Mutter.DisplayConfig",
+        )
+        .await
+        .expect("connect to the stub extension")
+    }
+
+    #[tokio::test]
+    async fn already_focused_short_circuits_with_no_signal_and_no_wait() {
+        let manager = manager_against_stub("AlreadyFocused", true, None).await;
+
+        let (record, outcome) = manager
+            .ensure_focused(STUB_WINDOW_ID, Duration::from_millis(50))
+            .await
+            .expect("ensure_focused should succeed against a known, focused window");
+
+        assert_eq!(outcome, FocusOutcome::AlreadyFocused);
+        assert_eq!(record.id, STUB_WINDOW_ID);
+        assert!(record.focused);
+    }
+
+    #[tokio::test]
+    async fn a_signal_arriving_before_the_timeout_reports_corrected() {
+        let manager = manager_against_stub("Corrected", false, Some(STUB_WINDOW_ID)).await;
+
+        let (record, outcome) = manager
+            .ensure_focused(STUB_WINDOW_ID, DEFAULT_FOCUS_CONFIRM_TIMEOUT)
+            .await
+            .expect("ensure_focused should succeed once the signal arrives");
+
+        assert_eq!(outcome, FocusOutcome::Corrected);
+        assert_eq!(record.id, STUB_WINDOW_ID);
+        assert!(
+            record.focused,
+            "the record returned alongside Corrected must reflect the new state"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_matching_signal_times_out_within_the_given_duration() {
+        // Emits for a different id than the one being focused, so this also
+        // exercises "ignore focus-changed events for other ids" alongside
+        // the timeout path itself.
+        const OTHER_WINDOW_ID: u32 = STUB_WINDOW_ID + 41;
+        let manager = manager_against_stub("TimedOut", false, Some(OTHER_WINDOW_ID)).await;
+
+        let short_timeout = Duration::from_millis(50);
+        let started = tokio::time::Instant::now();
+        let (record, outcome) = manager
+            .ensure_focused(STUB_WINDOW_ID, short_timeout)
+            .await
+            .expect("a timeout is a normal Ok outcome, not an error");
+
+        assert_eq!(outcome, FocusOutcome::TimedOut);
+        assert_eq!(record.id, STUB_WINDOW_ID);
+        assert!(!record.focused);
+        assert!(
+            started.elapsed() < DEFAULT_FOCUS_CONFIRM_TIMEOUT,
+            "must time out using the given duration, not fall back to the 2s default"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_window_id_reports_window_not_found() {
+        let manager = manager_against_stub("NotFound", false, None).await;
+        let unknown_id = STUB_WINDOW_ID + 999;
+
+        let err = manager
+            .ensure_focused(unknown_id, Duration::from_millis(50))
+            .await
+            .expect_err("an id absent from ListWindows must not be treated as focusable");
+
+        assert!(matches!(err, WindowsError::WindowNotFound(id) if id == unknown_id));
+    }
 }

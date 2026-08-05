@@ -65,6 +65,21 @@ pub(crate) fn hotkey(
     outcome
 }
 
+/// The result of [`plan_text`]: one inner `Vec` of keystrokes per character of
+/// the input, in the order the characters appear.
+///
+/// **Grouped by character on purpose** — this used to be a flat
+/// `Vec<KeyStroke>`, and was widened to a `Vec` of `Vec`s so a caller that
+/// splits a long plan into chunks (see `input::PreparedText` in
+/// `input/mod.rs`, used by `dbus/input_api.rs`'s `TypeTextAt`) can only ever
+/// cut between characters, never inside one. A composed (dead-key)
+/// character's keystrokes always live together in one inner `Vec`, and
+/// `[T]::chunks`/slicing — the mechanism used to split this — only ever cuts
+/// between *outer* elements, so it cannot separate them. See
+/// [`type_planned`]'s doc comment for why leaving one of those two
+/// keystrokes stranded mid-check would be a real hazard, not a cosmetic one.
+pub(crate) type TypePlan = Vec<Vec<KeyStroke>>;
+
 /// Resolves every character of `text` to keystrokes **before any of them is
 /// typed**.
 ///
@@ -78,48 +93,49 @@ pub(crate) fn hotkey(
 ///   key plus an optional shift, which is wrong for a character behind a dead
 ///   key: that costs two keystrokes and up to six events, and a run of them
 ///   would have slipped the budget.
-pub(crate) fn plan_text(text: &str, typing: &Typing) -> Result<Vec<KeyStroke>, InputError> {
+pub(crate) fn plan_text(text: &str, typing: &Typing) -> Result<TypePlan, InputError> {
     let mut plan = Vec::with_capacity(text.len());
 
     for c in text.chars() {
-        match typing {
-            Typing::Keymap(map) => {
-                let strokes = map
-                    .strokes(c)
-                    .ok_or_else(|| InputError::CharacterNotTypeable {
-                        ch: c,
-                        layout: map.layout_name().to_string(),
-                    })?;
-                plan.extend_from_slice(strokes);
-            }
+        let group = match typing {
+            Typing::Keymap(map) => map
+                .strokes(c)
+                .ok_or_else(|| InputError::CharacterNotTypeable {
+                    ch: c,
+                    layout: map.layout_name().to_string(),
+                })?
+                .to_vec(),
             Typing::UsAscii => {
                 let (keycode, needs_shift) = codes::ascii_to_keycode(c)
                     .ok_or_else(|| InputError::UnknownKey(c.to_string()))?;
-                plan.push(KeyStroke {
+                vec![KeyStroke {
                     keycode,
                     modifiers: if needs_shift {
                         vec![KEY_LEFTSHIFT]
                     } else {
                         Vec::new()
                     },
-                });
+                }]
             }
-        }
+        };
+        plan.push(group);
     }
 
     Ok(plan)
 }
 
-/// How many kernel events a plan will emit.
+/// How many kernel events a plan (or a chunk of one — any slice of the same
+/// per-character shape) will emit.
 ///
 /// This is why the rate limiter counts events rather than calls: one `TypeText`
 /// at the default character cap is around 16,000 events, and one `KeyPress` is
 /// one. They are not comparable units.
-pub(crate) fn plan_event_cost(plan: &[KeyStroke]) -> u32 {
-    plan.iter().map(KeyStroke::event_cost).sum()
+pub(crate) fn plan_event_cost(plan: &[Vec<KeyStroke>]) -> u32 {
+    plan.iter().flatten().map(KeyStroke::event_cost).sum()
 }
 
-/// Emits a plan produced by [`plan_text`].
+/// Emits a plan produced by [`plan_text`] — or any chunk of one, sliced along
+/// character boundaries (see [`TypePlan`]'s doc comment).
 ///
 /// Each keystroke presses its modifiers, presses and releases the key, then
 /// releases the modifiers in reverse order. Reverse order matters: releasing
@@ -128,7 +144,12 @@ pub(crate) fn plan_event_cost(plan: &[KeyStroke]) -> u32 {
 ///
 /// A character needing a dead key arrives here as two ordinary keystrokes; the
 /// *application's* input method composes them. wgaf synthesizes keys and never
-/// composes anything itself.
+/// composes anything itself. **This is exactly why a chunk boundary must never
+/// fall between them**: an application mid-compose when its input suddenly
+/// pauses for a focus re-check (which can take up to a couple of seconds if it
+/// has to correct focus) is left in a stuck compose state, or with a modifier
+/// key logically held down, for as long as the check takes. `TypePlan`'s
+/// per-character grouping is what makes that impossible.
 ///
 /// **The kill switch is checked once per keystroke, and this is the check that
 /// makes stopping actually stop.** One maximum-length call is around 16,000
@@ -138,10 +159,10 @@ pub(crate) fn plan_event_cost(plan: &[KeyStroke]) -> u32 {
 /// releases its own modifiers before the next begins, so nothing is left held.
 pub(crate) fn type_planned(
     device: &mut UinputDevice,
-    plan: &[KeyStroke],
+    plan: &[Vec<KeyStroke>],
     stopped: &AtomicBool,
 ) -> Result<(), InputError> {
-    for stroke in plan {
+    for stroke in plan.iter().flatten() {
         check_not_stopped(stopped)?;
         for modifier in &stroke.modifiers {
             press(device, *modifier)?;
@@ -275,7 +296,30 @@ mod tests {
     #[test]
     fn a_plan_preserves_modifier_order_per_keystroke() {
         let plan = plan_text("A", &ascii()).expect("should plan");
-        assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].modifiers, vec![KEY_LEFTSHIFT]);
+        assert_eq!(plan.len(), 1, "one character");
+        assert_eq!(
+            plan[0].len(),
+            1,
+            "one keystroke for an unshifted-position letter"
+        );
+        assert_eq!(plan[0][0].modifiers, vec![KEY_LEFTSHIFT]);
+    }
+
+    /// `plan_text` groups a character's keystrokes together rather than
+    /// flattening them, and a composed (dead-key) character is the case that
+    /// actually exercises more than one keystroke per group — see
+    /// [`TypePlan`]'s doc comment for why that grouping has to survive into
+    /// chunking further up the stack.
+    #[test]
+    fn a_composed_characters_keystrokes_are_grouped_under_one_character() {
+        let dk = layout("dk");
+        // `a` is one plain key; `~` is an AltGr'd dead key then Space — see
+        // `a_composed_character_is_charged_for_both_keystrokes` above for the
+        // same facts expressed as an event count instead of a group shape.
+        let plan = plan_text("a~b", &dk).expect("should plan");
+        assert_eq!(plan.len(), 3, "three characters");
+        assert_eq!(plan[0].len(), 1, "'a' is one keystroke");
+        assert_eq!(plan[1].len(), 2, "'~' is composed of two keystrokes");
+        assert_eq!(plan[2].len(), 1, "'b' is one keystroke");
     }
 }

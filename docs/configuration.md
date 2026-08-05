@@ -5,7 +5,7 @@ wgaf keeps its settings in two TOML files in `~/.config/wgaf/` (or
 
 | File | Purpose |
 |---|---|
-| `config.toml` | Bus name, log level, device name, keyboard layout, input safety limits, device settle time |
+| `config.toml` | Bus name, log level, device name, keyboard layout, input safety limits, action verification, device settle time |
 | `permissions.toml` | What wgaf is allowed to do |
 
 `make install` sets both up for you, with the right ownership and mode, and
@@ -93,6 +93,24 @@ Neither is a substitute for the emergency stop: press **Escape** to stop input
 automation outright, and `wgaf release` to allow it again. Escape is only taken
 from your applications while a run is in progress — see the
 [user guide](user-guide.md#escape-is-only-borrowed-while-automation-runs).
+
+## Action verification
+
+`--window <id>` on `wgaf type`/`wgaf key press`/`wgaf key release`/
+`wgaf key combo` (see the [CLI reference](cli-reference.md#targeting-a-specific-window))
+asks the daemon to confirm the named window is focused — correcting it first
+if it isn't — before sending anything. `verification_level` controls how much
+of that actually happens:
+
+| Value | Meaning |
+|---|---|
+| `"none"` | `--window` is accepted but never checked. Exactly the behaviour from before this setting existed. |
+| `"basic"` | The default. A named target that can't be confirmed focused fails the call rather than being typed into anyway. |
+| `"strict"` | Reserved for an AT-SPI-based post-check that doesn't exist yet. Naming it is rejected at daemon startup, not silently run as `"basic"` — the daemon won't claim to perform a check it doesn't actually have. |
+
+`basic` being the default is a deliberate choice: a `--window` target is
+guarded unless you turn checking off, rather than only for scripts that know
+to opt into `verification_level` themselves.
 
 ## `permissions.toml` — per-capability policy
 

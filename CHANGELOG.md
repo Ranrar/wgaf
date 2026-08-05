@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`wgaf type`, `wgaf key press`, `wgaf key release` and `wgaf key combo` gained an optional `--window <id>`, so a call can name the window it is meant for instead of trusting whatever the desktop happens to have focused.** Previously the only way to aim at a window was to run `wgaf window focus` first and hope nothing moved focus in between — two separate D-Bus calls with a real gap between them, and either a script's own actions (a dialog appearing, an application stealing focus on startup) or the person at the keyboard alt-tabbing away could win that race. `--window` resolves and enforces the target inside the one call instead, closing the gap rather than narrowing it.
+
+  It does not merely check and refuse: if the named window isn't focused, the daemon focuses it first — gated by the `FocusWindow` capability, since a focus correction is a real use of it — and waits for the actual `WindowFocusChanged` event confirming the correction took, bounded by a two-second timeout rather than a blind sleep. Nothing is synthesized until that confirmation arrives. If it doesn't arrive in time (most often GNOME's own focus-stealing prevention silently declining the correction), the call fails and says focus could not be confirmed, rather than typing into whatever was in front.
+
+  A long `wgaf type` call re-checks partway through rather than only once at the start: focus is reconfirmed every 32 characters, so a window losing focus mid-paste stops the rest from landing in the new window instead of letting the whole string through. A call that aborts partway reports how many characters had already been typed and how many were not, since by that point "nothing was synthesized" would no longer be true.
+
+  This is opt-in per call — omitting `--window` behaves exactly as it always has, aiming at whatever currently has keyboard focus with nothing checking that it's the intended window.
+
 - **`wgaf window watch` — see windows open, close and take focus as it happens.** Until now wgaf could only answer "what is open right now"; there was no way to react to something opening, and a script that wanted to wait for a window had to ask repeatedly and hope it caught it. The GNOME Shell Extension has been announcing these events since the beginning and nothing was listening.
 
   Each line carries the window's id, and `wgaf window list` gives you the rest. That split is not a shortcut: **a window has no title and no size at the moment it is created** — the compositor announces it before the application has drawn anything — so a title reported here would simply be empty. Measured rather than assumed, against a real session: every window arrived with a blank title, a blank application id and a size of 0×0. Looking the window up afterwards also gives you a truthful answer when it has already closed again.
@@ -22,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The daemon also now refuses to start watching against an extension too old to send these events, naming what is missing. Without that check the watch would begin, report nothing, and be indistinguishable from a desktop where nothing was happening.
 
 ### Changed
+
+- **`verification_level` in `config.toml` defaults to `basic`, meaning a `--window` target is enforced unless you turn checking off.** Three values exist: `none` reproduces the exact behaviour from before `--window` existed — the argument is accepted but never consulted, nothing calls out to the GNOME Shell Extension, and `wgaf type` keeps working on a session with no extension installed at all. `basic`, the default, is what makes `--window` mean something: a named target that can't be confirmed focused fails the call rather than being typed into anyway. `strict` is reserved for an AT-SPI-based post-check that doesn't exist yet — naming it in `config.toml` makes the daemon refuse to start, with a message saying why, rather than quietly running as `basic` while claiming to do more.
+
+  Defaulting to `basic` rather than `none` is the behaviour change worth calling out: it protects every `--window` call by default, rather than only the calls from someone who read the changelog and opted in deliberately.
+
+- **A daemon-side failure is now one of three distinguishable outcomes — error, policy denial, or verification failure — instead of one.** Previously every failure printed as `error: ...` and exited 1, whatever its nature: a genuine fault, a `permissions.toml` denial, the kill switch engaging, a configured limit refusing (the text-length cap, the rate limit), and now a failed `--window` focus check were all indistinguishable to a script or a person reading the output.
+
+  Exit code 1 stays a genuine error, unchanged. Exit code 3 is now a policy denial. Exit code 4 is a verification failure — the new kind this release introduces. A denial or a verification failure no longer prints the `error:` prefix either: the daemon's own message (`` `FocusWindow` denied by permission policy (permissions.toml)``, say) already reads as a complete sentence, and prefixing it as an error told the reader their own policy rule was a fault. `--json` output on failure gained an `"outcome"` field carrying `"error"`, `"denied"`, or `"unverified"`, so a script can branch on which happened without string-matching the message.
+
+  Separate codes, not one shared "didn't happen" code — a denial and a verification failure call for different responses: change the policy, or just try again.
 
 - **A refused operation is no longer worded as though something went wrong.** Denying a capability in `permissions.toml` produced `operation \`X\` denied by permission policy — see \`permissions.toml\`; an administrator can change this capability's policy value to \`Allow\` or \`Prompt\` if this restriction was unintentional`. That reads as an apology for a malfunction, and it guesses that you did not mean the rule you wrote — on a tool where the person editing the policy is usually the person now running the command. It now says `` `X` denied by permission policy (permissions.toml)`` and stops there. The file is still named, because a refusal you cannot trace back to a rule is worse than a loud one; what went is the advice, not the location.
 

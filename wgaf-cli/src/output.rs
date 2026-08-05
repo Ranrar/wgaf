@@ -58,6 +58,28 @@ pub fn print_ok_response(json: bool, response: &str) {
     }
 }
 
+/// Prints a command's failure when `--json` was requested — the failure-path
+/// counterpart to [`print_ok`], called from `main()` instead of the plain
+/// `error:`/bare-message `eprintln!` it uses otherwise.
+///
+/// `--json` emits `{"outcome": "<outcome>", "message": "<message>"}` on
+/// stdout, mirroring [`print_ok`]'s own `{"ok": true, "message": ...}` shape
+/// closely enough that a consumer already handling one recognizes the other.
+/// `"outcome"` is one of `"error"`/`"denied"`/`"unverified"` — see
+/// `crate::error::Verdict::json_outcome` — part of the JSON contract
+/// (`plan-first-release.md` §16, W16.2); do not change those three strings
+/// without treating it as a breaking wire-format change.
+///
+/// Printed to stdout, not stderr, for the same reason `print_ok`'s JSON is:
+/// a `--json` consumer should be able to read one stream regardless of
+/// whether the command succeeded.
+pub fn print_outcome_error(verdict: crate::error::Verdict, message: &str) {
+    println!(
+        "{}",
+        serde_json::json!({ "outcome": verdict.json_outcome(), "message": message })
+    );
+}
+
 /// Marker prefixing each subsystem line in `wgaf status`.
 ///
 /// Plain ASCII rather than coloured output or Unicode symbols: this is the

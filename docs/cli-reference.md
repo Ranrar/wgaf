@@ -276,9 +276,8 @@ Lists all workspaces (`index`, `n_windows`, whether it's the active one).
 Types a string of text, backed by the daemon's `org.wgaf.Input1` interface via
 a virtual `uinput` keyboard device. Uses the keyboard layout your desktop is
 set to, so the characters you ask for are the characters that arrive — see
-[Keyboard layouts](#keyboard-layouts) below. Goes to whatever currently has
-keyboard focus on the whole system, not a specific window (use
-`wgaf window focus` first to target one).
+[Keyboard layouts](#keyboard-layouts) below. Without `--window`, goes to
+whatever currently has keyboard focus on the whole system.
 
 ```sh
 wgaf type "hello world"
@@ -293,6 +292,33 @@ oversized paste fail than be typed into whichever window has focus. See
 Typing is also subject to the overall input speed limit, which paces commands
 against each other rather than capping any one of them. See ["If automation
 suddenly runs slowly"](user-guide.md#if-automation-suddenly-runs-slowly).
+
+### Targeting a specific window
+
+```sh
+wgaf type "hello world" --window 7
+```
+
+`--window <id>` types into that window specifically. The daemon resolves the
+id, and if that window isn't focused, focuses it first and waits — up to two
+seconds — for confirmation that the correction actually took, rather than
+assuming it worked and typing anyway. Correcting focus uses the `FocusWindow`
+capability, so it is refused if that capability is denied. If the window
+can't be confirmed focused in time, nothing is typed and the command fails
+saying so.
+
+On a long call, focus is reconfirmed periodically rather than only once at
+the start — every 32 characters — so a window losing focus partway through a
+long paste stops the rest of it landing in the new window. A call that fails
+partway reports how many characters had already gone through.
+
+This is only enforced when `verification_level` in `config.toml` is not
+`none` — see [Configuration](configuration.md#action-verification). With
+`none`, `--window` is accepted but has no effect, exactly as if it were
+omitted; running with no GNOME Shell Extension installed at all still works,
+the same as without `--window`.
+
+Omitting `--window` behaves exactly as before it existed.
 
 ### Keyboard layouts
 
@@ -338,6 +364,17 @@ wgaf key release leftshift
 Every key press must be matched by a release. A key left pressed stays pressed
 for the rest of the session, exactly as a physically stuck key would.
 
+Both accept an optional `--window <id>`, targeting a specific window the same
+way `wgaf type --window` does — correcting focus first and confirming it
+before pressing anything. See
+["Targeting a specific window"](#targeting-a-specific-window) above; the same
+`verification_level` dependency applies.
+
+```sh
+wgaf key press a --window 7
+wgaf key release a --window 7
+```
+
 **`escape` does not reach applications while wgaf is running.** Escape is the
 emergency stop, so the desktop hands it to wgaf rather than to whatever you are
 automating. wgaf recognizes its own keystrokes and will not stop itself on one,
@@ -368,6 +405,16 @@ name is valid.
 
 Combinations are physical keys rather than characters, so the same command
 works on every keyboard layout — unlike `wgaf type`.
+
+Also accepts an optional `--window <id>`, targeting a specific window the
+same way `wgaf type --window` does:
+
+```sh
+wgaf key combo ctrl shift t --window 7
+```
+
+See ["Targeting a specific window"](#targeting-a-specific-window) above; the
+same `verification_level` dependency applies.
 
 ### Key names
 
@@ -539,7 +586,10 @@ supported" on elements that don't (e.g. read-only text views).
 Failures from the daemon are translated into short, specific messages rather
 than a raw D-Bus error dump, for example:
 
-- `window not found` — no window with that id (it may have closed).
+- `window not found` — no window with that id (it may have closed). Also
+  returned by `wgaf type`/`wgaf key press`/`wgaf key release`/
+  `wgaf key combo` when `--window` names an id that doesn't exist, not only
+  by `wgaf window` commands.
 - `GNOME Shell Extension bridge unavailable` — the extension isn't
   installed/enabled, or the daemon can't reach it.
 - `input device unavailable` — `/dev/uinput` isn't accessible (permissions).
@@ -555,6 +605,12 @@ than a raw D-Bus error dump, for example:
   command would have waited more than half a minute, which means something is
   stuck in a loop. Note that merely going over the speed limit does *not*
   produce an error; it slows commands down instead.
+- `focus could not be verified` — `--window` named a window that couldn't be
+  confirmed focused in time (most often GNOME's own focus-stealing
+  prevention declining the correction). Nothing was typed; if the failure
+  happened partway through a long `wgaf type`, the message says how many
+  characters had already gone through. See
+  ["Targeting a specific window"](#targeting-a-specific-window) above.
 - `AT-SPI accessibility bus unavailable` — the accessibility bus couldn't be
   reached. The message says which of the possible causes applies — the
   accessibility service isn't available at all, or it's still advertising a bus
@@ -573,3 +629,18 @@ than a raw D-Bus error dump, for example:
   the policy file format.
 
 Any other failure falls back to the underlying D-Bus error.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Error — something failed unexpectedly. Printed with an `error:` prefix. |
+| `2` | Not from wgaf: clap's own exit code for a malformed command line (an unknown flag, a missing argument). The daemon never sees the request. |
+| `3` | Denied — refused by `permissions.toml` policy, the kill switch (`wgaf stop` or Escape), or a configured limit (`text too long`, `input rate limit exceeded`). |
+| `4` | Unverified — a `--window` target's focus could not be confirmed (`focus could not be verified`). |
+
+Only exit code `1` prints the `error:` prefix. `3` and `4` print the daemon's
+own message with no prefix — it already reads as a complete sentence, not a
+malfunction. `--json` mode adds an `"outcome"` field to a failure instead:
+`"error"`, `"denied"`, or `"unverified"`.

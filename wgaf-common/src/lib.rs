@@ -96,6 +96,25 @@ pub const INPUT_ERROR_DEVICE_UNAVAILABLE: &str = "org.wgaf.Input1.Error.DeviceUn
 /// synthesize.
 pub const INPUT_ERROR_UNKNOWN_KEY: &str = "org.wgaf.Input1.Error.UnknownKey";
 
+/// D-Bus error name returned when `TypeText`/`TypeTextAt` is given a
+/// character the active keyboard layout has no key sequence for.
+///
+/// Distinct from [`INPUT_ERROR_UNKNOWN_KEY`] on purpose: that one means
+/// "there is no such key", this means "this layout cannot produce that
+/// character". A script that branches on it can substitute or skip the
+/// character; one that cannot tell them apart has to guess which. See
+/// `wgaf-daemon/src/input/keyboard.rs`.
+pub const INPUT_ERROR_CHARACTER_NOT_TYPEABLE: &str = "org.wgaf.Input1.Error.CharacterNotTypeable";
+
+/// D-Bus error name returned when the session's keyboard layout could not be
+/// determined, or the configured one is invalid, so `TypeText` does not know
+/// what its keystrokes would produce.
+///
+/// Environmental rather than a bad request — no Wayland session reachable,
+/// or no keyboard on any seat — see `wgaf-daemon/src/input/mod.rs`.
+pub const INPUT_ERROR_KEYBOARD_LAYOUT_UNAVAILABLE: &str =
+    "org.wgaf.Input1.Error.KeyboardLayoutUnavailable";
+
 /// D-Bus error name returned when `MouseClick` is given a button name other
 /// than `left`, `right`, or `middle`.
 pub const INPUT_ERROR_INVALID_BUTTON: &str = "org.wgaf.Input1.Error.InvalidButton";
@@ -160,6 +179,28 @@ pub const INPUT_ERROR_OUT_OF_BOUNDS: &str = "org.wgaf.Input1.Error.OutOfBounds";
 /// says the second one is missing. Relative `MouseMove` is unaffected.
 pub const INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE: &str =
     "org.wgaf.Input1.Error.MonitorLayoutUnavailable";
+
+/// D-Bus error name returned by `org.wgaf.Input1`'s targeted methods
+/// (`TypeTextAt`/`KeyPressAt`/`KeyReleaseAt`/`HotkeyAt`) when the given
+/// window id does not correspond to any currently open window.
+///
+/// Distinct from [`WINDOWS_ERROR_WINDOW_NOT_FOUND`] only in which interface
+/// returns it — the message shape mirrors it deliberately, since both name
+/// the same kind of caller mistake on their own interface.
+pub const INPUT_ERROR_WINDOW_NOT_FOUND: &str = "org.wgaf.Input1.Error.WindowNotFound";
+
+/// D-Bus error name returned by `org.wgaf.Input1`'s targeted methods when the
+/// named window could not be confirmed focused before the timeout, after the
+/// daemon attempted to correct it — the pre-condition half of action
+/// verification (see `wgaf-daemon/src/windows/mod.rs`'s
+/// `FocusOutcome::TimedOut`).
+///
+/// **Not a policy denial and not a fault.** Nothing was refused and nothing
+/// malfunctioned — most often this is the compositor's own focus-stealing
+/// prevention declining the request. A script should be able to branch on
+/// this without mistaking it for either `PermissionDenied` (no
+/// `permissions.toml` rule fired) or a generic failure (nothing is broken).
+pub const INPUT_ERROR_VERIFICATION_FAILED: &str = "org.wgaf.Input1.Error.VerificationFailed";
 
 // ---------------------------------------------------------------------------
 // GNOME Shell Extension's D-Bus API (client-side naming) — the daemon is a

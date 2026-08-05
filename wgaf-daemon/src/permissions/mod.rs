@@ -34,6 +34,15 @@
 //! audit::log_attempt / audit::log_outcome
 //! ```
 //!
+//! **A second, narrower audit entry point.** [`PermissionGate::log_verification_outcome`]
+//! sits alongside [`PermissionGate::check`] for a different situation: a
+//! caller (currently only `dbus::input_api::InputApi::verify_target`) that
+//! has already decided allowed/denied/verification-failed by some other
+//! means — a focus precondition, not a policy lookup — and just needs that
+//! decision recorded under the same caller-identity fields `check` itself
+//! logs. It never consults [`policy::PolicyMap`] and cannot deny anything on
+//! its own; see `audit`'s `log_verification_outcome` for the full rationale.
+//!
 //! **Prompt caching.** Per the roadmap's own language ("persist the
 //! decision... rather than prompting on every call"), a `Prompt` capability
 //! is only ever shown to the user once per daemon run: the first resolution
@@ -65,7 +74,7 @@ use std::sync::Mutex;
 use thiserror::Error;
 use zbus::message::Header;
 
-pub use audit::CallerInfo;
+pub use audit::{CallerInfo, Outcome, VerifiedTarget};
 pub use policy::{Capability, PolicyMap, PolicyValue};
 
 /// Errors returned by [`PermissionGate::check`]. Each of
@@ -209,6 +218,33 @@ impl PermissionGate {
         audit::log_outcome(capability, &caller, outcome);
 
         result
+    }
+
+    /// Logs the outcome of a *targeted* action's own precondition check —
+    /// the audit counterpart of `dbus::input_api::InputApi::verify_target`,
+    /// not of [`Self::check`] itself (see this module's doc comment on the
+    /// two entry points, and `audit::log_verification_outcome`'s own doc
+    /// comment for the full rationale).
+    ///
+    /// `capability` must be the *calling* method's own capability
+    /// (`TypeText`, `KeyPress`, ...), never [`Capability::FocusWindow`],
+    /// even when a `FocusWindow` check ran internally to decide
+    /// `verified.outcome` — that check already gets its own,
+    /// separately-attributed, line via [`Self::check`].
+    ///
+    /// Resolves [`CallerInfo`] itself, the same way [`Self::check`] does,
+    /// rather than accepting an already-resolved one — this is a
+    /// self-contained audit event, not a continuation of a specific
+    /// `check()` call.
+    pub async fn log_verification_outcome(
+        &self,
+        capability: Capability,
+        connection: &zbus::Connection,
+        header: &Header<'_>,
+        verified: VerifiedTarget<'_>,
+    ) {
+        let caller = CallerInfo::resolve(connection, header).await;
+        audit::log_verification_outcome(capability, &caller, verified);
     }
 
     /// Resolves a `Prompt`-policy capability: returns the cached decision if

@@ -80,6 +80,15 @@ pub enum SecureFileError {
         path: String,
         reason: String,
     },
+
+    /// Distinct from [`Self::Malformed`]: the file parses as valid TOML, but
+    /// sets a value this daemon does not support (yet, or at all).
+    #[error("{kind} file `{path}` sets an unsupported value: {reason}")]
+    Unsupported {
+        kind: &'static str,
+        path: String,
+        reason: String,
+    },
 }
 
 /// The uid the daemon is running as. Wrapped so the ownership check reads

@@ -32,6 +32,7 @@ use tokio::time::Instant;
 
 use device::UinputDevice;
 use rate_limit::{Acquired, TokenBucket};
+use xkb::KeyStroke;
 
 /// `tracing` target for the input-synthesis audit trail (see module docs).
 const AUDIT_TARGET: &str = "wgaf_daemon::input::audit";
@@ -416,6 +417,61 @@ pub struct InputBackend {
     device_present: Arc<watch::Sender<bool>>,
 }
 
+/// A fully-resolved, validated plan for typing some text, produced by
+/// [`InputBackend::plan_type_text`] and then executed a chunk at a time via
+/// [`InputBackend::type_next_chunk`].
+///
+/// # Why this exists
+///
+/// `TypeTextAt`'s mid-burst re-verification (see `dbus/input_api.rs`) needs
+/// to plan the *whole* string upfront — so an untypeable character or an
+/// oversized paste still fails atomically, exactly like
+/// [`InputBackend::type_text`] — but then type it in pieces, re-checking
+/// focus between them. Splitting on raw keystroke/event count could cut a
+/// composed (dead-key) character's two keystrokes apart, which is unsafe —
+/// see `keyboard::TypePlan`'s doc comment. This type instead advances
+/// through the plan's existing per-character grouping one whole group at a
+/// time, so a chunk boundary can never fall inside a character.
+///
+/// # Why it is opaque
+///
+/// Nothing outside `input` needs to know any of that shape, only "how many
+/// characters total" and "type the next chunk" — so the plan itself stays a
+/// private field, and only those two operations are exposed.
+#[derive(Debug)]
+pub struct PreparedText {
+    plan: keyboard::TypePlan,
+    /// How many characters (not keystrokes) have already been
+    /// *successfully* typed by [`InputBackend::type_next_chunk`].
+    ///
+    /// Only advances on success — see that method's doc comment for why a
+    /// chunk that failed partway through typing must remain available to
+    /// retry rather than being silently treated as done.
+    typed: usize,
+}
+
+impl PreparedText {
+    /// How many characters this plan will type in total.
+    pub fn char_len(&self) -> usize {
+        self.plan.len()
+    }
+
+    /// The next not-yet-typed chunk of at most `chunk_chars` characters,
+    /// without consuming it — [`InputBackend::type_next_chunk`] commits the
+    /// advance only once the chunk has actually been typed. `None` once
+    /// every character has been typed.
+    ///
+    /// `chunk_chars` is clamped to at least `1`: a caller passing `0` would
+    /// otherwise never make progress.
+    fn peek_chunk(&self, chunk_chars: usize) -> Option<&[Vec<KeyStroke>]> {
+        if self.typed >= self.plan.len() {
+            return None;
+        }
+        let end = (self.typed + chunk_chars.max(1)).min(self.plan.len());
+        Some(&self.plan[self.typed..end])
+    }
+}
+
 impl InputBackend {
     /// Does not touch `/dev/uinput` — safe to call unconditionally at
     /// daemon startup, exactly like `WindowManager::connect_to` doesn't
@@ -675,6 +731,81 @@ impl InputBackend {
             keyboard::type_planned(device, &plan, &stopped)
         })
         .await
+    }
+
+    /// Validates and plans the whole of `text` upfront — the same work
+    /// [`Self::type_text`] does before it ever touches the device (the
+    /// `TextTooLong` check, resolving [`Self::typing`], and
+    /// [`keyboard::plan_text`]) — without typing anything.
+    ///
+    /// Exists so `TypeTextAt`'s mid-burst re-verification (see
+    /// `dbus/input_api.rs`) can keep `plan_text`'s atomicity — the whole
+    /// string resolved before any of it is typed — while still typing it in
+    /// pieces afterwards via repeated [`Self::type_next_chunk`] calls. Does
+    /// not itself charge the rate limiter or touch `/dev/uinput`; each
+    /// chunk pays its own way when it is actually typed.
+    pub async fn plan_type_text(&self, text: &str) -> Result<PreparedText, InputError> {
+        // See `type_text`'s identical check for why this comes first:
+        // resolving the layout below can open a Wayland connection, and a
+        // stopped daemon should say so rather than report whatever that
+        // turns up.
+        check_not_stopped(&self.stopped)?;
+
+        let len = text.chars().count();
+        if len > self.limits.max_type_text_chars {
+            return Err(InputError::TextTooLong {
+                len,
+                max: self.limits.max_type_text_chars,
+            });
+        }
+
+        let typing = self.typing().await?;
+        let plan = keyboard::plan_text(text, &typing)?;
+        Ok(PreparedText { plan, typed: 0 })
+    }
+
+    /// Types the next up-to-`chunk_chars` characters of `prepared`, charging
+    /// the rate limiter for only that chunk's own event cost — via
+    /// [`Self::run`], the same funnel [`Self::type_text`] and every other
+    /// synthesis method uses, so the kill switch and rate limiter keep
+    /// working exactly as they do today, just at chunk granularity instead
+    /// of whole-call granularity.
+    ///
+    /// Returns how many characters were typed, or `Ok(None)` once `prepared`
+    /// is exhausted — a normal way to end a loop, not a failure.
+    ///
+    /// `prepared`'s internal position only advances when this call actually
+    /// succeeds: a chunk that fails partway (`Stopped`, `RateLimited`, a
+    /// device I/O error) leaves it in place, available to retry, rather than
+    /// being silently skipped as though it had typed.
+    pub async fn type_next_chunk(
+        &self,
+        prepared: &mut PreparedText,
+        chunk_chars: usize,
+    ) -> Result<Option<usize>, InputError> {
+        let Some(chunk) = prepared.peek_chunk(chunk_chars) else {
+            return Ok(None);
+        };
+        let chunk = chunk.to_vec();
+        let typed = chunk.len();
+
+        tracing::info!(
+            target: AUDIT_TARGET,
+            action = "type_text_chunk",
+            len = typed,
+            "synthesizing one chunk of a targeted, verified text input"
+        );
+        let cost = keyboard::plan_event_cost(&chunk);
+        let stopped = Arc::clone(&self.stopped);
+        self.run(cost, move |device| {
+            keyboard::type_planned(device, &chunk, &stopped)
+        })
+        .await?;
+
+        // Only reached once `run` above has actually succeeded — see this
+        // method's doc comment on why a failed chunk must not advance.
+        prepared.typed += typed;
+        Ok(Some(typed))
     }
 
     pub async fn key_press(&self, key: &str) -> Result<(), InputError> {
@@ -1006,5 +1137,238 @@ mod tests {
         backend.stop().await;
         backend.release();
         assert!(!backend.is_stopped());
+    }
+
+    // -----------------------------------------------------------------
+    // `PreparedText`/`plan_type_text`/`type_next_chunk` — the chunked
+    // `TypeTextAt` machinery added for W17.1's mid-burst re-check.
+    //
+    // The grouping/chunking tests below build `PreparedText` directly from
+    // synthetic `KeyStroke`s — no xkb layout, no device, no async — so they
+    // can pin the character-boundary-safety property exactly, independent of
+    // what any real layout happens to produce. The `plan_type_text`/
+    // `type_next_chunk` tests below those use the real (but us-ascii, and
+    // either never-started or explicitly stopped) `backend()` helper, the
+    // same convention every other test in this module already follows so
+    // that `cargo test` never synthesizes real input — see `issues.md`'s S1.
+    // -----------------------------------------------------------------
+
+    /// A synthetic keystroke, cheaper than compiling an xkb layout, for tests
+    /// that only care about grouping/chunking shape and not what a real
+    /// keystroke represents.
+    fn stroke(keycode: u16) -> KeyStroke {
+        KeyStroke {
+            keycode,
+            modifiers: Vec::new(),
+        }
+    }
+
+    /// A plan with `group_sizes.len()` characters, the `i`th made of
+    /// `group_sizes[i]` keystrokes — e.g. `[1, 2, 1]` models a plain
+    /// character, a composed (dead-key) one, then another plain one.
+    fn synthetic_plan(group_sizes: &[usize]) -> keyboard::TypePlan {
+        let mut code = 0u16;
+        group_sizes
+            .iter()
+            .map(|&n| {
+                (0..n)
+                    .map(|_| {
+                        code += 1;
+                        stroke(code)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Drains a `PreparedText` chunk by chunk (mirroring exactly what
+    /// `InputBackend::type_next_chunk` does to `prepared.typed`, without
+    /// going through a backend), returning every chunk in order. Each
+    /// element is one chunk — itself a per-character grouping, same shape as
+    /// the whole plan.
+    fn drain_chunks(prepared: &mut PreparedText, chunk_chars: usize) -> Vec<keyboard::TypePlan> {
+        let mut chunks = Vec::new();
+        while let Some(chunk) = prepared.peek_chunk(chunk_chars) {
+            chunks.push(chunk.to_vec());
+            prepared.typed += chunk.len();
+        }
+        chunks
+    }
+
+    /// The property the whole design hinges on: a composed character's
+    /// keystrokes must never be split across two chunks, however awkwardly
+    /// the chunk size lines up against the character boundaries.
+    #[test]
+    fn chunking_never_splits_a_composed_characters_keystrokes() {
+        // The second character costs two keystrokes, like a dead-key
+        // character on a real layout (see `keyboard.rs`'s
+        // `a_composed_character_is_charged_for_both_keystrokes`). A chunk
+        // size of 2 *characters* would, if chunking ever operated on
+        // flattened *events* instead, land right in the middle of it.
+        let plan = synthetic_plan(&[1, 2, 1, 1]);
+        let mut prepared = PreparedText {
+            plan: plan.clone(),
+            typed: 0,
+        };
+
+        let chunks = drain_chunks(&mut prepared, 2);
+        let recovered: Vec<Vec<KeyStroke>> = chunks.into_iter().flatten().collect();
+        assert_eq!(
+            recovered, plan,
+            "every character's group must survive whole and in order"
+        );
+    }
+
+    #[test]
+    fn chunk_boundaries_are_a_whole_number_of_characters() {
+        let plan = synthetic_plan(&[1, 1, 1, 1, 1, 1, 1]); // 7 characters
+        let mut prepared = PreparedText { plan, typed: 0 };
+
+        let lens: Vec<usize> = drain_chunks(&mut prepared, 3)
+            .iter()
+            .map(Vec::len)
+            .collect();
+        assert_eq!(lens, vec![3, 3, 1]);
+    }
+
+    #[test]
+    fn an_exhausted_plan_yields_no_more_chunks() {
+        let plan = synthetic_plan(&[1, 1]);
+        let mut prepared = PreparedText { plan, typed: 0 };
+        prepared.typed = prepared.char_len();
+        assert!(prepared.peek_chunk(10).is_none());
+    }
+
+    #[test]
+    fn an_empty_plan_yields_no_chunks_and_has_zero_length() {
+        let prepared = PreparedText {
+            plan: Vec::new(),
+            typed: 0,
+        };
+        assert_eq!(prepared.char_len(), 0);
+        assert!(prepared.peek_chunk(10).is_none());
+    }
+
+    /// A chunk size larger than the whole plan is one chunk, not zero and not
+    /// an out-of-bounds slice.
+    #[test]
+    fn a_chunk_size_larger_than_the_plan_yields_one_chunk() {
+        let plan = synthetic_plan(&[1, 1, 1]);
+        let mut prepared = PreparedText { plan, typed: 0 };
+        let chunks = drain_chunks(&mut prepared, 100);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 3);
+    }
+
+    /// Splitting into chunks must not change the total event cost — the
+    /// whole reason `plan_event_cost` operates on the same per-character
+    /// shape whether it is handed the full plan or one chunk of it.
+    #[test]
+    fn chunked_cost_sums_to_the_whole_plans_cost() {
+        let plan = synthetic_plan(&[1, 2, 1, 3, 1]);
+        let whole_cost = keyboard::plan_event_cost(&plan);
+        let mut prepared = PreparedText { plan, typed: 0 };
+
+        let summed: u32 = drain_chunks(&mut prepared, 2)
+            .iter()
+            .map(|chunk| keyboard::plan_event_cost(chunk))
+            .sum();
+        assert_eq!(summed, whole_cost);
+    }
+
+    /// `plan_type_text` performs the same upfront, atomic validation
+    /// `type_text` does — proven here on the same two failure modes
+    /// `type_text`'s own behaviour rests on, so the two can never quietly
+    /// diverge.
+    #[tokio::test]
+    async fn plan_type_text_refuses_text_over_the_configured_cap() {
+        let backend = backend(US_ASCII_LAYOUT);
+        let text: String = std::iter::repeat_n('a', DEFAULT_MAX_TYPE_TEXT_CHARS + 1).collect();
+        let err = backend
+            .plan_type_text(&text)
+            .await
+            .expect_err("text over the configured cap must be refused before anything is planned");
+        assert!(matches!(err, InputError::TextTooLong { .. }), "got {err:?}");
+        assert!(!backend.device_created());
+    }
+
+    #[tokio::test]
+    async fn plan_type_text_reports_the_same_untypeable_character_error_as_type_text() {
+        let backend = backend(US_ASCII_LAYOUT);
+        let err = backend
+            .plan_type_text("é")
+            .await
+            .expect_err("non-ASCII is not typeable on the legacy table");
+        assert!(matches!(err, InputError::UnknownKey(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn plan_type_text_refuses_immediately_when_stopped() {
+        let backend = backend(US_ASCII_LAYOUT);
+        backend.stop().await;
+        let err = backend
+            .plan_type_text("hello")
+            .await
+            .expect_err("a stopped backend must not even plan");
+        assert!(matches!(err, InputError::Stopped), "got {err:?}");
+    }
+
+    /// An empty plan has nothing to type, and `type_next_chunk` must say so
+    /// without ever touching the device — the same "refusing/finishing a
+    /// call must not create a device" property the kill-switch tests above
+    /// assert for other methods.
+    #[tokio::test]
+    async fn type_next_chunk_reports_none_once_the_plan_is_exhausted() {
+        let backend = backend(US_ASCII_LAYOUT);
+        let mut prepared = backend
+            .plan_type_text("")
+            .await
+            .expect("empty text plans fine");
+
+        let result = backend
+            .type_next_chunk(&mut prepared, 32)
+            .await
+            .expect("an exhausted plan is not an error");
+        assert!(result.is_none());
+        assert!(
+            !backend.device_created(),
+            "nothing to type means no device should be created either"
+        );
+    }
+
+    /// A chunk that fails to type — here because the kill switch engaged
+    /// between planning and executing it — must not be silently treated as
+    /// typed: the position in `prepared` must not advance, so a caller that
+    /// retried would attempt the very same chunk again rather than skipping
+    /// past it having typed nothing.
+    ///
+    /// This is also the one test in this group that reaches
+    /// `InputBackend::run`'s real funnel — through a backend stopped before
+    /// the call, so it refuses before creating any device, the same
+    /// mitigation every other kill-switch test in this module relies on. See
+    /// `issues.md`'s S1 for why that mitigation is taken seriously here.
+    #[tokio::test]
+    async fn a_chunk_that_fails_to_type_does_not_advance_the_plan() {
+        let backend = backend(US_ASCII_LAYOUT);
+        let mut prepared = backend
+            .plan_type_text("hello world")
+            .await
+            .expect("should plan");
+        backend.stop().await;
+
+        let err = backend
+            .type_next_chunk(&mut prepared, 4)
+            .await
+            .expect_err("a stopped backend must refuse to type a chunk");
+        assert!(matches!(err, InputError::Stopped), "got {err:?}");
+        assert!(
+            !backend.device_created(),
+            "refusing a chunk must not create the device it refused to use"
+        );
+        assert_eq!(
+            prepared.peek_chunk(4).map(<[_]>::len),
+            Some(4),
+            "the chunk that failed to type must still be there to retry, not silently skipped"
+        );
     }
 }

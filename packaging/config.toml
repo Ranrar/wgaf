@@ -68,3 +68,16 @@ input_max_type_text_chars = 4096
 # layout afterwards, restart the daemon so it picks the new one up:
 # `systemctl --user restart wgaf-daemon.service`
 input_keyboard_layout = "auto"
+
+# How much the daemon checks that a keyboard or mouse action is landing where
+# you expect, before it happens.
+#
+# "basic" is the default: if you name a specific window as the target of a
+# command, the daemon makes sure that window is focused first — bringing it
+# to focus if it isn't — before sending anything to it. "none" turns this off
+# and sends input immediately, exactly like older versions did.
+#
+# "strict" is reserved for a deeper check that isn't built yet. Setting it
+# makes the daemon refuse to start, rather than quietly running with only
+# the "basic" check while claiming to do more. Use "none" or "basic" for now.
+verification_level = "basic"

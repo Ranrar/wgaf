@@ -60,7 +60,7 @@ Checked items work today.
 - [x] Press key combinations like `ctrl shift t`
 - [x] Move, click, and scroll the mouse
 - [x] Move the pointer to an exact screen position
-- [ ] Hold off typing when the window you meant isn't focused
+- [x] Hold off typing when the window you meant isn't focused
 
 ### Accessibility
 - [x] List running accessible applications
@@ -199,6 +199,7 @@ Type and click:
 
 ```sh
 wgaf type "Hello from wgaf"
+wgaf type "Hello" --window 7   # target a window instead of whatever has focus
 wgaf mouse move-to 1500 700
 wgaf mouse click left
 ```
@@ -260,9 +261,10 @@ command can produce.
 ## Known issues
 
 - Typed text and clicks go to whatever has keyboard focus at the moment they
-  are sent, and can't be aimed at a particular window — so it's best not to use
-  the desktop while a script is running. If one does get away from you, press
-  Escape or run `wgaf stop`.
+  are sent. `wgaf type` and `wgaf key` can take `--window <id>`, which checks
+  that window is focused first — but it is opt-in per command, and clicks have
+  no equivalent, so it's still best not to use the desktop while a script is
+  running. If one does get away from you, press Escape or run `wgaf stop`.
 - The keyboard layout is read once when the daemon starts. If you change your
   layout afterwards, restart the daemon so `wgaf type` picks up the new one:
   `systemctl --user restart wgaf-daemon.service`.

@@ -23,6 +23,15 @@
 //! consuming the audit trail must know about all three and must not treat a
 //! per-call line count as meaningful.
 //!
+//! **A third line, for targeted precondition checks.** [`log_verification_outcome`]
+//! answers a different question from the attempt/outcome pair above — not
+//! "is this capability permitted", but "did this capability's target end up
+//! in the state its caller assumed" (currently only
+//! `dbus::input_api::InputApi::verify_target`'s focus check). See its own
+//! doc comment for why it is attributed to the calling capability, never
+//! `FocusWindow`, and why one long `TypeTextAt` call can legitimately
+//! produce many of these lines.
+//!
 //! **Source identification.** Every entry records the caller's D-Bus unique
 //! connection name, and — resolved via `org.freedesktop.DBus`'s
 //! `GetConnectionUnixProcessID` (the same `zbus::fdo::DBusProxy` pattern
@@ -102,6 +111,12 @@ pub enum Outcome {
     Denied,
     PromptedAllow,
     PromptedDeny,
+    /// The action was permitted and attempted, but a precondition it depends
+    /// on (e.g. a targeted input call's window ending up focused) could not
+    /// be confirmed in time. Per ADR-0007 this is neither an allow nor a
+    /// denial: no policy was consulted, and nothing malfunctioned — the
+    /// desktop simply did not end up the way the caller assumed.
+    VerificationFailed,
 }
 
 impl Outcome {
@@ -111,6 +126,7 @@ impl Outcome {
             Outcome::Denied => "denied",
             Outcome::PromptedAllow => "prompted-allow",
             Outcome::PromptedDeny => "prompted-deny",
+            Outcome::VerificationFailed => "verification-failed",
         }
     }
 }
@@ -142,6 +158,60 @@ pub(crate) fn log_outcome(capability: Capability, caller: &CallerInfo, outcome: 
     );
 }
 
+/// What a targeted precondition check found, for
+/// [`log_verification_outcome`]'s audit line.
+///
+/// Bundled into one type purely to keep
+/// [`super::PermissionGate::log_verification_outcome`]'s argument count
+/// under clippy's `too_many_arguments` threshold — these four fields have
+/// no meaning apart from each other or from the call they describe.
+///
+/// `target` is caller-formatted (e.g. `window:227`) rather than a typed id,
+/// since this module has no reason to know what kinds of targets exist —
+/// see `permissions`'s module doc on the boundary between policy/audit and
+/// the subsystems it gates.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifiedTarget<'a> {
+    pub target: &'a str,
+    pub app_id: &'a str,
+    pub focused: bool,
+    pub outcome: Outcome,
+}
+
+/// Logs the outcome of a *targeted* action's own precondition check —
+/// currently only `dbus::input_api::InputApi::verify_target`'s focus check
+/// — carrying `verified`'s target, `app_id`, and whether it ended up
+/// focused, in addition to the caller-identity fields [`log_outcome`]
+/// already carries.
+///
+/// **Distinct question from [`log_outcome`].** That line answers "is
+/// `capability` itself permitted", decided once by [`super::PermissionGate::check`]'s
+/// policy lookup. This one answers "did `capability`'s target end up in the
+/// state its caller assumed" — a precondition check, not a policy decision,
+/// so `capability` here must always be the *calling* method's own
+/// capability (`TypeText`, `KeyPress`, ...), never `FocusWindow`, even when
+/// a `FocusWindow` check ran internally to produce `verified.outcome`: that
+/// check already gets its own, separately-attributed, line via
+/// [`log_outcome`].
+pub(crate) fn log_verification_outcome(
+    capability: Capability,
+    caller: &CallerInfo,
+    verified: VerifiedTarget<'_>,
+) {
+    tracing::info!(
+        target: AUDIT_TARGET,
+        capability = capability.as_str(),
+        sender = caller.unique_name.as_deref().unwrap_or("<unknown>"),
+        pid = caller.pid,
+        process = caller.process_name.as_deref().unwrap_or("<unknown>"),
+        target = verified.target,
+        app_id = verified.app_id,
+        focused = verified.focused,
+        outcome = verified.outcome.as_str(),
+        "target verification outcome"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +222,7 @@ mod tests {
         assert_eq!(Outcome::Denied.as_str(), "denied");
         assert_eq!(Outcome::PromptedAllow.as_str(), "prompted-allow");
         assert_eq!(Outcome::PromptedDeny.as_str(), "prompted-deny");
+        assert_eq!(Outcome::VerificationFailed.as_str(), "verification-failed");
     }
 
     #[test]
