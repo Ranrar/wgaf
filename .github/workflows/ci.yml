@@ -68,8 +68,10 @@ jobs:
       - name: Unit tests
         run: dbus-run-session -- cargo test --workspace --bins --lib
 
-      # A private session bus per invocation. The two skipped tests type and
-      # move the mouse for real, so they need /dev/uinput and run below.
+      # A private session bus per invocation. The tests in these suites that
+      # type or move the mouse for real are `#[ignore]`d and run in the step
+      # below, so nothing here needs skipping by name — an `#[ignore]` travels
+      # with the test, where a `--skip` line here had to be remembered.
       - name: Integration tests (session bus only)
         run: >
           dbus-run-session --
@@ -79,12 +81,14 @@ jobs:
           --test windows_stub
           --test permissions
           --test status
-          --
-          --skip denied_capability_is_refused_while_other_capabilities_still_succeed
-          --skip absent_permissions_file_defaults_every_capability_to_allow
+          --test input
 
       # Needs the host's uinput device and Wayland socket mapped into the
       # container — see the header for the `act` flags that do it.
+      #
+      # `--ignored` runs *only* the tests these two suites mark as taking over
+      # the desktop; everything else in them already ran in the step above.
+      # That marking is what keeps them out of a plain `cargo test`.
       #
       # The check below is not ceremony. Without those flags these tests fail
       # with `DeviceUnavailable` and `KeyboardLayoutUnavailable`, which read
@@ -117,4 +121,5 @@ jobs:
             echo "Everything above this step has already run and passed."
             exit 0
           fi
-          dbus-run-session -- cargo test -p wgaf-daemon --test input --test permissions
+          dbus-run-session -- cargo test -p wgaf-daemon --test input --test permissions \
+            -- --ignored --test-threads=1

@@ -1326,16 +1326,25 @@ mod tests {
 
     /// The one test in this module that reaches the real `InputBackend` —
     /// see `issues.md`'s S1 for why that is normally avoided here.
-    /// `key_press_at("leftctrl", ...)` is the smallest, least visible real
-    /// input this daemon can synthesize: a bare modifier has no visible
-    /// effect even if it lands somewhere unexpected, and
-    /// `device_settle: Duration::ZERO` (via `test_backend`) means the event
-    /// has no realistic chance of being delivered anywhere at all — the same
-    /// mitigation `tests/input.rs`/`tests/permissions.rs` use for the same
-    /// reason. (A few tests below this one also reach the real
-    /// `InputBackend` — the `TypeTextAt` chunking tests — but none of them
-    /// get far enough to create a device at all, let alone type anything;
-    /// see each one's own doc comment.)
+    ///
+    /// **It synthesizes a key *release*, deliberately.** Releasing a modifier
+    /// that was never pressed is a genuine no-op wherever it lands, so this is
+    /// safe on its own terms rather than safe only because
+    /// `device_settle: Duration::ZERO` (via `test_backend`) makes delivery
+    /// unlikely. That distinction matters: the S1 records the settle-time
+    /// mitigation losing its race twice, so a test that needs it is a test
+    /// that will eventually escape. An earlier version of this pressed
+    /// `leftctrl` and never released it, which — had it ever been delivered —
+    /// would have left the session with a modifier logically stuck down, the
+    /// exact failure `docs/cli-reference.md` warns about under `wgaf key`.
+    /// `tests/kill_switch.rs` reaches the same conclusion by a different
+    /// route: its `synthesize()` is a zero-delta `MouseMove`, chosen so the
+    /// event cannot affect anything even when it does arrive.
+    ///
+    /// (A few tests below this one also reach the real `InputBackend` — the
+    /// `TypeTextAt` chunking tests — but none of them get far enough to
+    /// create a device at all, let alone type anything; see each one's own
+    /// doc comment.)
     ///
     /// **This test needs no `/dev/uinput`, deliberately** — the same property
     /// `tests/input.rs`'s rate-limit and length-cap tests rely on, reached a
@@ -1362,7 +1371,7 @@ mod tests {
         let nonexistent_window = STUB_WINDOW_ID + 999;
 
         match api
-            .key_press_at("leftctrl", nonexistent_window, msg.header(), &connection)
+            .key_release_at("leftctrl", nonexistent_window, msg.header(), &connection)
             .await
         {
             // Reached the backend, which is the whole assertion — see the

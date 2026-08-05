@@ -217,6 +217,8 @@ async fn poll_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     }
 }
 
+#[ignore = "takes over the desktop: types `ab1!` and `a`, clicks and scrolls into a real \
+            session. Needs a real /dev/uinput — run via `make test-desktop`."]
 #[tokio::test]
 async fn input_methods_succeed_against_a_real_uinput_device() {
     let pid = std::process::id();
@@ -281,6 +283,8 @@ async fn input_methods_succeed_against_a_real_uinput_device() {
         .expect("MouseScroll should succeed");
 }
 
+#[ignore = "takes over the desktop: moves the real pointer to force the device into existence. \
+            Needs a real /dev/uinput — run via `make test-desktop`."]
 #[tokio::test]
 async fn virtual_device_is_destroyed_when_daemon_exits() {
     let pid = std::process::id();
@@ -371,6 +375,17 @@ async fn invalid_mouse_button_reports_invalid_button_error() {
 /// than environmental ones — if this suite is ever split by environment (see
 /// the S4 preconditions issue), this test belongs on the device-free side.
 ///
+/// **Device-free is not session-free, and that distinction cost a CI run.**
+/// `TypeText` resolves the keyboard layout *before* it reaches the limiter, so
+/// on `input_keyboard_layout = "auto"` this asks the compositor for a keymap
+/// and fails with `KeyboardLayoutUnavailable` — not `RateLimited` — anywhere
+/// there is no Wayland session, which is exactly what a CI container is. The
+/// layout is irrelevant to what this test asserts, so it is pinned to
+/// `us-ascii`, the one mode documented never to open a Wayland connection (see
+/// `InputBackend::typing` and its `the_us_ascii_mode_resolves_without_a_session`
+/// unit test). Without that pin this test is not device-dependent but it *is*
+/// session-dependent, and the two are easy to conflate.
+///
 /// It is also deterministic and instant: at one event per second, a
 /// 4096-character `TypeText` is 8,192 events, so the projected wait is over
 /// two hours and the refusal is immediate. Nothing here sleeps or races.
@@ -384,7 +399,7 @@ async fn a_runaway_flood_is_refused_with_the_rate_limited_error() {
         &daemon_bus_name,
         &device_name,
         &format!("ratelimit{pid}"),
-        "input_max_events_per_second = 1\n",
+        "input_max_events_per_second = 1\ninput_keyboard_layout = \"us-ascii\"\n",
     );
     let connection = wait_for_daemon(&daemon_bus_name).await;
 
@@ -410,6 +425,9 @@ async fn a_runaway_flood_is_refused_with_the_rate_limited_error() {
 
 /// A rate of `0` switches the limiter off entirely, so the documented escape
 /// hatch in `config.toml` actually works.
+#[ignore = "takes over the desktop: types 4096 real characters into a real session, the \
+            largest payload in the suite. Needs a real /dev/uinput — run via \
+            `make test-desktop`."]
 #[tokio::test]
 async fn a_rate_of_zero_disables_the_limiter() {
     let pid = std::process::id();

@@ -151,6 +151,9 @@ where
     reply.body().deserialize()
 }
 
+#[ignore = "takes over the desktop: proving the Deny is scoped needs the *allowed* \
+            capabilities to really run, so this moves the pointer and presses `a` for real. \
+            Needs a real /dev/uinput — run via `make test-desktop`."]
 #[tokio::test]
 async fn denied_capability_is_refused_while_other_capabilities_still_succeed() {
     let pid = std::process::id();
@@ -197,6 +200,9 @@ async fn denied_capability_is_refused_while_other_capabilities_still_succeed() {
         .expect("KeyRelease should still succeed — only TypeText is denied");
 }
 
+#[ignore = "takes over the desktop: proving the default is Allow needs the call to really \
+            succeed, so this types `hi` into a real session. Needs a real /dev/uinput — run \
+            via `make test-desktop`."]
 #[tokio::test]
 async fn absent_permissions_file_defaults_every_capability_to_allow() {
     let pid = std::process::id();
