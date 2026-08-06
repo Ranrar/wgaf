@@ -14,6 +14,25 @@ CloseWindow = "Allow"
 # working, so a one-off look at what is open is still available.
 WatchWindows = "Allow"
 
+# Workspaces
+# Four entries rather than one, so that "let automation move around my desktop
+# but not rearrange it" is something you can actually write: deny the three
+# below and leave SwitchWorkspace allowed. Switching is the reversible one —
+# you can always switch back — while adding, removing and reordering change the
+# shape of the session, and removing moves whatever windows were on that
+# workspace to a neighbouring one.
+# Listing workspaces and reading their layout are never gated.
+SwitchWorkspace = "Allow"
+AddWorkspace = "Allow"
+RemoveWorkspace = "Allow"
+ReorderWorkspace = "Allow"
+# Sending a window to another workspace. Grouped with the window entries above
+# in spirit rather than with the three here: it changes neither how many
+# workspaces there are nor which one you are on, it takes one of your windows
+# out of sight. Allowing automation to navigate your desktop is not the same as
+# letting it rearrange your windows behind you.
+MoveWindowToWorkspace = "Allow"
+
 # Input synthesis
 TypeText = "Allow"
 KeyPress = "Allow"

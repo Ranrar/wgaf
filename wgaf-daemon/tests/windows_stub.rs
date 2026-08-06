@@ -21,8 +21,10 @@
 use std::process::{Child, Command};
 use std::time::Duration;
 
-use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
-use wgaf_common::{WindowRecord, WorkspaceRecord};
+use wgaf_common::dict::{
+    MonitorRecordDict, WindowRecordDict, WorkAreaDict, WorkspaceLayoutDict, WorkspaceRecordDict,
+};
+use wgaf_common::{MonitorRecord, WindowRecord, WorkspaceLayout, WorkspaceRecord};
 use zbus::interface;
 
 /// Kills the spawned daemon even if an assertion panics mid-test, and cleans
@@ -53,6 +55,8 @@ enum StubExtensionError {
     #[zbus(error)]
     ZBus(zbus::Error),
     WindowNotFound(String),
+    WorkspaceNotFound(String),
+    OperationNotApplied(String),
 }
 
 fn canned_window() -> WindowRecord {
@@ -78,6 +82,31 @@ fn canned_workspace() -> WorkspaceRecord {
     }
 }
 
+/// The stub's workspace state: how many there are and which is active.
+///
+/// Real state rather than canned answers, because the workspace methods are
+/// the first ones on this interface whose *effect* is what a caller checks.
+/// A stub that accepted `SwitchWorkspace` and always reported workspace 0 as
+/// active would pass a test asserting the call succeeds and prove nothing.
+///
+/// It models the two behaviours the real extension has to get right and the
+/// daemon has to translate: an out-of-range index is `WorkspaceNotFound`, and
+/// removing the last remaining workspace is refused rather than silently
+/// declined — which is what Mutter does and what makes it worth naming.
+struct StubWorkspaces {
+    count: i32,
+    active: i32,
+}
+
+impl Default for StubWorkspaces {
+    fn default() -> Self {
+        StubWorkspaces {
+            count: 1,
+            active: 0,
+        }
+    }
+}
+
 /// Stub implementation of `org.gnome.Shell.Extensions.Wgaf.V1`: canned data
 /// for window id 1, `WindowNotFound` for anything else.
 ///
@@ -91,9 +120,12 @@ fn canned_workspace() -> WorkspaceRecord {
 /// does. Nothing should ever hand it one: the daemon's bounds check is supposed
 /// to reject those first, and a stub that silently accepted them would hide
 /// exactly the bug the check exists to prevent.
+///
+/// Its workspace state is real too — see [`StubWorkspaces`].
 #[derive(Default)]
 struct StubExtension {
     pointer: std::sync::Mutex<(i32, i32)>,
+    workspaces: std::sync::Mutex<StubWorkspaces>,
 }
 
 #[interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
@@ -158,7 +190,124 @@ impl StubExtension {
     }
 
     fn get_workspaces(&self) -> Vec<WorkspaceRecordDict> {
-        vec![canned_workspace().into()]
+        let ws = self.workspaces.lock().expect("stub workspace lock");
+        (0..ws.count)
+            .map(|index| {
+                WorkspaceRecord {
+                    index,
+                    active: index == ws.active,
+                    // Only workspace 0 holds the canned window.
+                    n_windows: if index == 0 { 1 } else { 0 },
+                }
+                .into()
+            })
+            .collect()
+    }
+
+    fn get_workspace_layout(&self) -> WorkspaceLayoutDict {
+        let ws = self.workspaces.lock().expect("stub workspace lock");
+        WorkspaceLayout {
+            n_workspaces: ws.count,
+            active: ws.active,
+            // A standard vertical GNOME layout: one column, one row per
+            // workspace.
+            rows: ws.count,
+            columns: 1,
+            // Static, matching the default this stub starts in. The dynamic
+            // case is a property of the session's GSettings, not of anything
+            // the daemon does, so there is nothing here to exercise by
+            // flipping it.
+            dynamic: false,
+        }
+        .into()
+    }
+
+    fn switch_workspace(&self, index: i32) -> Result<(), StubExtensionError> {
+        let mut ws = self.workspaces.lock().expect("stub workspace lock");
+        Self::check_index(&ws, index)?;
+        ws.active = index;
+        Ok(())
+    }
+
+    fn add_workspace(&self) -> i32 {
+        let mut ws = self.workspaces.lock().expect("stub workspace lock");
+        ws.count += 1;
+        ws.count - 1
+    }
+
+    fn remove_workspace(&self, index: i32) -> Result<(), StubExtensionError> {
+        let mut ws = self.workspaces.lock().expect("stub workspace lock");
+        Self::check_index(&ws, index)?;
+        if ws.count <= 1 {
+            return Err(StubExtensionError::OperationNotApplied(
+                "the last workspace cannot be removed: expected at least 2 workspaces, got 1"
+                    .to_string(),
+            ));
+        }
+        ws.count -= 1;
+        // Mutter moves the active workspace when the active one goes away;
+        // clamping is enough to model that here.
+        ws.active = ws.active.min(ws.count - 1);
+        Ok(())
+    }
+
+    /// Work areas for a *deliberately partial* match against the stub display
+    /// configuration below.
+    ///
+    /// The first entry's rectangle is exactly `DP-3`'s, so the daemon's
+    /// geometry join finds it. The second matches no monitor at all. Together
+    /// they exercise both halves of that join in one stub: a monitor that gets
+    /// its usable area, and a monitor whose work area stays unknown because
+    /// nothing described it — which is what must happen rather than the daemon
+    /// pairing a leftover entry with whatever monitor is left over.
+    fn get_work_areas(&self) -> Vec<WorkAreaDict> {
+        vec![
+            WorkAreaDict {
+                x: DP3_RECT.0,
+                y: DP3_RECT.1,
+                width: DP3_RECT.2,
+                height: DP3_RECT.3,
+                // A GNOME top bar's worth off the top.
+                work_area_x: DP3_RECT.0,
+                work_area_y: DP3_RECT.1 + TOP_BAR_HEIGHT,
+                work_area_width: DP3_RECT.2,
+                work_area_height: DP3_RECT.3 - TOP_BAR_HEIGHT,
+            },
+            WorkAreaDict {
+                x: 9000,
+                y: 9000,
+                width: 640,
+                height: 480,
+                work_area_x: 9000,
+                work_area_y: 9000,
+                work_area_width: 640,
+                work_area_height: 480,
+            },
+        ]
+    }
+
+    fn reorder_workspace(&self, index: i32, new_index: i32) -> Result<(), StubExtensionError> {
+        let ws = self.workspaces.lock().expect("stub workspace lock");
+        Self::check_index(&ws, index)?;
+        Self::check_index(&ws, new_index)?;
+        // Nothing distinguishes the stub's workspaces from one another, so
+        // there is no order to permute — validating both indices is the whole
+        // of what this stub can meaningfully model.
+        Ok(())
+    }
+
+    /// Validates **both** arguments, which is the point of stubbing it.
+    ///
+    /// This is the only method on the interface that can fail for two unrelated
+    /// reasons — an unknown window or an unknown workspace — and the daemon has
+    /// to map each onto a different named error. Checking the window first
+    /// mirrors the real extension, where `_requireWindow` runs before
+    /// `_requireWorkspace`.
+    fn move_window_to_workspace(&self, id: u32, index: i32) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        let ws = self.workspaces.lock().expect("stub workspace lock");
+        Self::check_index(&ws, index)?;
+        Ok(())
     }
 }
 
@@ -172,6 +321,17 @@ impl StubExtension {
             )))
         }
     }
+
+    fn check_index(ws: &StubWorkspaces, index: i32) -> Result<(), StubExtensionError> {
+        if index >= 0 && index < ws.count {
+            Ok(())
+        } else {
+            Err(StubExtensionError::WorkspaceNotFound(format!(
+                "no workspace at index {index} (there are {})",
+                ws.count
+            )))
+        }
+    }
 }
 
 // --- Stub for org.gnome.Mutter.DisplayConfig -------------------------------
@@ -180,6 +340,22 @@ impl StubExtension {
 // the real Mutter already owns `org.gnome.Mutter.DisplayConfig` on any live
 // session, so nothing else can take that name — `Config::display_config_bus_name`
 // is what lets a test daemon read its monitor layout from here instead.
+
+/// The stub layout's two logical monitors as `(x, y, width, height)`, in the
+/// logical coordinates the daemon computes from `GetCurrentState`.
+///
+/// Named because **two independent stubs have to agree on them**: the display
+/// configuration below produces them from mode sizes and transforms, and
+/// `StubExtension::get_work_areas` reports a work area keyed on `DP-3`'s
+/// rectangle. The daemon joins those two on geometry, so a literal drifting on
+/// one side alone would silently turn the join into a no-match — and the
+/// work-area test would then be asserting the failure path while looking like
+/// it passed the success one.
+const DP3_RECT: (i32, i32, i32, i32) = (1080, 0, 2560, 1440);
+const HDMI1_RECT: (i32, i32, i32, i32) = (0, 0, 1080, 1920);
+
+/// Height of the notional top bar the stub reserves on `DP-3`.
+const TOP_BAR_HEIGHT: i32 = 37;
 
 /// One display mode, as `GetCurrentState` reports it: id, width, height,
 /// refresh rate, preferred scale, supported scales, properties.
@@ -294,13 +470,15 @@ impl StubDisplayConfig {
                 // HDMI-1's mode is landscape; the 90-degree transform on its
                 // logical monitor is what makes it present as 1080x1920. The
                 // daemon has to do that swap itself, and getting it wrong would
-                // put the tall monitor's bounds at 1920x1080.
-                stub_monitor("HDMI-1", 1920, 1080),
-                stub_monitor("DP-3", 2560, 1440),
+                // put the tall monitor's bounds at 1920x1080. Its mode is
+                // therefore its logical size *transposed* — the one place these
+                // constants cannot be used directly.
+                stub_monitor("HDMI-1", HDMI1_RECT.3, HDMI1_RECT.2),
+                stub_monitor("DP-3", DP3_RECT.2, DP3_RECT.3),
             ],
             vec![
-                stub_logical_monitor("HDMI-1", 0, 0, 1, false),
-                stub_logical_monitor("DP-3", 1080, 0, 0, true),
+                stub_logical_monitor("HDMI-1", HDMI1_RECT.0, HDMI1_RECT.1, 1, false),
+                stub_logical_monitor("DP-3", DP3_RECT.0, DP3_RECT.1, 0, true),
             ],
             std::collections::HashMap::new(),
         )
@@ -715,6 +893,636 @@ async fn missing_extension_reports_extension_unavailable() {
                 wgaf_common::WINDOWS_ERROR_EXTENSION_UNAVAILABLE
             );
         }
+        other => panic!("expected a MethodError, got {other:?}"),
+    }
+}
+
+// --- Workspace operations (W18.2) ------------------------------------------
+
+/// Asserts a D-Bus failure carries the expected named error, returning its
+/// description so a test can also check the wording reached the caller.
+fn assert_named_error(err: zbus::Error, expected: &str) -> String {
+    match err {
+        zbus::Error::MethodError(name, description, _) => {
+            assert_eq!(name.as_str(), expected);
+            description.unwrap_or_default()
+        }
+        other => panic!("expected a MethodError, got {other:?}"),
+    }
+}
+
+/// Switching, adding and removing all take effect, and each is visible to the
+/// *next* call rather than only reported as having succeeded.
+///
+/// Reading the state back through `GetWorkspaces`/`GetWorkspaceLayout` after
+/// each mutation is the point: a method that replied successfully without
+/// changing anything would pass an assertion on its own return value, and this
+/// is the defect the extension's confirm-before-replying design exists to
+/// prevent.
+#[tokio::test]
+async fn workspace_mutations_are_visible_to_the_next_call() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WsMutate{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WsMutate{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("wsmutate{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let layout = |connection: zbus::Connection, bus: String| async move {
+        let dict: WorkspaceLayoutDict = call_windows(&connection, &bus, "GetWorkspaceLayout", &())
+            .await
+            .expect("GetWorkspaceLayout should succeed");
+        WorkspaceLayout::from(dict)
+    };
+
+    let before = layout(connection.clone(), daemon_bus_name.clone()).await;
+    assert_eq!(before.n_workspaces, 1);
+    assert_eq!(before.active, 0);
+
+    let added: i32 = call_windows(&connection, &daemon_bus_name, "AddWorkspace", &())
+        .await
+        .expect("AddWorkspace should succeed");
+    assert_eq!(added, 1, "the appended workspace's index is reported");
+    assert_eq!(
+        layout(connection.clone(), daemon_bus_name.clone())
+            .await
+            .n_workspaces,
+        2,
+        "the added workspace must be visible to the next call"
+    );
+
+    call_windows::<(), _>(&connection, &daemon_bus_name, "SwitchWorkspace", &(1i32,))
+        .await
+        .expect("SwitchWorkspace should succeed");
+    assert_eq!(
+        layout(connection.clone(), daemon_bus_name.clone())
+            .await
+            .active,
+        1,
+        "SwitchWorkspace returning Ok must mean the workspace is already active"
+    );
+
+    // Reordering within bounds is accepted; the stub has nothing to permute,
+    // so this covers the call and its validation rather than Mutter's shuffle.
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "ReorderWorkspace",
+        &(1i32, 0i32),
+    )
+    .await
+    .expect("ReorderWorkspace should succeed for two valid indices");
+
+    call_windows::<(), _>(&connection, &daemon_bus_name, "RemoveWorkspace", &(1i32,))
+        .await
+        .expect("RemoveWorkspace should succeed");
+    let after = layout(connection.clone(), daemon_bus_name.clone()).await;
+    assert_eq!(after.n_workspaces, 1);
+    assert_eq!(
+        after.active, 0,
+        "removing the active workspace must leave a valid one active"
+    );
+}
+
+/// An index that does not exist is `WorkspaceNotFound`, on every method that
+/// takes one — including both of `ReorderWorkspace`'s.
+///
+/// The daemon does not know how many workspaces exist; the extension raises
+/// this and the daemon translates it. Covering every method means a future one
+/// added without the translation fails here rather than leaking the
+/// extension's own error name to clients.
+#[tokio::test]
+async fn an_unknown_workspace_index_reports_workspace_not_found() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WsMissing{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WsMissing{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("wsmissing{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    // The stub starts with exactly one workspace, so 7 and -1 are both absent.
+    for (method, args) in [
+        ("SwitchWorkspace", vec![7i32]),
+        ("RemoveWorkspace", vec![7i32]),
+        // The index being moved...
+        ("ReorderWorkspace", vec![7i32, 0i32]),
+        // ...and the destination, which is just as invalid a request.
+        ("ReorderWorkspace", vec![0i32, 7i32]),
+        ("SwitchWorkspace", vec![-1i32]),
+    ] {
+        let err = match args.len() {
+            1 => call_windows::<(), _>(&connection, &daemon_bus_name, method, &(args[0],)).await,
+            _ => {
+                call_windows::<(), _>(&connection, &daemon_bus_name, method, &(args[0], args[1]))
+                    .await
+            }
+        }
+        .expect_err(&format!("{method}{args:?} should be rejected"));
+
+        assert_named_error(err, wgaf_common::WINDOWS_ERROR_WORKSPACE_NOT_FOUND);
+    }
+}
+
+/// Removing the last remaining workspace is refused by name, and the refusal
+/// says why.
+///
+/// Mutter declines this silently, so without the extension's explicit check a
+/// caller would get a successful reply and an unchanged desktop. That it comes
+/// back as `OperationNotApplied` rather than an error is the ADR-0007
+/// classification: nothing malfunctioned and no policy refused — the state
+/// simply did not change.
+#[tokio::test]
+async fn removing_the_last_workspace_is_refused_and_says_why() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WsLast{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WsLast{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("wslast{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let err = call_windows::<(), _>(&connection, &daemon_bus_name, "RemoveWorkspace", &(0i32,))
+        .await
+        .expect_err("removing the only workspace must be refused");
+
+    let description = assert_named_error(err, wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED);
+    assert!(
+        description.contains("last workspace"),
+        "the extension's own explanation must survive translation, got: {description}"
+    );
+
+    // And the desktop is as it was — the refusal did not half-apply.
+    let dict: WorkspaceLayoutDict =
+        call_windows(&connection, &daemon_bus_name, "GetWorkspaceLayout", &())
+            .await
+            .expect("GetWorkspaceLayout should succeed");
+    assert_eq!(WorkspaceLayout::from(dict).n_workspaces, 1);
+}
+
+/// Each workspace mutation is gated by its own capability, and denying one
+/// leaves the others working.
+///
+/// The point of four variants rather than one `ManageWorkspaces`: an operator
+/// can let automation move around their desktop without letting it rearrange
+/// the session. A single capability could not express that, and this is what
+/// proves the split is real rather than decorative.
+#[tokio::test]
+async fn each_workspace_capability_is_gated_separately() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WsDeny{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WsDeny{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("wsdeny{pid}"),
+        // Rearranging denied, navigating allowed.
+        "[capabilities]\nAddWorkspace = \"Deny\"\nRemoveWorkspace = \"Deny\"\n\
+         ReorderWorkspace = \"Deny\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    for (method, args) in [
+        ("AddWorkspace", vec![]),
+        ("RemoveWorkspace", vec![0i32]),
+        ("ReorderWorkspace", vec![0i32, 0i32]),
+    ] {
+        let err = match args.len() {
+            0 => call_windows::<i32, _>(&connection, &daemon_bus_name, method, &())
+                .await
+                .map(|_| ()),
+            1 => call_windows::<(), _>(&connection, &daemon_bus_name, method, &(args[0],)).await,
+            _ => {
+                call_windows::<(), _>(&connection, &daemon_bus_name, method, &(args[0], args[1]))
+                    .await
+            }
+        }
+        .expect_err(&format!("{method} is denied by this policy"));
+
+        assert_named_error(err, wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED);
+    }
+
+    // The one that was not denied still works, so the policy is doing exactly
+    // what it says and not simply refusing everything.
+    call_windows::<(), _>(&connection, &daemon_bus_name, "SwitchWorkspace", &(0i32,))
+        .await
+        .expect("SwitchWorkspace is not denied by this policy");
+}
+
+/// Read-only workspace calls are never gated, matching `ListWindows` and
+/// `GetWorkspaces`, and they keep working under the strictest policy.
+#[tokio::test]
+async fn reading_the_workspace_layout_is_not_gated() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WsRead{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WsRead{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("wsread{pid}"),
+        "[capabilities]\nSwitchWorkspace = \"Deny\"\nAddWorkspace = \"Deny\"\n\
+         RemoveWorkspace = \"Deny\"\nReorderWorkspace = \"Deny\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let dict: WorkspaceLayoutDict =
+        call_windows(&connection, &daemon_bus_name, "GetWorkspaceLayout", &())
+            .await
+            .expect("reading the layout must not need a capability");
+    let layout = WorkspaceLayout::from(dict);
+    assert_eq!(layout.n_workspaces, 1);
+    assert_eq!(layout.columns, 1);
+}
+
+/// Asserts a call failed with a particular named D-Bus error.
+///
+/// The three `MoveWindowToWorkspace` tests below each check a different error
+/// name from the same method, which is exactly the case where hand-written
+/// `match` blocks drift into saying different things about the same failure.
+/// `what` names the case so a failure says which of them broke.
+fn assert_error_name(err: zbus::Error, expected: &str, what: &str) {
+    match err {
+        zbus::Error::MethodError(name, _, _) => assert_eq!(
+            name.as_str(),
+            expected,
+            "{what}: expected {expected}, got {name}"
+        ),
+        other => panic!("{what}: expected a MethodError, got {other:?}"),
+    }
+}
+
+/// `MoveWindowToWorkspace` names *which* argument was wrong.
+///
+/// It is the only method on this interface taking both a window id and a
+/// workspace index, so it is the only one where a caller can be wrong in two
+/// ways — and a single generic failure would leave a script guessing which. The
+/// daemon has to translate two different extension errors coming back from one
+/// call, which is a translation nothing else exercises.
+#[tokio::test]
+async fn moving_a_window_to_a_workspace_distinguishes_a_bad_window_from_a_bad_workspace() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.MoveWs{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.MoveWs{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("movews{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    // Both arguments valid: the canned window, and workspace 0.
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MoveWindowToWorkspace",
+        &(canned_window().id, 0i32),
+    )
+    .await
+    .expect("a known window and a known workspace should succeed");
+
+    let unknown_window = canned_window().id + 999;
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MoveWindowToWorkspace",
+        &(unknown_window, 0i32),
+    )
+    .await
+    .expect_err("an unknown window id must be refused");
+    assert_error_name(
+        err,
+        wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND,
+        "bad window",
+    );
+
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MoveWindowToWorkspace",
+        &(canned_window().id, 7i32),
+    )
+    .await
+    .expect_err("an unknown workspace index must be refused");
+    assert_error_name(
+        err,
+        wgaf_common::WINDOWS_ERROR_WORKSPACE_NOT_FOUND,
+        "bad workspace",
+    );
+}
+
+/// `MoveWindowToWorkspace` is gated by its own capability, not by the
+/// workspace ones.
+///
+/// Denying every workspace capability must leave it working: it changes neither
+/// how many workspaces exist nor which is active. An operator who denied
+/// "rearrange my workspaces" has not asked for "never move a window between
+/// them", and folding the two together would take away a capability nobody
+/// refused.
+#[tokio::test]
+async fn moving_a_window_between_workspaces_is_gated_separately_from_the_workspaces_themselves() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.MoveWsPerm{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.MoveWsPerm{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("movewsperm{pid}"),
+        "[capabilities]\nSwitchWorkspace = \"Deny\"\nAddWorkspace = \"Deny\"\n\
+         RemoveWorkspace = \"Deny\"\nReorderWorkspace = \"Deny\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MoveWindowToWorkspace",
+        &(canned_window().id, 0i32),
+    )
+    .await
+    .expect("MoveWindowToWorkspace is not denied by a workspace-only policy");
+
+    // And the reverse, so this is not passing because the policy was ignored.
+    call_windows::<(), _>(&connection, &daemon_bus_name, "SwitchWorkspace", &(0i32,))
+        .await
+        .expect_err("SwitchWorkspace must still be denied");
+}
+
+/// Denying it specifically must refuse it.
+#[tokio::test]
+async fn a_denied_move_to_workspace_is_refused() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.MoveWsDeny{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.MoveWsDeny{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("movewsdeny{pid}"),
+        "[capabilities]\nMoveWindowToWorkspace = \"Deny\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MoveWindowToWorkspace",
+        &(canned_window().id, 0i32),
+    )
+    .await
+    .expect_err("a denied MoveWindowToWorkspace must fail");
+    assert_error_name(
+        err,
+        wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED,
+        "denied move",
+    );
+}
+
+// --- Monitor listing (W18.2) -----------------------------------------------
+
+/// The layout the daemon has been reading privately since W5 comes back out
+/// intact, in the same logical coordinates every other wgaf command uses.
+///
+/// The rotated monitor is the assertion that matters. `HDMI-1`'s *mode* is
+/// 1920x1080; it reports 1080x1920 only if the daemon applied the 90-degree
+/// transform, and reporting the mode size instead would tell a user the pointer
+/// can go to (1500, 500) on a monitor that is 1080 pixels wide.
+#[tokio::test]
+async fn get_monitors_reports_the_layout_in_logical_coordinates() {
+    let (_daemon, connection, bus) = pointer_test_daemon("Monitors").await;
+
+    let dicts: Vec<MonitorRecordDict> = call_windows(&connection, &bus, "GetMonitors", &())
+        .await
+        .expect("GetMonitors should succeed against the stub display config");
+    let monitors: Vec<MonitorRecord> = dicts.into_iter().map(Into::into).collect();
+
+    assert_eq!(monitors.len(), 2, "both stub monitors should be reported");
+
+    let rotated = &monitors[0];
+    assert_eq!(rotated.connector, "HDMI-1");
+    assert_eq!((rotated.x, rotated.y), (0, 0));
+    assert_eq!(
+        (rotated.width, rotated.height),
+        (1080, 1920),
+        "the 90-degree transform must be applied to the mode size"
+    );
+    assert_eq!(rotated.transform, 1);
+    assert!(!rotated.primary);
+
+    let primary = &monitors[1];
+    assert_eq!(primary.connector, "DP-3");
+    assert_eq!((primary.x, primary.y), (1080, 0));
+    assert_eq!((primary.width, primary.height), (2560, 1440));
+    assert_eq!(primary.transform, 0);
+    assert!(primary.primary);
+}
+
+/// Every rectangle `GetMonitors` reports must be one `MouseMoveAbsolute`
+/// accepts, and the gap between them must be refused by both.
+///
+/// The two answers come from the same `MonitorLayout`, so this is not testing
+/// the arithmetic twice — it is testing that the *reported* bounds are the
+/// *enforced* bounds. A monitor list that disagreed with the bounds check would
+/// be worse than no list: it would tell a user exactly where to aim and then
+/// refuse them.
+#[tokio::test]
+async fn the_reported_bounds_are_the_bounds_that_are_enforced() {
+    let (_daemon, connection, bus) = pointer_test_daemon("MonitorsAgree").await;
+
+    let dicts: Vec<MonitorRecordDict> = call_windows(&connection, &bus, "GetMonitors", &())
+        .await
+        .expect("GetMonitors should succeed");
+    let monitors: Vec<MonitorRecord> = dicts.into_iter().map(Into::into).collect();
+
+    for m in &monitors {
+        // Half-open on the far edges, so the last addressable pixel is one
+        // short of the reported size — the same convention `MonitorRect`
+        // documents.
+        for (x, y) in [
+            (m.x, m.y),
+            (m.x + m.width - 1, m.y + m.height - 1),
+            (m.x + m.width / 2, m.y + m.height / 2),
+        ] {
+            let landed: (i32, i32) = call_input(&connection, &bus, "MouseMoveAbsolute", &(x, y))
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "({x}, {y}) is inside {}'s reported {}x{} rectangle at ({}, {}) but was \
+                         refused: {e}",
+                        m.connector, m.width, m.height, m.x, m.y
+                    )
+                });
+            assert_eq!(landed, (x, y));
+        }
+    }
+
+    // The notch: inside the layout's bounding box, on neither reported
+    // rectangle, and refused. If a future change merged the monitors into one
+    // bounding box, the loop above would still pass and this would not.
+    assert!(
+        !monitors
+            .iter()
+            .any(|m| 2000 >= m.x && 2000 < m.x + m.width && 1700 >= m.y && 1700 < m.y + m.height),
+        "(2000, 1700) must be on no reported monitor"
+    );
+    call_input::<(i32, i32), _>(&connection, &bus, "MouseMoveAbsolute", &(2000i32, 1700i32))
+        .await
+        .expect_err("a coordinate on no reported monitor must be refused");
+}
+
+/// The work area is joined onto the right monitor by geometry, and a monitor
+/// nothing described gets no work area rather than someone else's.
+///
+/// The stub reports two entries: one whose rectangle is exactly `DP-3`'s, and
+/// one matching nothing. The failure this guards against is the tempting
+/// implementation — pairing the two lists by position — which would hand
+/// `HDMI-1` the leftover 9000,9000 rectangle and look entirely plausible in the
+/// output.
+#[tokio::test]
+async fn work_areas_are_matched_to_monitors_by_geometry() {
+    let (_daemon, connection, bus) = pointer_test_daemon("WorkAreas").await;
+
+    let dicts: Vec<MonitorRecordDict> = call_windows(&connection, &bus, "GetMonitors", &())
+        .await
+        .expect("GetMonitors should succeed");
+    let monitors: Vec<MonitorRecord> = dicts.into_iter().map(Into::into).collect();
+
+    let dp3 = monitors
+        .iter()
+        .find(|m| m.connector == "DP-3")
+        .expect("DP-3 should be reported");
+    let work_area = dp3
+        .work_area
+        .expect("DP-3's rectangle is described exactly, so its work area must be found");
+    assert_eq!(work_area.x, DP3_RECT.0);
+    assert_eq!(work_area.y, DP3_RECT.1 + TOP_BAR_HEIGHT);
+    assert_eq!(work_area.width, DP3_RECT.2);
+    assert_eq!(work_area.height, DP3_RECT.3 - TOP_BAR_HEIGHT);
+    assert_ne!(
+        (work_area.x, work_area.y, work_area.width, work_area.height),
+        (dp3.x, dp3.y, dp3.width, dp3.height),
+        "the work area must not simply be the monitor's own geometry"
+    );
+
+    let hdmi1 = monitors
+        .iter()
+        .find(|m| m.connector == "HDMI-1")
+        .expect("HDMI-1 should be reported");
+    assert_eq!(
+        hdmi1.work_area, None,
+        "no reported work area describes HDMI-1's rectangle, so its usable area is unknown — \
+         it must not inherit the unmatched entry"
+    );
+}
+
+/// `GetMonitors` answers with no extension on the bus at all.
+///
+/// This is the property that made `display_config.rs` read Mutter directly
+/// instead of adding a third extension method, and it is worth a test rather
+/// than a comment: a user whose extension is not installed still gets a useful
+/// answer to "where are my screens", and the failure they see for
+/// `wgaf window list` does not spread to this command.
+#[tokio::test]
+async fn get_monitors_works_without_the_extension() {
+    let pid = std::process::id();
+    // Deliberately never started — nobody owns this bus name.
+    let extension_bus_name = format!("org.wgaf.Test.Extension.NoExtMonitors{pid}");
+    let display_config_bus_name = format!("org.wgaf.Test.DisplayConfig.NoExtMonitors{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.NoExtMonitors{pid}");
+
+    start_stub_display_config(&display_config_bus_name).await;
+    let _daemon = spawn_daemon_with_display_config(
+        &daemon_bus_name,
+        &extension_bus_name,
+        Some(&display_config_bus_name),
+        &format!("noextmonitors{pid}"),
+        ALLOW_ALL,
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    // The premise: this session genuinely has no extension.
+    call_windows::<Vec<WindowRecordDict>, _>(&connection, &daemon_bus_name, "ListWindows", &())
+        .await
+        .expect_err("ListWindows must fail without the extension, or this test proves nothing");
+
+    let dicts: Vec<MonitorRecordDict> =
+        call_windows(&connection, &daemon_bus_name, "GetMonitors", &())
+            .await
+            .expect("GetMonitors must not need the extension");
+    let monitors: Vec<MonitorRecord> = dicts.into_iter().map(Into::into).collect();
+    assert_eq!(monitors.len(), 2);
+
+    // The one thing that genuinely does need the extension degrades to
+    // "unknown" rather than to a guess or to a failed call.
+    for m in &monitors {
+        assert_eq!(
+            m.work_area, None,
+            "{}'s usable area cannot be known without the extension, and must not be \
+             defaulted to its full geometry",
+            m.connector
+        );
+    }
+}
+
+/// A missing display configuration is reported as its own named error, not as
+/// a missing extension and not as a bare `org.freedesktop.DBus.Error.Failed`.
+///
+/// A script that cannot tell these apart tells the user to install an
+/// extension when the real problem is that they are not on a GNOME session.
+#[tokio::test]
+async fn a_missing_display_config_reports_monitor_layout_unavailable() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.NoLayout{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.NoLayout{pid}");
+    // Deliberately never started, so the daemon's layout lookup finds no owner.
+    let display_config_bus_name = format!("org.wgaf.Test.DisplayConfig.NoLayout{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_display_config(
+        &daemon_bus_name,
+        &extension_bus_name,
+        Some(&display_config_bus_name),
+        &format!("nolayout{pid}"),
+        ALLOW_ALL,
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let err = call_windows::<Vec<MonitorRecordDict>, _>(
+        &connection,
+        &daemon_bus_name,
+        "GetMonitors",
+        &(),
+    )
+    .await
+    .expect_err("GetMonitors should fail when no display configuration is on the bus");
+
+    match err {
+        zbus::Error::MethodError(name, _, _) => assert_eq!(
+            name.as_str(),
+            wgaf_common::WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE,
+            "a missing layout must not be reported as a missing extension"
+        ),
         other => panic!("expected a MethodError, got {other:?}"),
     }
 }

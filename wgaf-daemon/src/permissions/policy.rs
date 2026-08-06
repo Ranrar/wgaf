@@ -33,10 +33,14 @@
 //! directory), never the same file.
 //!
 //! **Read-only methods are never gated.** `ListWindows`, `GetWorkspaces`,
-//! `ListApps`, `FindElements`, `GetTree`, `GetElementInfo` have no
-//! [`Capability`] variant at all and are never checked — only the thirteen
-//! mutating methods across `org.wgaf.Windows1`/`Input1`/`Accessibility1`
-//! listed below are gated.
+//! `GetWorkspaceLayout`, `GetMonitors`, `ListApps`, `FindElements`, `GetTree`,
+//! `GetElementInfo` have no [`Capability`] variant at all and are never
+//! checked — only the mutating methods across
+//! `org.wgaf.Windows1`/`Input1`/`Accessibility1` listed below are gated, plus
+//! [`Capability::WatchWindows`], which gates a subscription rather than a
+//! change. `Capability::ALL` (test-only) is the catalog the tests below check
+//! the enum against; it cannot fall behind, for the reason its doc comment
+//! gives.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -69,6 +73,31 @@ pub enum Capability {
     /// `WatchWindows = "deny"` is a sentence a user can write, and that
     /// subscriptions appear in `permissions::audit`.
     WatchWindows,
+    /// Making a different workspace active.
+    ///
+    /// Its own variant rather than being folded into the three below, because
+    /// it is the only reversible one: switching moves the user's view and they
+    /// can switch back, where adding, removing and reordering change the shape
+    /// of the session. An operator who wants automation to navigate their
+    /// desktop but not rearrange it needs exactly that line.
+    SwitchWorkspace,
+    AddWorkspace,
+    /// Removing a workspace.
+    ///
+    /// Kept separate from [`Capability::AddWorkspace`] on the W5 precedent: a
+    /// caller granted "add a workspace" has not thereby granted "remove one",
+    /// and only removal disturbs windows that are already open — Mutter moves
+    /// them to a neighbouring workspace.
+    RemoveWorkspace,
+    ReorderWorkspace,
+    /// Sending a window to a different workspace.
+    ///
+    /// Gated as a *window* operation, not a workspace one, and separate from
+    /// both: it changes neither the set of workspaces nor which is active, it
+    /// moves someone's window out of sight. An operator who allows
+    /// `SwitchWorkspace` so automation can navigate has not thereby agreed to
+    /// have their windows rearranged behind them.
+    MoveWindowToWorkspace,
     // org.wgaf.Input1
     TypeText,
     KeyPress,
@@ -90,6 +119,83 @@ pub enum Capability {
 }
 
 impl Capability {
+    /// Every capability, in the order they are declared above.
+    ///
+    /// Rust cannot enumerate an enum's variants, so this is a hand-written
+    /// list — the kind that rots quietly, exactly like
+    /// `REQUIRED_EXTENSION_METHODS` in `windows/mod.rs`. [`Self::ordinal`] is
+    /// what keeps it honest.
+    ///
+    /// **Test-only, because the daemon has no reason to enumerate the
+    /// catalog** — every check is against one named capability, and
+    /// [`PolicyMap::restrictions`] deliberately reports only what is
+    /// configured. Its job is to give the tests below something to be
+    /// exhaustive *about*, so that "the docs list every capability" and "no two
+    /// share a name" are assertions rather than review habits. Making it
+    /// non-test to avoid a dead-code warning would be inventing a caller.
+    #[cfg(test)]
+    pub const ALL: &'static [Capability] = &[
+        Capability::FocusWindow,
+        Capability::MoveWindow,
+        Capability::ResizeWindow,
+        Capability::CloseWindow,
+        Capability::WatchWindows,
+        Capability::SwitchWorkspace,
+        Capability::AddWorkspace,
+        Capability::RemoveWorkspace,
+        Capability::ReorderWorkspace,
+        Capability::MoveWindowToWorkspace,
+        Capability::TypeText,
+        Capability::KeyPress,
+        Capability::KeyRelease,
+        Capability::MouseMove,
+        Capability::MouseMoveAbsolute,
+        Capability::MouseClick,
+        Capability::MouseScroll,
+        Capability::InvokeAction,
+        Capability::SetText,
+        Capability::FocusElement,
+    ];
+
+    /// This capability's position in [`Self::ALL`].
+    ///
+    /// **The only reason this exists is to make [`Self::ALL`] uncheatable.**
+    /// The match below is exhaustive, so a new variant is a compile error here;
+    /// the only way to fix it is to give the variant an index, and
+    /// `every_capability_is_in_all` then fails unless that index is where the
+    /// variant actually sits in `ALL`. A list that cannot silently fall behind
+    /// is worth the twenty lines.
+    ///
+    /// Test-only for the same reason `ALL` is — it exists to police that list,
+    /// not to be called. The compile error therefore lands on `cargo test`
+    /// rather than `cargo build`, which is where every other drift check in
+    /// this tree lands too.
+    #[cfg(test)]
+    const fn ordinal(self) -> usize {
+        match self {
+            Capability::FocusWindow => 0,
+            Capability::MoveWindow => 1,
+            Capability::ResizeWindow => 2,
+            Capability::CloseWindow => 3,
+            Capability::WatchWindows => 4,
+            Capability::SwitchWorkspace => 5,
+            Capability::AddWorkspace => 6,
+            Capability::RemoveWorkspace => 7,
+            Capability::ReorderWorkspace => 8,
+            Capability::MoveWindowToWorkspace => 9,
+            Capability::TypeText => 10,
+            Capability::KeyPress => 11,
+            Capability::KeyRelease => 12,
+            Capability::MouseMove => 13,
+            Capability::MouseMoveAbsolute => 14,
+            Capability::MouseClick => 15,
+            Capability::MouseScroll => 16,
+            Capability::InvokeAction => 17,
+            Capability::SetText => 18,
+            Capability::FocusElement => 19,
+        }
+    }
+
     /// The capability's name exactly as it appears in `permissions.toml`
     /// and in audit-log entries — always identical to the gated D-Bus
     /// method's own name.
@@ -100,6 +206,11 @@ impl Capability {
             Capability::ResizeWindow => "ResizeWindow",
             Capability::CloseWindow => "CloseWindow",
             Capability::WatchWindows => "WatchWindows",
+            Capability::SwitchWorkspace => "SwitchWorkspace",
+            Capability::AddWorkspace => "AddWorkspace",
+            Capability::RemoveWorkspace => "RemoveWorkspace",
+            Capability::ReorderWorkspace => "ReorderWorkspace",
+            Capability::MoveWindowToWorkspace => "MoveWindowToWorkspace",
             Capability::TypeText => "TypeText",
             Capability::KeyPress => "KeyPress",
             Capability::KeyRelease => "KeyRelease",
@@ -161,7 +272,7 @@ impl PolicyMap {
     /// Exists for `org.wgaf.Daemon1.Status`, which reports what the daemon is
     /// actually enforcing. Returning only the non-default entries keeps the
     /// report short and makes the common case unmistakable: an empty list
-    /// means nothing is restricted. Listing all 13 capabilities with mostly
+    /// means nothing is restricted. Listing every capability with mostly
     /// `Allow` would bury the one or two that matter.
     pub fn restrictions(&self) -> Vec<(Capability, PolicyValue)> {
         let mut restricted: Vec<(Capability, PolicyValue)> = self
@@ -305,5 +416,114 @@ mod tests {
     fn capability_display_matches_as_str() {
         assert_eq!(Capability::FocusWindow.to_string(), "FocusWindow");
         assert_eq!(Capability::SetText.to_string(), "SetText");
+    }
+
+    /// `Capability::ALL` really is all of them, and in the order it claims.
+    ///
+    /// Together with `ordinal`'s exhaustive match — which a new variant breaks
+    /// at compile time — this is what stops the catalog drifting from the enum.
+    /// The failure it prevents is quiet: an omitted capability is still gated
+    /// perfectly well, but disappears from anything that enumerates the list.
+    #[test]
+    fn every_capability_is_in_all() {
+        for (index, capability) in Capability::ALL.iter().enumerate() {
+            assert_eq!(
+                capability.ordinal(),
+                index,
+                "`{capability}` is at index {index} in ALL but claims ordinal {}",
+                capability.ordinal()
+            );
+        }
+    }
+
+    /// Every capability is named for the D-Bus method it gates, so no two can
+    /// share a name — and `permissions.toml` keys them by that name, so a
+    /// duplicate would make one of them unconfigurable.
+    #[test]
+    fn capability_names_are_unique() {
+        let mut names: Vec<&str> = Capability::ALL.iter().map(|c| c.as_str()).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "two capabilities share a name");
+    }
+
+    /// Every capability parses from its own name, which is the contract
+    /// `permissions.toml` rests on: the variant name, the `as_str` name and the
+    /// TOML key are all the same string.
+    #[test]
+    fn every_capability_parses_from_its_own_name() {
+        for capability in Capability::ALL {
+            let toml = format!("[capabilities]\n{} = \"Deny\"\n", capability.as_str());
+            let map: PolicyMap = toml::from_str(&toml)
+                .unwrap_or_else(|e| panic!("`{capability}` should parse from its own name: {e}"));
+            assert_eq!(
+                map.get(*capability),
+                PolicyValue::Deny,
+                "`{capability}` did not round-trip through permissions.toml"
+            );
+        }
+    }
+
+    /// The policy file shipped by `make install`, read at compile time. Same
+    /// approach — and the same reason — as `windows/proxy.rs`'s `include_str!`
+    /// of the extension source: the file is part of this repository and ships
+    /// with the daemon, so a drift between them is a `cargo test` failure
+    /// rather than something a user discovers.
+    const SHIPPED_POLICY: &str = include_str!("../../../packaging/permissions.toml");
+
+    /// `packaging/permissions.toml` must mention **every** capability, and
+    /// nothing that is not one.
+    ///
+    /// This file lists each capability explicitly rather than leaving the table
+    /// empty, which makes it a catalog a user reads to learn what can be
+    /// restricted — and a catalog that silently omits a capability is worse
+    /// than no catalog, because its completeness is the whole reason to trust
+    /// it. It had fallen behind twice by the time this test was written: the
+    /// four workspace capabilities were absent, exactly as
+    /// `docs/configuration.md` was still claiming thirteen of them.
+    ///
+    /// It parses the shipped file rather than grepping it, so a capability
+    /// mentioned only in a comment does not count as listed.
+    #[test]
+    fn the_shipped_policy_file_lists_every_capability() {
+        let shipped: PolicyMap = toml::from_str(SHIPPED_POLICY)
+            .expect("packaging/permissions.toml must be valid TOML naming only real capabilities");
+
+        for capability in Capability::ALL {
+            assert!(
+                shipped.capabilities.contains_key(capability),
+                "`{capability}` is missing from packaging/permissions.toml — a user reading that \
+                 file would not learn the capability exists"
+            );
+        }
+
+        // The reverse direction is covered by the parse above: an entry naming
+        // something that is not a capability fails to deserialize. What this
+        // adds is that the file has not grown a *duplicate* set beyond the
+        // catalog's size, which a map would otherwise silently collapse.
+        assert_eq!(
+            shipped.capabilities.len(),
+            Capability::ALL.len(),
+            "packaging/permissions.toml and the capability catalog disagree in size"
+        );
+    }
+
+    /// Every entry in the shipped file is `Allow`.
+    ///
+    /// The file is a starting point, not a policy: wgaf is default-allow, and a
+    /// fresh install must behave exactly as it did before permissions existed.
+    /// A `Deny` or `Prompt` slipping in here would silently break a working
+    /// command for everyone who installs after it, and the failure would look
+    /// like a wgaf bug rather than a policy decision.
+    #[test]
+    fn the_shipped_policy_restricts_nothing() {
+        let shipped: PolicyMap =
+            toml::from_str(SHIPPED_POLICY).expect("packaging/permissions.toml parses");
+        assert!(
+            shipped.restrictions().is_empty(),
+            "the shipped policy must restrict nothing, but restricts: {:?}",
+            shipped.restrictions()
+        );
     }
 }

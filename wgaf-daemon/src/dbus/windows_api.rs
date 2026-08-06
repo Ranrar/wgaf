@@ -12,7 +12,9 @@ use zbus::DBusError;
 use zbus::interface;
 use zbus::message::Header;
 
-use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
+use wgaf_common::dict::{
+    MonitorRecordDict, WindowRecordDict, WorkspaceLayoutDict, WorkspaceRecordDict,
+};
 
 use futures_util::StreamExt;
 
@@ -34,6 +36,22 @@ enum WindowsApiError {
     /// The call was refused by `permissions.toml`'s policy (or the
     /// caller declined an interactive `Prompt`) — see `crate::permissions`.
     PermissionDenied(String),
+    /// No workspace exists at the given index.
+    WorkspaceNotFound(String),
+    /// The extension issued the operation and the compositor did not carry it
+    /// out — so the desktop is as it was.
+    ///
+    /// Its own name rather than a generic failure because it is the one
+    /// outcome a script most needs to branch on: nothing broke, and nothing
+    /// changed.
+    OperationNotApplied(String),
+    /// `GetMonitors` could not read the layout from Mutter.
+    ///
+    /// Kept distinct from [`Self::ExtensionUnavailable`] because the two send
+    /// a user to different places: the layout comes from
+    /// `org.gnome.Mutter.DisplayConfig`, which is present on any GNOME session
+    /// whether or not the wgaf extension is installed.
+    MonitorLayoutUnavailable(String),
 }
 
 impl From<WindowsError> for WindowsApiError {
@@ -42,19 +60,28 @@ impl From<WindowsError> for WindowsApiError {
             WindowsError::WindowNotFound(id) => {
                 Self::WindowNotFound(format!("window {id} not found"))
             }
+            WindowsError::WorkspaceNotFound(index) => {
+                Self::WorkspaceNotFound(format!("workspace {index} not found"))
+            }
+            WindowsError::OperationNotApplied(reason) => Self::OperationNotApplied(reason),
             WindowsError::ExtensionUnavailable { .. } => {
                 Self::ExtensionUnavailable(err.to_string())
             }
             WindowsError::DBus(e) => Self::ZBus(e),
 
-            // Pointer-path failures. `WindowManager` owns the pointer because
-            // only the extension can reach Clutter's seat, but no method on
-            // `org.wgaf.Windows1` moves the pointer — `MouseMoveAbsolute` and
-            // `GetPointerPosition` live on `org.wgaf.Input1`, which translates
-            // these into named errors of its own. They are unreachable here,
-            // and mapping them to a window-ish error name would be a lie; the
-            // catch-all keeps the message intact for the impossible case.
-            err @ (WindowsError::OutOfBounds { .. } | WindowsError::DisplayConfig(_)) => {
+            // `GetMonitors` reaches this one, and it is the only method on this
+            // interface that can — every other caller of the display
+            // configuration is on `org.wgaf.Input1`'s pointer path.
+            err @ WindowsError::DisplayConfig(_) => Self::MonitorLayoutUnavailable(err.to_string()),
+
+            // `WindowManager` owns the pointer because only the extension can
+            // reach Clutter's seat, but no method on `org.wgaf.Windows1` moves
+            // it — `MouseMoveAbsolute` and `GetPointerPosition` live on
+            // `org.wgaf.Input1`, which translates this into a named error of
+            // its own. It is unreachable here, and mapping it to a window-ish
+            // error name would be a lie; the catch-all keeps the message intact
+            // for the impossible case.
+            err @ WindowsError::OutOfBounds { .. } => {
                 Self::ZBus(zbus::Error::Failure(err.to_string()))
             }
         }
@@ -328,6 +355,129 @@ impl WindowsApi {
             .map(WorkspaceRecordDict::from)
             .collect())
     }
+
+    /// How the workspaces are arranged, and whether GNOME is managing their
+    /// number itself. Read-only, so ungated.
+    async fn get_workspace_layout(&self) -> Result<WorkspaceLayoutDict, WindowsApiError> {
+        Ok(self.manager.get_workspace_layout().await?.into())
+    }
+
+    /// Make the workspace at `index` active.
+    ///
+    /// Returning `Ok` means it *is* active: the extension confirms the switch
+    /// is readable before replying, so a caller can follow this with
+    /// `ListWindows` without racing the switch.
+    async fn switch_workspace(
+        &self,
+        index: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::SwitchWorkspace, connection, &header)
+            .await?;
+        Ok(self.manager.switch_workspace(index).await?)
+    }
+
+    /// Append a workspace, returning its index.
+    ///
+    /// The new workspace is **not** activated. Adding a workspace and moving
+    /// the user's view to it are two decisions, and a caller who wants both can
+    /// follow this with `SwitchWorkspace`.
+    ///
+    /// On a session with dynamic workspaces — GNOME's default — the Shell may
+    /// reclaim the new workspace as soon as it is left empty. It is genuinely
+    /// created either way; `GetWorkspaceLayout`'s `dynamic` field is how a
+    /// caller tells which mode the session is in.
+    async fn add_workspace(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<i32, WindowsApiError> {
+        self.permissions
+            .check(Capability::AddWorkspace, connection, &header)
+            .await?;
+        Ok(self.manager.add_workspace().await?)
+    }
+
+    /// Remove the workspace at `index`.
+    ///
+    /// Windows on it are **not** closed — Mutter moves them to a neighbouring
+    /// workspace, the same thing that happens when a user removes one from the
+    /// overview. Removing the last remaining workspace is refused.
+    async fn remove_workspace(
+        &self,
+        index: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::RemoveWorkspace, connection, &header)
+            .await?;
+        Ok(self.manager.remove_workspace(index).await?)
+    }
+
+    /// Move the workspace at `index` to `new_index`, shifting the others to
+    /// make room.
+    ///
+    /// **Every workspace index a caller read before this call is stale
+    /// afterwards.** That is Mutter's model, not a choice made here.
+    async fn reorder_workspace(
+        &self,
+        index: i32,
+        new_index: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::ReorderWorkspace, connection, &header)
+            .await?;
+        Ok(self.manager.reorder_workspace(index, new_index).await?)
+    }
+
+    /// Send a window to the workspace at `index`.
+    ///
+    /// **The window moves; you do not.** The active workspace is unchanged, so
+    /// this sends a window out of sight rather than taking the caller with it.
+    /// Follow with `SwitchWorkspace` to do both.
+    ///
+    /// Returning `Ok` means the window is on that workspace — the extension
+    /// confirms before replying. A workspace index that does not exist is
+    /// refused rather than created; creating one is `AddWorkspace`'s job and
+    /// carries its own capability.
+    async fn move_window_to_workspace(
+        &self,
+        id: u32,
+        index: i32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::MoveWindowToWorkspace, connection, &header)
+            .await?;
+        Ok(self.manager.move_window_to_workspace(id, index).await?)
+    }
+
+    /// The logical monitors making up the desktop.
+    ///
+    /// # Ungated, and it needs no extension
+    ///
+    /// Read-only, so it has no [`Capability`] variant — the same rule
+    /// `ListWindows` and `GetWorkspaces` follow. Unlike those two it does not
+    /// go through the GNOME Shell extension at all: the layout comes from
+    /// Mutter's own `org.gnome.Mutter.DisplayConfig`, so this answers on a
+    /// session where the extension is not installed.
+    ///
+    /// # Why this exists
+    ///
+    /// The daemon has read the monitor layout since W5, to refuse an
+    /// out-of-bounds `MouseMoveAbsolute` — and never told anyone what the
+    /// bounds were. A caller could be told `(2000, 1700) is not on any
+    /// monitor` and have no way to ask which coordinates are.
+    async fn get_monitors(&self) -> Result<Vec<MonitorRecordDict>, WindowsApiError> {
+        let monitors = self.manager.list_monitors().await?;
+        Ok(monitors.into_iter().map(MonitorRecordDict::from).collect())
+    }
 }
 
 #[cfg(test)]
@@ -339,6 +489,7 @@ mod tests {
         let not_found = WindowsApiError::WindowNotFound("window 1 not found".to_string());
         let unavailable = WindowsApiError::ExtensionUnavailable("unavailable".to_string());
         let denied = WindowsApiError::PermissionDenied("denied".to_string());
+        let no_layout = WindowsApiError::MonitorLayoutUnavailable("no layout".to_string());
         assert_eq!(
             not_found.name().as_str(),
             wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND
@@ -350,6 +501,34 @@ mod tests {
         assert_eq!(
             denied.name().as_str(),
             wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED
+        );
+        assert_eq!(
+            no_layout.name().as_str(),
+            wgaf_common::WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE
+        );
+    }
+
+    /// A missing monitor layout must not be reported as a missing extension.
+    ///
+    /// These are different faults with different fixes, and conflating them
+    /// would tell a user to install the wgaf extension when the actual problem
+    /// is that they are not on a GNOME session at all. The catch-all `ZBus`
+    /// variant would be no better — it produces
+    /// `org.freedesktop.DBus.Error.Failed`, which a script cannot branch on.
+    #[test]
+    fn a_display_config_failure_maps_to_its_own_named_error() {
+        use crate::windows::display_config::DisplayConfigError;
+
+        let err = WindowsApiError::from(WindowsError::DisplayConfig(
+            DisplayConfigError::Unavailable {
+                bus_name: "org.gnome.Mutter.DisplayConfig".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            err.name().as_str(),
+            wgaf_common::WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE,
+            "GetMonitors must not report a missing layout as a missing extension"
         );
     }
 }

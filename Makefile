@@ -8,6 +8,8 @@
 #                     /dev/uinput setup steps
 #   make uninstall  - reverse all of the above
 #   make man        - install man pages (optional)
+#   make test-extension - run the GNOME Shell Extension's unit tests
+#                     (needs only gjs; does not touch your session)
 #   make test-apps  - build the GTK4 applications used by some tests
 #                     (needs GTK4 development packages; nothing else does)
 #   make test-desktop - run the tests that drive a real desktop
@@ -26,7 +28,7 @@ SYSTEMD_USER_DIR := $(XDG_CONFIG_HOME)/systemd/user
 SYSTEMD_UNIT := packaging/systemd/wgaf-daemon.service
 MAN_DIR := $(XDG_DATA_HOME)/man/man1
 
-.PHONY: build install uninstall man test-apps test-desktop clean \
+.PHONY: build install uninstall man test-apps test-desktop test-extension clean \
 	cargo-install cargo-uninstall systemd-install systemd-uninstall \
 	config-install check-deps check-gtk
 
@@ -158,6 +160,13 @@ check-gtk:
 
 test-apps: check-gtk
 	cargo build --manifest-path tests/apps/Cargo.toml
+
+# The extension's own unit tests. Unlike 'test-desktop' below, these open no
+# windows, synthesize nothing, and need neither a GNOME session nor the
+# extension to be installed - they run the JS directly under gjs. Safe to run
+# while you are working, and safe in CI.
+test-extension:
+	$(MAKE) -C extension test
 
 # These tests drive your actual desktop: they open windows, move focus, and
 # type on the keyboard for real. That is the point — it is the only way to

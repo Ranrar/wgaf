@@ -157,6 +157,15 @@ impl From<WindowsError> for InputApiError {
             WindowsError::WindowNotFound(id) => {
                 Self::WindowNotFound(format!("window {id} not found"))
             }
+            // Workspace failures, and unreachable from here: no method on
+            // `org.wgaf.Input1` names a workspace or mutates one. Mapping them
+            // onto an input-shaped error name would be a lie, so the catch-all
+            // keeps the message intact for the impossible case — the same
+            // treatment `WindowsApiError` gives `OutOfBounds` in the mirror
+            // situation.
+            err @ (WindowsError::WorkspaceNotFound(_) | WindowsError::OperationNotApplied(_)) => {
+                Self::ZBus(zbus::Error::Failure(err.to_string()))
+            }
         }
     }
 }
@@ -996,6 +1005,28 @@ mod tests {
         fn resize_window(&self, _id: u32, _width: i32, _height: i32) {}
         fn close_window(&self, _id: u32) {}
         fn get_workspaces(&self) -> Vec<WorkspaceRecordDict> {
+            vec![]
+        }
+        // Present only to satisfy `ensure_extension_available`'s member check —
+        // nothing on `org.wgaf.Input1` touches a workspace.
+        fn get_workspace_layout(&self) -> wgaf_common::dict::WorkspaceLayoutDict {
+            wgaf_common::WorkspaceLayout {
+                n_workspaces: 1,
+                active: 0,
+                rows: 1,
+                columns: 1,
+                dynamic: false,
+            }
+            .into()
+        }
+        fn switch_workspace(&self, _index: i32) {}
+        fn add_workspace(&self) -> i32 {
+            0
+        }
+        fn remove_workspace(&self, _index: i32) {}
+        fn reorder_workspace(&self, _index: i32, _new_index: i32) {}
+        fn move_window_to_workspace(&self, _id: u32, _index: i32) {}
+        fn get_work_areas(&self) -> Vec<wgaf_common::dict::WorkAreaDict> {
             vec![]
         }
         fn warp_pointer(&self, x: i32, y: i32) -> (i32, i32) {

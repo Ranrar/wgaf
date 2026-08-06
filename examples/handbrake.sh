@@ -60,6 +60,13 @@ trap cleanup EXIT
 
 # The real name, not a private one — see the note at the top.
 start_daemon "" "org.wgaf.Daemon"
+
+# Checked here rather than before the daemon started, because the daemon is
+# what knows which extension methods it needs. A session still running the
+# extension it was logged in with fails this and says so, instead of dying
+# partway through with a raw D-Bus error once windows are already on screen.
+require_extension_ready
+
 start_app input-test --dialog
 wait_for_window_on_screen "wgaf input-test"
 

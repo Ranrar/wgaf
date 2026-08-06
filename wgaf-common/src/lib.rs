@@ -68,6 +68,35 @@ pub const WINDOWS_ERROR_EXTENSION_UNAVAILABLE: &str =
 /// declined an interactive `Prompt`. See `wgaf-daemon/src/permissions/`.
 pub const WINDOWS_ERROR_PERMISSION_DENIED: &str = "org.wgaf.Windows1.Error.PermissionDenied";
 
+/// D-Bus error name returned by `org.wgaf.Windows1`'s workspace methods when
+/// the given workspace index does not exist. The daemon's own stable name for
+/// the extension's [`EXTENSION_ERROR_WORKSPACE_NOT_FOUND`].
+pub const WINDOWS_ERROR_WORKSPACE_NOT_FOUND: &str = "org.wgaf.Windows1.Error.WorkspaceNotFound";
+
+/// D-Bus error name returned by `org.wgaf.Windows1`'s mutating methods when
+/// the compositor did not carry the operation out.
+///
+/// The daemon's own stable name for the extension's
+/// [`EXTENSION_ERROR_OPERATION_NOT_APPLIED`]. It means the extension issued the
+/// request, re-read the state, and the change never became readable — so the
+/// desktop is as it was. Distinct from a permission denial (nothing was
+/// attempted) and from a plain D-Bus failure (the call itself did not get
+/// through).
+pub const WINDOWS_ERROR_OPERATION_NOT_APPLIED: &str = "org.wgaf.Windows1.Error.OperationNotApplied";
+
+/// D-Bus error name returned by `org.wgaf.Windows1.GetMonitors` when the
+/// monitor layout could not be read from Mutter.
+///
+/// Deliberately **not** [`WINDOWS_ERROR_EXTENSION_UNAVAILABLE`]: the layout
+/// comes from `org.gnome.Mutter.DisplayConfig`, a native GNOME interface, and
+/// is readable on a session with no wgaf extension installed at all. Reporting
+/// this as an extension problem would send a user to fix the wrong thing.
+///
+/// Mirrors [`INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE`], which is the same
+/// failure reached through the pointer path.
+pub const WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE: &str =
+    "org.wgaf.Windows1.Error.MonitorLayoutUnavailable";
+
 // ---------------------------------------------------------------------------
 // Daemon's own public input-automation D-Bus API (org.wgaf.Input1).
 // Served on the same bus name/connection as `org.wgaf.Daemon1`/
@@ -226,6 +255,25 @@ pub const EXTENSION_INTERFACE_NAME: &str = "org.gnome.Shell.Extensions.Wgaf.V1";
 /// to any known window.
 pub const EXTENSION_ERROR_WINDOW_NOT_FOUND: &str =
     "org.gnome.Shell.Extensions.Wgaf.Error.WindowNotFound";
+
+/// D-Bus error name the extension returns when a workspace method is given an
+/// index that doesn't correspond to any workspace.
+///
+/// Distinct from [`EXTENSION_ERROR_WINDOW_NOT_FOUND`] because workspace indices
+/// shift whenever one is added, removed or reordered — a stale index is a
+/// routine thing for a script to hit and to want to handle on its own.
+pub const EXTENSION_ERROR_WORKSPACE_NOT_FOUND: &str =
+    "org.gnome.Shell.Extensions.Wgaf.Error.WorkspaceNotFound";
+
+/// D-Bus error name the extension returns when an operation was issued and the
+/// compositor did not carry it out.
+///
+/// The extension re-reads the state it changed before replying, so this means
+/// the change genuinely never became readable — not that the request failed to
+/// send. Also covers the cases Mutter declines silently, such as removing the
+/// last remaining workspace.
+pub const EXTENSION_ERROR_OPERATION_NOT_APPLIED: &str =
+    "org.gnome.Shell.Extensions.Wgaf.Error.OperationNotApplied";
 
 // ---------------------------------------------------------------------------
 // Daemon's own public accessibility-automation D-Bus API
@@ -441,6 +489,119 @@ pub struct WorkspaceRecord {
     pub index: i32,
     pub active: bool,
     pub n_windows: i32,
+}
+
+/// How the session's workspaces are arranged, as reported by the GNOME Shell
+/// Extension's `GetWorkspaceLayout` and mirrored by the daemon's own
+/// `org.wgaf.Windows1.GetWorkspaceLayout`.
+///
+/// Describes the *set* of workspaces rather than any one of them — which is
+/// why it is one record and not another field on [`WorkspaceRecord`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceLayout {
+    pub n_workspaces: i32,
+    /// Index of the currently active workspace.
+    pub active: i32,
+    /// Rows in the grid GNOME arranges workspaces in.
+    ///
+    /// Always positive — see [`Self::columns`].
+    pub rows: i32,
+    /// Columns in that grid. Needed to work out what "the workspace to the
+    /// right" means — without it, a script can only move forwards and
+    /// backwards.
+    ///
+    /// # Both are always positive, and Mutter's are not
+    ///
+    /// `Meta.WorkspaceManager.get_layout_columns()` returns **-1** on an
+    /// ordinary GNOME session — measured on GNOME Shell 50.1 at one, two, three
+    /// and four workspaces, with `get_layout_rows()` reporting 1 throughout. It
+    /// is an "as many as needed" sentinel, not a count, and Mutter documents it
+    /// nowhere. The extension resolves it from the workspace count before it
+    /// reaches this record (`resolveGrid` in `extension/windows.js`), so
+    /// `rows * columns` always has room for every workspace and neither field
+    /// is ever zero or negative.
+    ///
+    /// Found by `examples/desktop-layout.sh` on its first run against a real
+    /// desktop, which printed `1 rows x -1 columns`.
+    pub columns: i32,
+    /// Whether GNOME is managing the number of workspaces itself.
+    ///
+    /// **This changes what adding and removing a workspace mean**, which is
+    /// why it is reported rather than left for a caller to look up. It is
+    /// GNOME's default. When it is `true`, the Shell keeps exactly one empty
+    /// workspace at the end and reclaims any other that empties — so a
+    /// workspace added by `AddWorkspace` is genuinely created and may then be
+    /// removed again the moment it is left empty. When it is `false` the
+    /// workspace count is fixed by the user and stays where it is put.
+    pub dynamic: bool,
+}
+
+/// One logical monitor, as reported by `org.wgaf.Windows1.GetMonitors`.
+///
+/// # This does not come from the extension
+///
+/// Unlike [`WindowRecord`]/[`WorkspaceRecord`], the source is Mutter's own
+/// `org.gnome.Mutter.DisplayConfig` — read directly by the daemon, so
+/// `wgaf monitor list` answers on a session where the wgaf GNOME Shell
+/// extension is not installed. See `wgaf-daemon/src/windows/display_config.rs`.
+///
+/// # The coordinates are the ones every other wgaf command uses
+///
+/// `x`/`y`/`width`/`height` are in the same global logical pixel space as
+/// [`WindowRecord`]'s geometry and as `wgaf mouse move-to` — measured to agree
+/// exactly, not assumed. Logical means *after* scaling and rotation: a 3840x2160
+/// panel at scale 2.0 reports 1920x1080, and a 1920x1080 panel turned on its
+/// side reports 1080x1920.
+///
+/// # `connector` is the identity, not a position in this list
+///
+/// There is deliberately no index field. The connector name (`DP-3`, `HDMI-1`,
+/// `eDP-1`) is what the hardware is called and what stays put; an index into
+/// this array would look like Mutter's own monitor numbering without being
+/// guaranteed to match it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorRecord {
+    /// Connector name, e.g. `DP-3`, `HDMI-1`, `eDP-1`.
+    pub connector: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    /// The scale factor applied to this monitor, e.g. `1.0` or `2.0`. The
+    /// geometry above is already divided by it.
+    pub scale: f64,
+    /// Mutter's rotation/reflection enum: `0` normal, `1` 90°, `2` 180°,
+    /// `3` 270°, and `4`–`7` the same four flipped. Odd values are the quarter
+    /// turns, for which `width` and `height` are swapped relative to the
+    /// panel's own resolution.
+    pub transform: u32,
+    /// Whether this is the primary monitor — the one GNOME puts the top bar
+    /// and the `Activities` overview on.
+    pub primary: bool,
+    /// The usable part of this monitor: its rectangle minus the top bar, docks
+    /// and anything else reserving space.
+    ///
+    /// **This is the rectangle to size a window against**, not the one above.
+    /// A window moved and resized to the full monitor geometry sits partly
+    /// under GNOME's top bar.
+    ///
+    /// `None` when the work area could not be determined — the wgaf GNOME
+    /// Shell extension is not installed (the monitor list comes from Mutter
+    /// directly and does not need it), or the extension reported monitors that
+    /// could not be matched to this one. Never a guess: an unknown work area is
+    /// reported as unknown rather than defaulted to the full geometry, which
+    /// would be a wrong answer dressed as a right one.
+    pub work_area: Option<Rect>,
+}
+
+/// A rectangle in the same global logical pixel space as [`MonitorRecord`] and
+/// [`WindowRecord`] geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 // ---------------------------------------------------------------------------

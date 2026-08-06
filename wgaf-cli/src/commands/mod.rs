@@ -1,6 +1,8 @@
 pub mod accessibility;
 pub mod input;
+pub mod monitor;
 pub mod window;
+pub mod workspace;
 
 use zbus::Connection;
 

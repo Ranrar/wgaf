@@ -17,7 +17,7 @@
 //! into in production — the attributes below only supply the fallback
 //! defaults used by `ShellExtensionProxy::new`.
 
-use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
+use wgaf_common::dict::{WindowRecordDict, WorkAreaDict, WorkspaceLayoutDict, WorkspaceRecordDict};
 
 #[zbus::proxy(
     interface = "org.gnome.Shell.Extensions.Wgaf.V1",
@@ -43,6 +43,55 @@ pub(crate) trait ShellExtension {
 
     /// Enumerate all workspaces.
     fn get_workspaces(&self) -> zbus::Result<Vec<WorkspaceRecordDict>>;
+
+    /// How the workspaces are arranged, and whether GNOME is managing their
+    /// number itself.
+    fn get_workspace_layout(&self) -> zbus::Result<WorkspaceLayoutDict>;
+
+    /// Make the workspace at `index` the active one.
+    ///
+    /// The extension confirms the switch is readable before replying, so a
+    /// caller may treat the reply as meaning "that workspace is active now".
+    /// A switch that never took effect comes back as the extension's
+    /// `OperationNotApplied` error rather than as success.
+    fn switch_workspace(&self, index: i32) -> zbus::Result<()>;
+
+    /// Append a workspace, returning its index.
+    ///
+    /// **Under dynamic workspaces the result may not survive.** GNOME's
+    /// default is to manage the workspace count itself and reclaim any
+    /// workspace that empties; the workspace is genuinely created either way.
+    /// `GetWorkspaceLayout`'s `dynamic` field is how a caller tells which mode
+    /// the session is in.
+    fn add_workspace(&self) -> zbus::Result<i32>;
+
+    /// Remove the workspace at `index`. Its windows move to a neighbouring
+    /// workspace rather than closing.
+    ///
+    /// Removing the last remaining workspace is refused by name — Mutter
+    /// itself declines silently.
+    fn remove_workspace(&self, index: i32) -> zbus::Result<()>;
+
+    /// Move the workspace at `index` to `new_index`, shifting the others.
+    ///
+    /// Every index a caller read before this call is stale afterwards.
+    fn reorder_workspace(&self, index: i32, new_index: i32) -> zbus::Result<()>;
+
+    /// Send the window with the given id to the workspace at `index`.
+    ///
+    /// The active workspace is unchanged — the window is moved, not followed.
+    /// The extension confirms the window reports itself on the target workspace
+    /// before replying.
+    fn move_window_to_workspace(&self, id: u32, index: i32) -> zbus::Result<()>;
+
+    /// Each monitor's usable area — the screen minus the top bar and docks —
+    /// for the active workspace.
+    ///
+    /// Each entry carries the monitor's own rectangle rather than an index or
+    /// a connector name, because the geometry is what the daemon can match
+    /// against `DisplayConfig`'s list without assuming the two enumerate
+    /// monitors in the same order. See [`WorkAreaDict`].
+    fn get_work_areas(&self) -> zbus::Result<Vec<WorkAreaDict>>;
 
     /// Move the pointer to an absolute position in global logical pixels,
     /// returning where it actually landed.
@@ -95,6 +144,7 @@ pub(crate) trait ShellExtension {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use wgaf_common::dict::{WorkAreaDict, WorkspaceLayoutDict};
     use zbus::zvariant::Type;
 
     /// The extension's D-Bus contract, read at compile time. `include_str!`
@@ -304,23 +354,37 @@ mod tests {
         );
     }
 
-    /// `translate_window_error` matches on this name to turn the extension's
-    /// failure into `org.wgaf.Windows1.Error.WindowNotFound`; a rename on the
-    /// extension side would silently degrade it to a generic error.
-    #[test]
-    fn extension_error_name_matches_wgaf_common_constant() {
+    /// One entry's value from the extension's `DBusErrors` table.
+    fn js_dbus_error(key: &str) -> String {
+        let needle = format!("{key}: `");
         let start = EXTENSION_SOURCE
-            .find("WINDOW_NOT_FOUND: `")
-            .expect("no WINDOW_NOT_FOUND entry in DBusErrors")
-            + "WINDOW_NOT_FOUND: `".len();
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no {key} entry in DBusErrors"))
+            + needle.len();
         let rest = &EXTENSION_SOURCE[start..];
         let end = rest
             .find('`')
-            .expect("unterminated WINDOW_NOT_FOUND literal");
+            .unwrap_or_else(|| panic!("unterminated {key} literal"));
+        resolve_interpolations(&rest[..end])
+    }
 
+    /// `translate_window_error`/`translate_workspace_error` match on these
+    /// names to turn the extension's failures into the daemon's own named
+    /// errors; a rename on the extension side would silently degrade every one
+    /// of them to a generic error, which the CLI then cannot classify.
+    #[test]
+    fn extension_error_names_match_wgaf_common_constants() {
         assert_eq!(
-            resolve_interpolations(&rest[..end]),
+            js_dbus_error("WINDOW_NOT_FOUND"),
             wgaf_common::EXTENSION_ERROR_WINDOW_NOT_FOUND
+        );
+        assert_eq!(
+            js_dbus_error("WORKSPACE_NOT_FOUND"),
+            wgaf_common::EXTENSION_ERROR_WORKSPACE_NOT_FOUND
+        );
+        assert_eq!(
+            js_dbus_error("OPERATION_NOT_APPLIED"),
+            wgaf_common::EXTENSION_ERROR_OPERATION_NOT_APPLIED
         );
     }
 
@@ -358,10 +422,29 @@ mod tests {
                 "ResizeWindow",
                 Args::new(vec![u.clone(), i.clone(), i.clone()], vec![]),
             ),
-            ("CloseWindow", Args::new(vec![u], vec![])),
+            ("CloseWindow", Args::new(vec![u.clone()], vec![])),
             (
                 "GetWorkspaces",
                 Args::new(vec![], vec![sig::<Vec<WorkspaceRecordDict>>()]),
+            ),
+            (
+                "GetWorkspaceLayout",
+                Args::new(vec![], vec![sig::<WorkspaceLayoutDict>()]),
+            ),
+            ("SwitchWorkspace", Args::new(vec![i.clone()], vec![])),
+            ("AddWorkspace", Args::new(vec![], vec![i.clone()])),
+            ("RemoveWorkspace", Args::new(vec![i.clone()], vec![])),
+            (
+                "ReorderWorkspace",
+                Args::new(vec![i.clone(), i.clone()], vec![]),
+            ),
+            (
+                "MoveWindowToWorkspace",
+                Args::new(vec![u.clone(), i.clone()], vec![]),
+            ),
+            (
+                "GetWorkAreas",
+                Args::new(vec![], vec![sig::<Vec<WorkAreaDict>>()]),
             ),
             (
                 "WarpPointer",

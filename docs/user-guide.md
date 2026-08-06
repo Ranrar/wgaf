@@ -55,6 +55,79 @@ wgaf window close 7
 Window ids can change between sessions or after an app restarts — get a
 fresh one from `window list` rather than reusing an old number.
 
+## Workspaces
+
+See what you have, and which one you're on:
+
+```sh
+wgaf workspace list
+```
+
+Move around, and rearrange if you need to:
+
+```sh
+wgaf workspace switch 1
+wgaf workspace add           # prints the index of the new one
+wgaf workspace remove 2
+wgaf workspace reorder 2 0
+```
+
+`wgaf workspace switch` doesn't return until that workspace is actually active,
+so the next command in your script sees the new one. The same is true of the
+other three: they confirm the change happened before reporting success.
+
+**Indices go stale.** GNOME numbers workspaces by position, so adding, removing
+or reordering changes what every later number means. Read the list again rather
+than reusing an index across one of those commands. The last workspace can't be
+removed.
+
+To send a window somewhere else:
+
+```sh
+wgaf window move-to-workspace 7 1
+```
+
+The window moves and you stay put. Follow it with `wgaf workspace switch 1` if
+you want to go too. A neat trick when you want to *watch* it happen: switch
+first, then call the window over — a window appearing is much easier to see than
+a window vanishing.
+
+### Who's in charge of how many workspaces there are
+
+```sh
+wgaf workspace layout
+```
+
+The line to read before using `add` or `remove` is the last one. By default
+GNOME manages the count itself: it keeps one empty workspace at the end and
+takes back any other that empties. So a workspace you add really is added, and
+may well be gone again the moment nothing is on it. That's GNOME doing its job,
+not wgaf failing. Turn it off if you want a fixed number:
+
+```sh
+gsettings set org.gnome.mutter dynamic-workspaces false
+```
+
+The grid on that same output is what "the workspace to the right" means. Most
+GNOME setups report one row with a column per workspace, so "to the right" is
+just the next index.
+
+## Your monitors
+
+```sh
+wgaf monitor list
+```
+
+Positions and sizes are in the same coordinates as `wgaf window list` and
+`wgaf mouse move-to`, already adjusted for scaling and rotation — so a point
+inside one of these rectangles is one the pointer can actually reach. A rotated
+monitor reports the size it *presents*, not the resolution printed on the box.
+
+This is the one command that works without the GNOME Shell extension, since the
+layout comes from GNOME itself. With `--json` each monitor also carries
+`work_area`: the part left over after the top bar and any docks, which is what
+to size a window against if you don't want it sitting underneath them.
+
 ## Typing and clicking
 
 Keyboard input goes to whatever currently has focus on the whole desktop. You

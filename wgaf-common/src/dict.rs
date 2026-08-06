@@ -19,7 +19,7 @@
 //! `extension/dbusInterface.js`'s `windowRecordToVariantDict`/
 //! `workspaceRecordToVariantDict` exactly.
 
-use crate::{DaemonStatus, WindowRecord, WorkspaceRecord};
+use crate::{DaemonStatus, MonitorRecord, WindowRecord, WorkspaceLayout, WorkspaceRecord};
 use zbus::zvariant::{DeserializeDict, SerializeDict, Type};
 
 /// `a{sv}` wire form of [`DaemonStatus`], for `org.wgaf.Daemon1.Status`.
@@ -193,6 +193,143 @@ impl From<WorkspaceRecord> for WorkspaceRecordDict {
     }
 }
 
+/// `a{sv}` wire form of [`WorkspaceLayout`], for `GetWorkspaceLayout` on both
+/// the extension's interface and the daemon's own.
+///
+/// Field names match `extension/dbusInterface.js`'s
+/// `workspaceLayoutToVariantDict` exactly.
+#[derive(Debug, Clone, SerializeDict, DeserializeDict, Type)]
+#[zvariant(signature = "a{sv}")]
+pub struct WorkspaceLayoutDict {
+    n_workspaces: i32,
+    active: i32,
+    rows: i32,
+    columns: i32,
+    dynamic: bool,
+}
+
+impl From<WorkspaceLayoutDict> for WorkspaceLayout {
+    fn from(d: WorkspaceLayoutDict) -> Self {
+        WorkspaceLayout {
+            n_workspaces: d.n_workspaces,
+            active: d.active,
+            rows: d.rows,
+            columns: d.columns,
+            dynamic: d.dynamic,
+        }
+    }
+}
+
+impl From<WorkspaceLayout> for WorkspaceLayoutDict {
+    fn from(r: WorkspaceLayout) -> Self {
+        WorkspaceLayoutDict {
+            n_workspaces: r.n_workspaces,
+            active: r.active,
+            rows: r.rows,
+            columns: r.columns,
+            dynamic: r.dynamic,
+        }
+    }
+}
+
+/// `a{sv}` wire form of [`MonitorRecord`], for `org.wgaf.Windows1.GetMonitors`.
+///
+/// The only dict in this module with **no extension counterpart** — nothing in
+/// `extension/dbusInterface.js` emits this shape, because the monitor layout is
+/// read from `org.gnome.Mutter.DisplayConfig` rather than from the extension.
+/// It is an `a{sv}` anyway, for consistency with the two records above and
+/// because that is the shape a record can gain a field in without a `V2`.
+#[derive(Debug, Clone, SerializeDict, DeserializeDict, Type)]
+#[zvariant(signature = "a{sv}")]
+pub struct MonitorRecordDict {
+    connector: String,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    scale: f64,
+    transform: u32,
+    primary: bool,
+    work_area_x: Option<i32>,
+    work_area_y: Option<i32>,
+    work_area_width: Option<i32>,
+    work_area_height: Option<i32>,
+}
+
+/// `a{sv}` wire form of one entry from the extension's `GetWorkAreas`.
+///
+/// **Carries no monitor index or connector name**, deliberately: the extension
+/// knows monitors by Mutter's index and the daemon knows them by connector
+/// name, and that those two enumerate in the same order is unverified. The
+/// monitor's own rectangle is the join key instead — exact, since two monitors
+/// cannot occupy one rectangle. See `WindowManager::list_monitors`.
+///
+/// Consumed inside the daemon only; nothing on `org.wgaf.Windows1` returns this
+/// shape. The work area reaches callers as four optional fields on
+/// [`MonitorRecordDict`] above.
+#[derive(Debug, Clone, SerializeDict, DeserializeDict, Type)]
+#[zvariant(signature = "a{sv}")]
+pub struct WorkAreaDict {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub work_area_x: i32,
+    pub work_area_y: i32,
+    pub work_area_width: i32,
+    pub work_area_height: i32,
+}
+
+impl From<MonitorRecordDict> for MonitorRecord {
+    fn from(d: MonitorRecordDict) -> Self {
+        MonitorRecord {
+            connector: d.connector,
+            x: d.x,
+            y: d.y,
+            width: d.width,
+            height: d.height,
+            scale: d.scale,
+            transform: d.transform,
+            primary: d.primary,
+            // All four or none — the daemon only ever sets them together, and
+            // a half-known rectangle would be worse than an unknown one.
+            work_area: match (
+                d.work_area_x,
+                d.work_area_y,
+                d.work_area_width,
+                d.work_area_height,
+            ) {
+                (Some(x), Some(y), Some(width), Some(height)) => Some(crate::Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                }),
+                _ => None,
+            },
+        }
+    }
+}
+
+impl From<MonitorRecord> for MonitorRecordDict {
+    fn from(r: MonitorRecord) -> Self {
+        MonitorRecordDict {
+            connector: r.connector,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+            scale: r.scale,
+            transform: r.transform,
+            primary: r.primary,
+            work_area_x: r.work_area.as_ref().map(|w| w.x),
+            work_area_y: r.work_area.as_ref().map(|w| w.y),
+            work_area_width: r.work_area.as_ref().map(|w| w.width),
+            work_area_height: r.work_area.as_ref().map(|w| w.height),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +453,172 @@ mod tests {
         let back: WindowRecordDict = record.clone().into();
         let record2: WindowRecord = back.into();
         assert_eq!(record, record2);
+    }
+
+    /// The maintainer's real layout: a rotated 1080x1920 panel beside a
+    /// 2560x1440 primary. Uses the awkward one (`transform: 1`) rather than a
+    /// tidy invented monitor, so a conversion that dropped `transform` or
+    /// `scale` would be visible here.
+    fn sample_monitor() -> MonitorRecord {
+        MonitorRecord {
+            connector: "HDMI-1".to_string(),
+            x: 0,
+            y: 0,
+            width: 1080,
+            height: 1920,
+            scale: 1.0,
+            transform: 1,
+            primary: false,
+            // A GNOME top bar's worth of reserved space, so a conversion that
+            // dropped the work area or confused it with the monitor's own
+            // geometry is visible rather than coincidentally identical.
+            work_area: Some(crate::Rect {
+                x: 0,
+                y: 37,
+                width: 1080,
+                height: 1883,
+            }),
+        }
+    }
+
+    #[test]
+    fn monitor_record_dict_round_trips_through_conversion() {
+        let record = sample_monitor();
+        let dict: MonitorRecordDict = record.clone().into();
+        let back: MonitorRecord = dict.into();
+        assert_eq!(record, back);
+    }
+
+    /// `GetMonitors` advertises `aa{sv}`, so a single record must encode as
+    /// `a{sv}` — not as the positional struct a plain `Type` derive would give.
+    #[test]
+    fn monitor_record_dict_encodes_as_a_dbus_dict() {
+        assert_eq!(MonitorRecordDict::SIGNATURE.to_string(), "a{sv}");
+
+        let dict: MonitorRecordDict = sample_monitor().into();
+        let ctx = Context::new_dbus(Endian::Little, 0);
+        let encoded = to_bytes(ctx, &dict).expect("encode a{sv}");
+        let (decoded, _): (MonitorRecordDict, usize) =
+            encoded.deserialize().expect("decode a{sv} back into dict");
+
+        assert_eq!(decoded.connector, "HDMI-1");
+        assert_eq!(decoded.height, 1920);
+        assert_eq!(decoded.transform, 1);
+        assert_eq!(decoded.work_area_y, Some(37));
+        assert_eq!(decoded.work_area_height, Some(1883));
+    }
+
+    /// An unknown work area survives the round trip as unknown.
+    ///
+    /// The case that matters: a session with no GNOME Shell extension still
+    /// gets a monitor list, and `None` there must not decode as a zero-sized
+    /// rectangle or as the monitor's full geometry — both would be a guess
+    /// presented as a fact.
+    #[test]
+    fn a_monitor_with_no_known_work_area_round_trips_as_unknown() {
+        let mut record = sample_monitor();
+        record.work_area = None;
+
+        let dict: MonitorRecordDict = record.clone().into();
+        let back: MonitorRecord = dict.into();
+        assert_eq!(back.work_area, None);
+        assert_eq!(back, record);
+    }
+
+    /// A work area is all four fields or none of them.
+    ///
+    /// The dict carries four independent `Option`s, so a malformed `a{sv}`
+    /// from a mismatched extension could in principle supply some and not
+    /// others. Half a rectangle is not a rectangle, and the three known values
+    /// would otherwise be combined with an invented fourth.
+    #[test]
+    fn a_partial_work_area_decodes_as_unknown_rather_than_being_completed() {
+        let ctx = Context::new_dbus(Endian::Little, 0);
+        let mut dict: MonitorRecordDict = sample_monitor().into();
+        dict.work_area_height = None;
+
+        let encoded = to_bytes(ctx, &dict).expect("encode a{sv}");
+        let (decoded, _): (MonitorRecordDict, usize) = encoded.deserialize().expect("decode a{sv}");
+        let record: MonitorRecord = decoded.into();
+
+        assert_eq!(
+            record.work_area, None,
+            "three of four work-area fields is not a work area"
+        );
+    }
+
+    /// The dict and the DTO must stay in step, for the same reason
+    /// `daemon_status_dict_field_names_match_the_dto` exists: the dict defines
+    /// the D-Bus contract, the DTO defines `--json` output, and a change on one
+    /// side alone silently breaks the other's consumers.
+    ///
+    /// **The two do not have identical field names here, unlike every other
+    /// pair in this module**, and that is deliberate. The work area is one
+    /// nested `Rect` on the DTO — the shape a `--json` consumer wants, and the
+    /// only one that makes "all four or none" expressible — and four flat
+    /// `Option<i32>`s on the wire, because `a{sv}` has no nested-struct idiom
+    /// the extension side could produce. So this asserts the DTO's own surface
+    /// and leaves the mapping to the round-trip tests above, which cover it end
+    /// to end.
+    #[test]
+    fn monitor_record_dict_field_names_match_the_dto() {
+        let json = serde_json::to_value(sample_monitor()).expect("serialize DTO");
+        let object = json.as_object().expect("object");
+        let keys: Vec<&String> = object.keys().collect();
+
+        for key in [
+            "connector",
+            "x",
+            "y",
+            "width",
+            "height",
+            "scale",
+            "transform",
+            "primary",
+            "work_area",
+        ] {
+            assert!(
+                keys.iter().any(|k| *k == key),
+                "MonitorRecord lost the `{key}` field — this is a breaking change to \
+                 `wgaf monitor list --json`"
+            );
+        }
+        assert_eq!(
+            keys.len(),
+            9,
+            "a field was added to MonitorRecord without being added to the assertion above \
+             (and probably without being added to MonitorRecordDict either)"
+        );
+
+        // The nested rectangle's own field names are part of the JSON contract
+        // too, and nothing else asserts them.
+        let work_area = object["work_area"]
+            .as_object()
+            .expect("a known work area serializes as an object, not a tuple");
+        for key in ["x", "y", "width", "height"] {
+            assert!(work_area.contains_key(key), "work_area lost `{key}`");
+        }
+        assert_eq!(work_area.len(), 4);
+    }
+
+    /// An unknown work area is JSON `null`, not an omitted key.
+    ///
+    /// A consumer has to be able to tell "nothing is reserving space on this
+    /// monitor" from "wgaf could not find out" — the first is a rectangle equal
+    /// to the monitor, the second is this. Omitting the key entirely would make
+    /// a script that indexes it fail rather than read the absence.
+    #[test]
+    fn an_unknown_work_area_serializes_as_null() {
+        let mut record = sample_monitor();
+        record.work_area = None;
+
+        let json = serde_json::to_value(&record).expect("serialize DTO");
+        let object = json.as_object().expect("object");
+        assert!(
+            object.contains_key("work_area"),
+            "the key must still be present"
+        );
+        assert!(object["work_area"].is_null());
     }
 
     #[test]

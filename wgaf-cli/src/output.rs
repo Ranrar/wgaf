@@ -37,6 +37,47 @@ pub fn print_ok(json: bool, message: &str) {
     }
 }
 
+/// As [`print_ok`], but with extra machine-readable fields alongside the
+/// message.
+///
+/// For the handful of mutating commands that *do* have something to report:
+/// `wgaf workspace add` succeeds and the useful part is the index of the
+/// workspace it made. Without this, the index exists only inside the human
+/// sentence, and a script has to pattern-match prose to recover a number the
+/// daemon returned as an integer — which breaks the moment the wording is
+/// improved.
+///
+/// Extends the status shape rather than switching to [`print_json`]: the
+/// command's *result* is still "it worked", and a consumer that already handles
+/// `{"ok": true, "message": ...}` keeps working and can read the extra field
+/// when it wants it.
+///
+/// `extra` must be a JSON object; anything else is ignored rather than
+/// producing malformed output, since a caller passing the wrong shape is a
+/// programming error and not worth failing a successful command over.
+pub fn print_ok_with(json: bool, message: &str, extra: serde_json::Value) {
+    if json {
+        println!("{}", ok_json(message, extra));
+    } else {
+        println!("{message}");
+    }
+}
+
+/// The object [`print_ok_with`] emits, built separately from printing it so the
+/// JSON contract can be asserted rather than eyeballed.
+fn ok_json(message: &str, extra: serde_json::Value) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    object.insert("ok".to_string(), serde_json::Value::Bool(true));
+    object.insert(
+        "message".to_string(),
+        serde_json::Value::String(message.to_string()),
+    );
+    if let serde_json::Value::Object(fields) = extra {
+        object.extend(fields);
+    }
+    serde_json::Value::Object(object)
+}
+
 /// `wgaf ping`'s status line.
 ///
 /// Identical in spirit to [`print_ok`] but emits the payload under a
@@ -249,4 +290,56 @@ where
     println!("{}", serde_json::to_string(value)?);
     std::io::stdout().flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The extra fields sit alongside `ok` and `message`, not nested under
+    /// them. `examples/desktop-layout.sh` reads `.index` off the top level, and
+    /// so would anything else scripting `wgaf workspace add`.
+    #[test]
+    fn extra_fields_join_the_status_object_at_the_top_level() {
+        let value = ok_json("added workspace 3", serde_json::json!({ "index": 3 }));
+
+        assert_eq!(value["ok"], serde_json::json!(true));
+        assert_eq!(value["message"], serde_json::json!("added workspace 3"));
+        assert_eq!(
+            value["index"],
+            serde_json::json!(3),
+            "the index must be readable as `.index`, not parsed out of the message"
+        );
+    }
+
+    /// A number stays a number. Emitting it as a string would make every
+    /// consumer coerce it, and `jq -r '.index'` would still appear to work —
+    /// which is how that mistake survives review.
+    #[test]
+    fn a_numeric_extra_field_is_not_stringified() {
+        let value = ok_json("added workspace 3", serde_json::json!({ "index": 3 }));
+        assert!(
+            value["index"].is_number(),
+            "expected a JSON number, got {}",
+            value["index"]
+        );
+    }
+
+    /// The shape stays recognizable to a consumer that only knows `print_ok`'s
+    /// `{"ok": true, "message": ...}` — that compatibility is the reason this
+    /// extends the status shape instead of switching to a bare record.
+    #[test]
+    fn no_extra_fields_produces_exactly_the_plain_status_shape() {
+        let value = ok_json("done", serde_json::json!({}));
+        assert_eq!(value, serde_json::json!({ "ok": true, "message": "done" }));
+    }
+
+    /// A caller passing something that is not an object is a programming error,
+    /// and a successful command must not turn into malformed output because of
+    /// it. The fields are dropped; `ok` and `message` survive.
+    #[test]
+    fn a_non_object_extra_is_ignored_rather_than_corrupting_the_output() {
+        let value = ok_json("done", serde_json::json!("not an object"));
+        assert_eq!(value, serde_json::json!({ "ok": true, "message": "done" }));
+    }
 }

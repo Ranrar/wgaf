@@ -46,7 +46,23 @@
  * - `delete()` sends a graceful close request (WM_DELETE_WINDOW / xdg-shell
  *   close) - this is used for CloseWindow rather than `kill()`, which
  *   force-terminates the client process.
+ * - Workspace mutation lives on `global.workspace_manager`
+ *   (Meta.WorkspaceManager), not on the workspaces themselves:
+ *   `append_new_workspace(activate, timestamp)`, `remove_workspace(ws,
+ *   timestamp)` and `reorder_workspace(ws, newIndex)`. Only `activate` is a
+ *   Meta.Workspace method. Verified by introspection against Meta-18.typelib.
+ * - `remove_workspace()` silently declines to remove the last remaining
+ *   workspace. That case is rejected by name here rather than left to fail
+ *   invisibly.
+ * - Whether GNOME manages the workspace count itself is the `dynamic-
+ *   workspaces` GSetting, not anything on Meta.WorkspaceManager - hence the one
+ *   Gio.Settings use in this otherwise pure-Meta file. It changes what
+ *   AddWorkspace means and so is reported to callers rather than hidden.
  */
+
+import Gio from 'gi://Gio';
+
+import {confirmSettled} from './confirm.js';
 
 /** Thrown when a D-Bus caller references a window `id` that doesn't exist
  * (already closed, or never existed). Translated to a named D-Bus error
@@ -58,6 +74,85 @@ export class WindowNotFoundError extends Error {
         this.name = 'WindowNotFoundError';
         this.id = id;
     }
+}
+
+/** Thrown when a D-Bus caller references a workspace index that doesn't exist.
+ * Translated to a named D-Bus error
+ * (org.gnome.Shell.Extensions.Wgaf.Error.WorkspaceNotFound) in
+ * dbusInterface.js.
+ *
+ * Deliberately separate from WindowNotFoundError: workspace indices shift when
+ * a workspace is added, removed or reordered, so "index 4 does not exist" is a
+ * routine thing for a script to hit and to want to handle differently from a
+ * window having closed.
+ */
+export class WorkspaceNotFoundError extends Error {
+    constructor(index, count) {
+        super(`No workspace at index ${index} (there ${count === 1 ? 'is' : 'are'} ${count})`);
+        this.name = 'WorkspaceNotFoundError';
+        this.index = index;
+        this.count = count;
+    }
+}
+
+/** Thrown when a workspace operation was issued and the compositor did not
+ * carry it out. Translated to a named D-Bus error
+ * (org.gnome.Shell.Extensions.Wgaf.Error.OperationNotApplied) in
+ * dbusInterface.js.
+ *
+ * Every mutating method below re-reads the state it changed before replying,
+ * rather than returning as soon as the request has been sent - see the
+ * "confirm, don't assume" note in the WorkspaceManager section.
+ */
+export class OperationNotAppliedError extends Error {
+    constructor(what, expected, actual) {
+        super(`${what}: expected ${expected}, got ${actual}`);
+        this.name = 'OperationNotAppliedError';
+    }
+}
+
+/** Turn Mutter's workspace-grid numbers into two usable ones.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NEEDED - MEASURED 2026-08-06, GNOME Shell 50.1 / Mutter 18
+ * ---------------------------------------------------------------------------
+ * `get_layout_columns()` returns **-1** on an ordinary GNOME session, and keeps
+ * returning -1 as workspaces are added: measured at 1, 2, 3 and 4 workspaces,
+ * with `get_layout_rows()` reporting 1 throughout. A column count of -1 is not
+ * something a caller can compute with, and the whole point of reporting the
+ * grid is working out what "the workspace to the right" means.
+ *
+ * **What is measured and what is inferred, stated separately, because Mutter
+ * documents neither** (there is no gir installed and the typelib carries no doc
+ * strings for these):
+ *
+ *  - MEASURED: the pair is (rows=1, columns=-1), constant across workspace
+ *    counts, on a static-workspace session.
+ *  - INFERRED: -1 is an "unbounded / as many as needed" sentinel rather than a
+ *    real count. A negative number of columns has no other sensible reading,
+ *    and GNOME 40+ does lay workspaces out in one horizontal row, which
+ *    (rows=1, unbounded columns) describes exactly.
+ *
+ * So the sentinel is resolved from the workspace count here rather than passed
+ * on. A caller gets two positive numbers that describe the same layout, and
+ * nobody downstream has to know that -1 ever meant anything.
+ */
+export function resolveGrid(rows, columns, nWorkspaces) {
+    // Never report a zero-sized grid for a session that has workspaces: a
+    // consumer dividing by either number would fail on a value wgaf invented.
+    const total = Math.max(nWorkspaces, 1);
+    const known = value => Number.isInteger(value) && value > 0;
+
+    if (known(rows) && known(columns))
+        return {rows, columns};
+    if (known(rows))
+        return {rows, columns: Math.ceil(total / rows)};
+    if (known(columns))
+        return {rows: Math.ceil(total / columns), columns};
+
+    // Neither is known. One row of everything - which is what GNOME actually
+    // does, and what the measured (1, -1) pair resolves to anyway.
+    return {rows: 1, columns: total};
 }
 
 export class WindowManager {
@@ -154,6 +249,257 @@ export class WindowManager {
             });
         }
         return workspaces;
+    }
+
+    // --- Workspace layout and mutation --------------------------------------
+    //
+    // CONFIRM, DON'T ASSUME
+    //
+    // Every mutating method below re-reads the state it changed and only then
+    // replies, via confirmSettled() (confirm.js). None of them assume the
+    // change is visible the moment the Mutter call returns.
+    //
+    // This is not defensive padding. `warp_pointer()` was measured on this
+    // compositor to take effect several milliseconds after its call returns
+    // (see pointer.js), and a bridge method that replies before its effect is
+    // readable hands the caller a race: `wgaf workspace switch 2` followed by
+    // `wgaf window list` would report the windows of workspace 1. Whether any
+    // particular one of these settles synchronously has NOT been measured -
+    // the extension cannot be reloaded on Wayland without ending the session -
+    // so the code is written not to care either way. A synchronous change
+    // confirms on the first read and costs nothing.
+    //
+    // A change that never becomes readable raises OperationNotAppliedError
+    // rather than replying successfully. "The switch did not happen" is
+    // something a script must be able to see.
+
+    /** GetWorkspaceLayout: how the workspaces are arranged, and whether GNOME
+     * is managing their number itself.
+     *
+     * `dynamic` is the one that changes what the mutating methods below mean,
+     * and it is why this is reported rather than left for a user to look up.
+     * With dynamic workspaces on - the GNOME default - the Shell maintains
+     * exactly one empty workspace at the end and reclaims any other that
+     * empties. AddWorkspace still adds one; it may simply not survive being
+     * left empty. Refusing the call would be wrong (the operation does work),
+     * and staying silent would be worse (the workspace vanishing looks like a
+     * wgaf bug), so the state is reported and the contract documented.
+     *
+     * Rows/columns describe the grid GNOME arranges workspaces in, which is
+     * what "the workspace to the right" means. A vertical GNOME layout reports
+     * one column.
+     */
+    getWorkspaceLayout() {
+        const n = this._workspaceManager.get_n_workspaces();
+        const {rows, columns} = resolveGrid(
+            this._workspaceManager.get_layout_rows(),
+            this._workspaceManager.get_layout_columns(),
+            n
+        );
+        return {
+            n_workspaces: n,
+            active: this._workspaceManager.get_active_workspace_index(),
+            rows,
+            columns,
+            dynamic: this._dynamicWorkspaces(),
+        };
+    }
+
+    /** SwitchWorkspace: make the workspace at `index` the active one.
+     *
+     * Resolves once `get_active_workspace_index()` reports it, so a caller may
+     * treat the reply as meaning "that workspace is active now".
+     */
+    switchWorkspace(index) {
+        const ws = this._requireWorkspace(index);
+        ws.activate(this._timestamp());
+
+        return confirmSettled(
+            () => this._workspaceManager.get_active_workspace_index(),
+            active => active === index
+        ).then(({value, confirmed}) => {
+            if (!confirmed)
+                throw new OperationNotAppliedError('workspace did not become active', index, value);
+        });
+    }
+
+    /** AddWorkspace: append a workspace, resolving with its index.
+     *
+     * Appended rather than inserted, because that is the only thing Mutter
+     * offers - `append_new_workspace` is the sole creation route, and a
+     * caller wanting one elsewhere appends then reorders.
+     *
+     * `false` for `activate`: adding a workspace and jumping to it are two
+     * decisions, and a caller who wanted both can say so with a second call.
+     * Silently moving the user's view is the more surprising default.
+     *
+     * See getWorkspaceLayout() on what `dynamic` means for the result's
+     * lifetime.
+     */
+    addWorkspace() {
+        const before = this._workspaceManager.get_n_workspaces();
+        this._workspaceManager.append_new_workspace(false, this._timestamp());
+
+        return confirmSettled(
+            () => this._workspaceManager.get_n_workspaces(),
+            count => count > before
+        ).then(({value, confirmed}) => {
+            if (!confirmed)
+                throw new OperationNotAppliedError('workspace was not added', `more than ${before}`, value);
+            // The appended one is the last, and its index is the count minus
+            // one - read back rather than assumed to be `before`, since under
+            // dynamic workspaces the Shell may have adjusted the count too.
+            return value - 1;
+        });
+    }
+
+    /** RemoveWorkspace: remove the workspace at `index`.
+     *
+     * Mutter refuses to remove the last remaining workspace, and does so
+     * silently, so that case is rejected here by name instead - a caller told
+     * "no workspace was removed" would have no idea why.
+     *
+     * Windows on the removed workspace are not closed; Mutter moves them to a
+     * neighbouring workspace, which is the same thing that happens when a user
+     * removes one from the overview.
+     */
+    removeWorkspace(index) {
+        const ws = this._requireWorkspace(index);
+        const before = this._workspaceManager.get_n_workspaces();
+        if (before <= 1) {
+            throw new OperationNotAppliedError(
+                'the last workspace cannot be removed', 'at least 2 workspaces', before);
+        }
+        this._workspaceManager.remove_workspace(ws, this._timestamp());
+
+        return confirmSettled(
+            () => this._workspaceManager.get_n_workspaces(),
+            count => count < before
+        ).then(({value, confirmed}) => {
+            if (!confirmed)
+                throw new OperationNotAppliedError('workspace was not removed', `fewer than ${before}`, value);
+        });
+    }
+
+    /** ReorderWorkspace: move the workspace at `index` to `newIndex`.
+     *
+     * Every other workspace shifts to make room, so the indices a caller read
+     * before this call are stale afterwards. That is Mutter's model, not a
+     * choice made here.
+     */
+    reorderWorkspace(index, newIndex) {
+        const ws = this._requireWorkspace(index);
+        // Validated against the same bounds: reordering to a position that
+        // does not exist is the same mistake as naming a workspace that does
+        // not, and Mutter would otherwise clamp or ignore it silently.
+        this._requireWorkspace(newIndex);
+        this._workspaceManager.reorder_workspace(ws, newIndex);
+
+        return confirmSettled(
+            () => ws.index(),
+            at => at === newIndex
+        ).then(({value, confirmed}) => {
+            if (!confirmed)
+                throw new OperationNotAppliedError('workspace was not reordered', newIndex, value);
+        });
+    }
+
+    /** GetWorkAreas: the usable area of each monitor - the screen minus the
+     * top bar, docks, and anything else reserving space.
+     *
+     * WHY EACH ENTRY CARRIES THE MONITOR'S OWN GEOMETRY TOO
+     *
+     * `get_work_area_for_monitor()` takes a *Mutter* monitor index. The daemon
+     * knows monitors by connector name, from
+     * org.gnome.Mutter.DisplayConfig, and whether Mutter's indices enumerate
+     * those in the same order is an assumption nobody here has measured. So
+     * the index is not exposed at all: each entry reports the monitor's
+     * rectangle, and the daemon matches on that. Two monitors cannot occupy
+     * the same rectangle, so the match is exact where an index would have been
+     * a guess.
+     *
+     * WHICH WORKSPACE
+     *
+     * The active one. Work areas are per-workspace in Mutter's API because
+     * struts can in principle differ, though on GNOME the top bar is global
+     * and they do not. Reporting the active workspace's is both the useful
+     * answer and the one a caller can predict.
+     */
+    getWorkAreas() {
+        const workspace = this._workspaceManager.get_active_workspace();
+        const areas = [];
+        for (let i = 0; i < this._display.get_n_monitors(); i++) {
+            const monitor = this._display.get_monitor_geometry(i);
+            const work = workspace.get_work_area_for_monitor(i);
+            areas.push({
+                x: monitor.x,
+                y: monitor.y,
+                width: monitor.width,
+                height: monitor.height,
+                work_area_x: work.x,
+                work_area_y: work.y,
+                work_area_width: work.width,
+                work_area_height: work.height,
+            });
+        }
+        return areas;
+    }
+
+    /** MoveWindowToWorkspace: send a window to another workspace.
+     *
+     * Resolves once the window reports itself on the target workspace, so a
+     * caller may treat the reply as meaning it is there now.
+     *
+     * The window is moved, not followed: the active workspace is left alone, so
+     * this sends a window away rather than taking the user with it. A caller
+     * wanting both says so with a SwitchWorkspace of its own - the same split
+     * AddWorkspace makes, and for the same reason.
+     *
+     * `change_workspace_by_index(index, append)` takes a second argument that
+     * would create workspaces up to `index` if it does not exist. Passed as
+     * false: the index is validated here first, so a caller naming a workspace
+     * that is not there gets WorkspaceNotFound rather than silently causing new
+     * workspaces to appear. Creating one is AddWorkspace's job, and it is gated
+     * by its own capability.
+     */
+    moveWindowToWorkspace(id, index) {
+        const win = this._requireWindow(id);
+        this._requireWorkspace(index);
+        win.change_workspace_by_index(index, false);
+
+        return confirmSettled(
+            () => {
+                const ws = win.get_workspace();
+                return ws ? ws.index() : -1;
+            },
+            at => at === index
+        ).then(({value, confirmed}) => {
+            if (!confirmed)
+                throw new OperationNotAppliedError('window did not move workspace', index, value);
+        });
+    }
+
+    /** Whether GNOME is managing the number of workspaces itself.
+     *
+     * Read from the same GSetting the Shell reads. Wrapped because a missing
+     * or unreadable schema must not take out an otherwise working call: the
+     * flag is advisory - it tells a caller how to interpret AddWorkspace's
+     * result - and no operation here depends on it.
+     */
+    _dynamicWorkspaces() {
+        try {
+            return new Gio.Settings({schema_id: 'org.gnome.mutter'}).get_boolean('dynamic-workspaces');
+        } catch (e) {
+            logError(e, 'wgaf: could not read org.gnome.mutter dynamic-workspaces');
+            return false;
+        }
+    }
+
+    _requireWorkspace(index) {
+        const count = this._workspaceManager.get_n_workspaces();
+        if (!Number.isInteger(index) || index < 0 || index >= count)
+            throw new WorkspaceNotFoundError(index, count);
+        return this._workspaceManager.get_workspace_by_index(index);
     }
 
     focusWindow(id) {

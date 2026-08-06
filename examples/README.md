@@ -11,10 +11,16 @@ what the application itself reports.
 | Example | What it shows | Types or clicks? |
 |---|---|---|
 | `window-management.sh` | Listing, moving, focusing, resizing and closing real windows | no |
+| `desktop-layout.sh` | Listing your screens, switching workspaces, and sending a window to another one | no |
 | `typing.sh` | Typing into a window you name, and holding a key across another | **yes** |
 | `widgets.sh` | Operating buttons and text boxes by name rather than by coordinate | no |
 | `mouse.sh` | Moving the pointer, clicking a button, and scrolling a list that really moves | **yes** |
 | `handbrake.sh` | The emergency stop: your Escape stops wgaf, wgaf's own Escape does not | **yes** |
+
+`desktop-layout.sh` is the one that rearranges the session rather than just the
+windows in it: it switches workspaces, and adds one if your desktop only has a
+single workspace. It puts you back on the workspace you started on and removes
+anything it added, including if you press Ctrl-C partway through.
 
 `handbrake.sh` is the one example that needs you at the keyboard rather than
 away from it — it asks you to press Escape, and then to release it. It also

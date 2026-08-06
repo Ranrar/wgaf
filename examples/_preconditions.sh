@@ -136,6 +136,55 @@ require_extension() {
   load an extension's code mid-session."
 }
 
+# Checks the *running* extension is new enough for the daemon in this tree,
+# rather than only that some extension is running.
+#
+# An installed extension can be older than the wgaf being built here, because
+# GNOME only loads an extension's code at login: `make install` puts the new
+# files in place and the session keeps running the old ones until you log out.
+# The old code answers every method it used to and fails on whatever was added
+# since — so `require_extension` above is satisfied and the example then dies
+# partway through, after windows are already on screen, with a raw D-Bus error
+# and jq complaining about the error object it was handed. That reads as "wgaf
+# is broken" rather than "this session has yesterday's extension in it".
+#
+# **Asks the daemon rather than checking a list of method names here.** The
+# daemon already does exactly this check, against the methods it actually calls,
+# and it re-checks on every `wgaf status` rather than caching. A list of names
+# maintained in this file would be a second copy that silently falls behind the
+# first — the failure `REQUIRED_EXTENSION_METHODS` exists to prevent, recreated
+# in shell.
+#
+# Must be called *after* start_daemon, since it goes through the daemon.
+require_extension_ready() {
+    local status detail
+
+    # `|| true` because `wgaf status` deliberately exits non-zero when a
+    # subsystem is unhealthy — which is exactly the case being handled here.
+    # Without it, `set -o pipefail` makes the assignment fail and `set -e` ends
+    # the script silently at this line, before the explanation below is ever
+    # printed. Captured once and read twice, so the two reads cannot disagree.
+    status="$(wgaf --json status 2>/dev/null || true)"
+
+    if [ "$(printf '%s' "$status" | jq -r '.extension_available // false')" = "true" ]; then
+        return 0
+    fi
+
+    detail="$(printf '%s' "$status" | jq -r '.extension_detail // "no detail reported"')"
+    missing "the wgaf GNOME Shell extension cannot serve this example:
+
+  $detail
+
+  If that says the extension is older than the daemon, install the current one
+  and start a new session:
+
+      make -C extension install
+      # then log out and back in
+
+  GNOME Shell on Wayland cannot reload an extension mid-session, so the logout
+  is not optional."
+}
+
 # Builds wgaf if needed and returns the paths. Building here rather than asking
 # you to do it first means the example always runs what is in the tree now.
 require_wgaf_built() {

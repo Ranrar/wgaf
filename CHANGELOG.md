@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-06
+
 ### Added
+
+- **`wgaf monitor list` — where your screens actually are.** The daemon has read your monitor layout since absolute pointer positioning shipped, and used it to refuse a `wgaf mouse move-to` that would land off-screen. It never told anyone what the bounds were. You could be told `(2000, 1700) is not on any monitor` with no way to ask which coordinates are.
+
+  Positions and sizes are in the same coordinates as `wgaf window list` and `wgaf mouse move-to`, already adjusted for scaling and rotation — so a point inside one of these rectangles is one the pointer can genuinely reach. A monitor turned on its side is reported at its rotated size, and marked as rotated, because reading 1920x1080 for a screen that is 1080 wide is how coordinate arithmetic silently goes wrong.
+
+  With `--json`, each monitor also carries its **usable area** — the screen minus GNOME's top bar and any docks. That is the rectangle to size a window against: a window resized to the full monitor geometry sits partly underneath the top bar. It is `null` when it could not be determined rather than guessed at, so "not known" and "nothing is reserving space" stay different answers. It is deliberately absent from the plain listing, which prints exactly one line per monitor — an extra line there read as an extra display.
+
+  **This is the one command that works without the GNOME Shell extension**, since the layout comes from GNOME's own display configuration rather than through the extension. Without the extension you still get your monitors; only the usable area is unavailable.
+
+- **`wgaf workspace` — switch, add, remove and reorder workspaces, not just list them.** wgaf could report which workspaces existed and which one you were on, and could do nothing about either. `wgaf workspace switch 2` now moves you, `add` and `remove` change how many there are, and `reorder` moves one to a different position.
+
+  **`wgaf workspace switch` does not return until the workspace is actually active.** Not "the request was sent" — the extension re-reads the state inside the compositor and only then replies. So `wgaf workspace switch 1 && wgaf window list` lists the windows of workspace 1, with no sleep and no polling loop in between. The same holds for adding and removing. This is the lesson from `wgaf window resize`, which reports success before the new geometry can be read, applied once in a shared place rather than repeated per command.
+
+  A change that is allowed, attempted, and then does not happen is reported as such — exit code 4, the same "the desktop is not what you assumed" outcome a failed `--window` focus check uses — rather than as an error or a silent success. Nothing broke and nothing refused, so it is worth retrying.
+
+  **`wgaf workspace layout`** reports how many workspaces there are, which is active, the grid GNOME arranges them in, and — the one to read before using `add` or `remove` — whether GNOME is managing the number for you. The grid is always two positive numbers you can compute with: GNOME's own answer for the column count is `-1`, meaning "as many as needed", and wgaf works out what that comes to rather than passing a number nobody can divide by on to you. It does by default: it keeps one empty workspace at the end and takes back any other that empties, so a workspace you add really is added and may well be gone again by the time you look. Refusing to add one would have been wrong (the operation works), and staying quiet would have been worse (the workspace vanishing looks like a wgaf bug), so wgaf tells you which mode you are in.
+
+  Removing a workspace does **not** close the windows on it — GNOME moves them to a neighbouring workspace, exactly as it does when you remove one from the overview. Removing the last remaining workspace is refused with a message saying so; GNOME itself declines silently.
+
+  Each of the four is a separate permission — `SwitchWorkspace`, `AddWorkspace`, `RemoveWorkspace`, `ReorderWorkspace` — rather than one workspace permission, so "let automation move around my desktop, but not rearrange it" is something you can write down. Listing workspaces and reading the layout are not gated at all, like every other read-only command.
+
+  `wgaf workspace add --json` reports the new workspace's index as `index`, a number alongside the usual `ok` and `message`. The index is the entire result of that command, and a script should not have to pattern-match it out of an English sentence that might be reworded later.
+
+- **`wgaf window move-to-workspace <id> <index>` — send a window to another workspace.** The window moves and you do not: the workspace you are looking at is unchanged, so this puts a window out of the way rather than taking you with it. Follow it with `wgaf workspace switch` to go too. The command does not return until the window is actually there.
+
+  Gated by `MoveWindowToWorkspace`, which is separate from the four workspace permissions and grouped with the window ones. It changes neither how many workspaces exist nor which one you are on — it takes one of your windows out of sight, and letting automation navigate your desktop is not the same as letting it rearrange your windows behind you. A workspace index that does not exist is refused rather than created; creating one is `wgaf workspace add`, with its own permission.
+
+- **`examples/desktop-layout.sh` — a runnable demonstration of the above.** It lists your monitors and checks that against what GNOME itself reports, then opens a real window and moves between workspaces around it. The check that matters is the application's, not wgaf's: a window on a workspace you are not looking at cannot hold keyboard focus, so the application reporting that it lost focus is independent evidence that the switch really happened — where asking wgaf which workspace is active would be asking the same code that just claimed to change it.
+
+  It is the first example that rearranges the session rather than the windows in it, so it puts you back on the workspace you started on and removes any workspace it added, including if you interrupt it partway through.
+
+  The examples also now check that the *running* extension is new enough for what they need, rather than only that one is running. GNOME loads an extension's code at login, so an install and a still-open session leave you with yesterday's extension answering everything it used to and failing on anything added since. Previously that surfaced as a raw D-Bus error partway through, after windows had already opened — which reads as wgaf being broken rather than as a session that needs restarting.
 
 - **`examples/` — scripts you can run to watch wgaf work.** Five of them, each a demonstration of one thing: managing windows, typing into a window you name, operating controls by name, moving and clicking and scrolling, and the emergency stop. They open real windows on your desktop, drive them with the ordinary `wgaf` command, and print a pass or fail line per step.
 
@@ -38,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The daemon also now refuses to start watching against an extension too old to send these events, naming what is missing. Without that check the watch would begin, report nothing, and be indistinguishable from a desktop where nothing was happening.
 
 ### Changed
+
+- **`wgaf window workspaces` is now `wgaf workspace list`.** Workspaces got their own commands, and switching a workspace is not an operation on a window — leaving the listing under `wgaf window` while the rest lived elsewhere would have been two places to look for one subject. There is deliberately no alias: two spellings of one command is how a command line drifts.
+
+- **This release needs the GNOME Shell extension reinstalled.** The workspace and monitor work adds methods to the extension's D-Bus interface, so a daemon from this release talking to an older extension will refuse window and workspace commands rather than failing one at a time in confusing ways. The message names the missing method and says the extension needs updating. Run the install again and log out and back in — GNOME only loads extensions at login on Wayland. `wgaf monitor list` keeps working throughout, since it does not go through the extension.
 
 - **`cargo test` no longer types on your keyboard.** Five tests across `tests/input.rs` and `tests/permissions.rs` synthesized real keystrokes and real pointer movement into whatever window happened to have focus — `4096` letter `a`s, the string `ab1!`, the string `hi`, a click, a scroll and a pointer move — and none of them were marked as tests that take over the desktop. So an ordinary `cargo test`, the command every contributor, editor test-runner and CI job treats as harmless, typed into the session that ran it. It escaped into the maintainer's own windows five times before this was fixed.
 
@@ -81,7 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This is testing infrastructure and changes nothing about how wgaf behaves, beyond the fix above.
 
-## [0.8.0] - 2026-08-03
+## [0.8.1] - 2026-08-03
 
 ### Fixed
 
@@ -347,7 +385,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wgaf-cli`: `connect()` and `map_err` were byte-identical triplicates across `commands/{window,input,accessibility}.rs`, differing only in a doc comment naming each interface's error set. Both now live once in `commands/mod.rs` alongside `describe_dbus_error`. `ping` was switched onto the shared pair too — it called `Connection::session()` directly and propagated raw errors, making it the one command that could still surface an unrendered failure.
 - `wgaf-cli`: added `wgaf-cli/src/output.rs` as the single place defining what `--json` emits. `print_ok` was previously duplicated verbatim in `commands/window.rs`, `commands/input.rs`, and `commands/accessibility.rs`, with `commands::ping` carrying a fourth inline variant, and the pretty-printed record arm (`serde_json::to_string_pretty`) repeated at six call sites. The JSON these produce is a machine-readable interface, so it needs one definition that changes deliberately rather than four that can drift. Pure refactor — every output shape is byte-identical, including `ping`'s divergent `{"ok": true, "response": ...}` key, which is preserved as-is and documented as a wart to resolve when the JSON contract is next versioned deliberately.
 
-## [0.7.0] - 2026-07-28
+## [0.7.2] - 2026-07-28
 
 ### Added
 
@@ -358,7 +396,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `wgaf-daemon`: the `wgaf-daemon` unit test binary now requires a session bus, which it did not before (the integration tests already did) — the new `permissions::notify` tests deliberately fail rather than skip when no bus is available, since a silently skipped regression test is worse than a failing one. Run the suite under `dbus-run-session -- cargo test` in environments without one.
 
-## [0.7.0] - 2026-07-27
+## [0.7.1] - 2026-07-27
 
 ### Fixed
 

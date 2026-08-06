@@ -265,9 +265,143 @@ reports the size you asked for before using it. The same caution applies to
 Closes the window gracefully (same as clicking its close button — not a hard
 kill; the app gets a chance to prompt "save changes?").
 
-### `wgaf window workspaces`
+### `wgaf window move-to-workspace <id> <index>`
+
+Sends a window to another workspace.
+
+**The window moves; you do not.** The workspace you are looking at does not
+change, so this puts a window out of the way rather than taking you with it.
+Follow it with `wgaf workspace switch <index>` to go too.
+
+The command does not return until the window is actually on that workspace, so
+the next thing you run sees it there.
+
+The workspace has to exist. An index that does not is refused rather than
+created — run `wgaf workspace add` first if you need a new one. Requires the
+`MoveWindowToWorkspace` permission, which is separate from the workspace ones:
+denying `SwitchWorkspace` and friends does not stop this, and denying this does
+not stop them.
+
+```sh
+wgaf window move-to-workspace 42 1     # send it away
+wgaf workspace switch 1                # and follow it
+```
+
+---
+
+## `wgaf workspace ...`
+
+Workspace management, backed by the same `org.wgaf.Windows1` interface (and the
+GNOME Shell Extension behind it). Indices are the ones `wgaf workspace list`
+reports.
+
+**Every index you have read goes stale as soon as a workspace is added, removed
+or reordered.** GNOME numbers workspaces by position, so anything that changes
+the order changes what a number means. Re-read the list rather than reusing an
+index across such a command.
+
+### `wgaf workspace list`
 
 Lists all workspaces (`index`, `n_windows`, whether it's the active one).
+
+```
+  0  windows=6    [active]
+  1  windows=0
+```
+
+### `wgaf workspace layout`
+
+Shows how the workspaces are arranged:
+
+```
+workspaces: 2
+active:     0
+grid:       2 rows x 1 columns
+managed by: GNOME (dynamic workspaces — an added workspace is reclaimed once it is left empty)
+```
+
+The last line is the one to read before using `add` or `remove`. GNOME's default
+is to manage the number of workspaces for you: it keeps one empty workspace at
+the end and takes back any other that empties. If that is on, `wgaf workspace
+add` really does add a workspace, and GNOME may well remove it again the moment
+nothing is on it. Turn it off with:
+
+```sh
+gsettings set org.gnome.mutter dynamic-workspaces false
+```
+
+The grid is what "the workspace to the right" means. A standard GNOME setup
+reports **one row** with a column per workspace, so on most desktops "to the
+right" is simply the next index.
+
+Both numbers are always positive. GNOME's own answer for the column count is
+`-1`, meaning "as many as needed" rather than a count; wgaf works out what that
+comes to, so `rows × columns` always has room for every workspace and you never
+have to handle a negative.
+
+### `wgaf workspace switch <index>`
+
+Switches to a workspace.
+
+The command does not return until that workspace is actually active, so you can
+follow it with `wgaf window list` without racing the switch. If the switch never
+takes effect the command says so and exits 4 (see [Exit
+codes](#exit-codes)) — nothing broke and nothing changed, so it is worth
+retrying rather than treating as a failure.
+
+### `wgaf workspace add`
+
+Adds a workspace at the end and prints its index.
+
+It does **not** switch to the new workspace — run `wgaf workspace switch` if you
+want that. Read `wgaf workspace layout` first if you are not sure whether GNOME
+is managing the count (see above).
+
+### `wgaf workspace remove <index>`
+
+Removes a workspace.
+
+Windows on it are **not** closed: GNOME moves them to a neighbouring workspace,
+exactly as it does when you remove one from the overview. The last remaining
+workspace cannot be removed, and asking to says so.
+
+### `wgaf workspace reorder <index> <new-index>`
+
+Moves a workspace to a different position. Every other workspace shifts to make
+room, so re-read `wgaf workspace list` afterwards.
+
+---
+
+## `wgaf monitor ...`
+
+### `wgaf monitor list`
+
+Lists the monitors making up your desktop.
+
+```
+DP-3        2560x1440  at   1080,0       [primary]
+            2560x1403  at   1080,37      usable area
+HDMI-1      1080x1920  at      0,0       [rotated 90]
+```
+
+Positions and sizes are in the same coordinates as `wgaf window list` and
+`wgaf mouse move-to`, and are already adjusted for scaling and rotation — so a
+point inside one of these rectangles is one the pointer can actually be moved
+to. A rotated monitor is reported at its rotated size (the example above is a
+1920x1080 panel turned on its side), and a scaled one at its scaled size.
+
+The second line appears only when something is reserving space — GNOME's top
+bar, a dock. **That is the rectangle to size a window against**: a window moved
+and resized to the full monitor geometry sits partly underneath the top bar.
+
+`--json` adds `connector`, `scale`, `transform` and a `work_area` object per
+monitor. `work_area` is `null` when the usable area could not be determined,
+which is the case when the wgaf GNOME Shell extension is not installed — the
+monitor list itself comes from GNOME directly and does not need it. A `null`
+there means "not known", never "nothing is reserving space"; the latter reports
+a `work_area` equal to the monitor.
+
+This is the one command that works without the extension.
 
 ---
 
@@ -573,6 +707,16 @@ the element's own default action (AT-SPI action index 0).
 
 Requests keyboard focus for an element.
 
+**This does not work on GTK 4 applications, and that is not something wgaf can
+fix.** GTK 4's accessibility bridge refuses the underlying request for every
+widget — measured across GTK 4.22, including on buttons that take focus
+perfectly well when you press Tab. Since most of the GNOME desktop is GTK, expect
+this command to fail more often than not.
+
+Use `wgaf window focus` to focus the *window*, and `wgaf a11y click` to operate
+the control you were aiming at. Between them they cover nearly every reason you
+would have wanted this.
+
 ### `wgaf a11y set-text <element-ref> <text>`
 
 Replaces an element's text content. Requires the element to implement AT-SPI's
@@ -590,8 +734,21 @@ than a raw D-Bus error dump, for example:
   returned by `wgaf type`/`wgaf key press`/`wgaf key release`/
   `wgaf key combo` when `--window` names an id that doesn't exist, not only
   by `wgaf window` commands.
+- `workspace not found` — no workspace at that index. Workspace indices shift
+  whenever one is added, removed or reordered, so an index read before such a
+  command may well have gone stale; re-read `wgaf workspace list`.
+- `the operation was not applied` — the request was allowed and attempted, and
+  the desktop did not change. Nothing broke and nothing refused, so this is
+  worth retrying — see exit code `4` below. Also how "the last workspace cannot
+  be removed" is reported.
 - `GNOME Shell Extension bridge unavailable` — the extension isn't
-  installed/enabled, or the daemon can't reach it.
+  installed/enabled, or the daemon can't reach it. If the message says the
+  interface "has no `<Name>` method", the extension is older than the daemon:
+  reinstall it and log out and back in.
+- `monitor layout unavailable` — GNOME's display configuration couldn't be read,
+  so `wgaf monitor list` has nothing to report. Distinct from the extension
+  being unavailable: this comes from GNOME itself, so the usual cause is not
+  being on a GNOME session at all.
 - `input device unavailable` — `/dev/uinput` isn't accessible (permissions).
 - `unknown key` / `invalid mouse button` — bad argument to `key`/`mouse click`.
 - `text too long` — the text given to `wgaf type` is over
@@ -638,7 +795,7 @@ Any other failure falls back to the underlying D-Bus error.
 | `1` | Error — something failed unexpectedly. Printed with an `error:` prefix. |
 | `2` | Not from wgaf: clap's own exit code for a malformed command line (an unknown flag, a missing argument). The daemon never sees the request. |
 | `3` | Denied — refused by `permissions.toml` policy, the kill switch (`wgaf stop` or Escape), or a configured limit (`text too long`, `input rate limit exceeded`). |
-| `4` | Unverified — a `--window` target's focus could not be confirmed (`focus could not be verified`). |
+| `4` | Unverified — the command was allowed and attempted and the desktop is not what you assumed. A `--window` target's focus could not be confirmed (`focus could not be verified`), or a workspace command's change never took effect (`the operation was not applied`). Worth retrying. |
 
 Only exit code `1` prints the `error:` prefix. `3` and `4` print the daemon's
 own message with no prefix — it already reads as a complete sentence, not a

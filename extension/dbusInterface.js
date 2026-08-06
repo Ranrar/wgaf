@@ -38,7 +38,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import {WindowNotFoundError} from './windows.js';
+import {OperationNotAppliedError, WindowNotFoundError, WorkspaceNotFoundError} from './windows.js';
 
 export const DBUS_BUS_NAME = 'org.gnome.Shell.Extensions.Wgaf';
 export const DBUS_OBJECT_PATH = '/org/gnome/Shell/Extensions/Wgaf';
@@ -52,6 +52,8 @@ const ERROR_PREFIX = 'org.gnome.Shell.Extensions.Wgaf.Error';
  */
 export const DBusErrors = {
     WINDOW_NOT_FOUND: `${ERROR_PREFIX}.WindowNotFound`,
+    WORKSPACE_NOT_FOUND: `${ERROR_PREFIX}.WorkspaceNotFound`,
+    OPERATION_NOT_APPLIED: `${ERROR_PREFIX}.OperationNotApplied`,
 };
 
 export const DBUS_INTERFACE_XML = `
@@ -78,6 +80,29 @@ export const DBUS_INTERFACE_XML = `
     </method>
     <method name="GetWorkspaces">
       <arg type="aa{sv}" direction="out" name="workspaces"/>
+    </method>
+    <method name="GetWorkspaceLayout">
+      <arg type="a{sv}" direction="out" name="layout"/>
+    </method>
+    <method name="SwitchWorkspace">
+      <arg type="i" direction="in" name="index"/>
+    </method>
+    <method name="AddWorkspace">
+      <arg type="i" direction="out" name="index"/>
+    </method>
+    <method name="RemoveWorkspace">
+      <arg type="i" direction="in" name="index"/>
+    </method>
+    <method name="ReorderWorkspace">
+      <arg type="i" direction="in" name="index"/>
+      <arg type="i" direction="in" name="new_index"/>
+    </method>
+    <method name="MoveWindowToWorkspace">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="i" direction="in" name="index"/>
+    </method>
+    <method name="GetWorkAreas">
+      <arg type="aa{sv}" direction="out" name="work_areas"/>
     </method>
     <method name="WarpPointer">
       <arg type="i" direction="in" name="x"/>
@@ -131,6 +156,22 @@ function workspaceRecordToVariantDict(record) {
     };
 }
 
+/** Workspace layout field shape: n_workspaces (i), active (i), rows (i),
+ * columns (i), dynamic (b).
+ *
+ * Describes the set of workspaces rather than any one of them, which is why it
+ * is a single dict and not another entry in the array above.
+ */
+function workspaceLayoutToVariantDict(layout) {
+    return {
+        n_workspaces: new GLib.Variant('i', layout.n_workspaces),
+        active: new GLib.Variant('i', layout.active),
+        rows: new GLib.Variant('i', layout.rows),
+        columns: new GLib.Variant('i', layout.columns),
+        dynamic: new GLib.Variant('b', layout.dynamic),
+    };
+}
+
 // --- Signal payload builders, used by extension.js when emitting on the
 // exported D-Bus object. emit_signal() needs a single GVariant matching the
 // signal's full argument tuple, unlike method return values (which
@@ -150,6 +191,26 @@ export function windowFocusChangedSignalVariant(id) {
     return new GLib.Variant('(u)', [id]);
 }
 
+/** Work-area record field shape: the monitor's own rectangle (x, y, width,
+ * height - all i) plus its usable sub-rectangle (work_area_x, work_area_y,
+ * work_area_width, work_area_height - all i).
+ *
+ * There is no monitor index or connector name here on purpose - see
+ * WindowManager.getWorkAreas() for why the geometry is the identity.
+ */
+function workAreaToVariantDict(record) {
+    return {
+        x: new GLib.Variant('i', record.x),
+        y: new GLib.Variant('i', record.y),
+        width: new GLib.Variant('i', record.width),
+        height: new GLib.Variant('i', record.height),
+        work_area_x: new GLib.Variant('i', record.work_area_x),
+        work_area_y: new GLib.Variant('i', record.work_area_y),
+        work_area_width: new GLib.Variant('i', record.work_area_width),
+        work_area_height: new GLib.Variant('i', record.work_area_height),
+    };
+}
+
 /** Map a JS exception thrown out of WindowManager into a named D-Bus error
  * where we recognize it, or pass it through unchanged otherwise. Unknown
  * exceptions still safely become a generic D-Bus error reply via
@@ -160,7 +221,40 @@ export function windowFocusChangedSignalVariant(id) {
 function translateError(error) {
     if (error instanceof WindowNotFoundError)
         return Gio.DBusError.new_for_dbus_error(DBusErrors.WINDOW_NOT_FOUND, error.message);
+    if (error instanceof WorkspaceNotFoundError)
+        return Gio.DBusError.new_for_dbus_error(DBusErrors.WORKSPACE_NOT_FOUND, error.message);
+    if (error instanceof OperationNotAppliedError)
+        return Gio.DBusError.new_for_dbus_error(DBusErrors.OPERATION_NOT_APPLIED, error.message);
     return error;
+}
+
+/** Complete a D-Bus invocation from a Promise, translating a rejection into a
+ * named D-Bus error the same way the synchronous methods' try/catch does.
+ *
+ * `toVariant` builds the reply tuple for a method that returns something;
+ * omitting it replies with the empty tuple, which is what a method with no
+ * out-args needs.
+ *
+ * Exists because an unhandled rejection inside a `<Name>Async` handler is
+ * invisible: Gio.DBusExportedObject's own exception handling covers a *thrown*
+ * exception, not a rejected Promise, so the caller would simply wait for a
+ * reply that never comes. Every asynchronous method here must therefore
+ * terminate its own invocation on both paths.
+ */
+function replyWhenSettled(invocation, promise, toVariant = null) {
+    promise.then(result => {
+        invocation.return_value(toVariant ? toVariant(result) : null);
+    }).catch(error => {
+        // translateError() hands back a GLib.Error for the failures with a
+        // named D-Bus error, and the original exception for anything else.
+        // The same split the synchronous methods get for free from
+        // Gio.DBusExportedObject's own exception handling.
+        const translated = translateError(error);
+        if (translated instanceof GLib.Error)
+            invocation.return_gerror(translated);
+        else
+            invocation.return_error_literal(Gio.DBusError, Gio.DBusError.FAILED, `wgaf: ${error.message}`);
+    });
 }
 
 /**
@@ -213,6 +307,52 @@ export class WgafDBusInterface {
 
     GetWorkspaces() {
         return this._wm.getWorkspaces().map(workspaceRecordToVariantDict);
+    }
+
+    GetWorkspaceLayout() {
+        return workspaceLayoutToVariantDict(this._wm.getWorkspaceLayout());
+    }
+
+    GetWorkAreas() {
+        return this._wm.getWorkAreas().map(workAreaToVariantDict);
+    }
+
+    /* The four workspace mutations below are asynchronous for the same reason
+     * WarpPointerAsync is: each confirms its effect is readable before replying
+     * (see confirm.js), so none of them can be a plain synchronous method.
+     *
+     * As there, the `Async` suffix is Gio.DBusExportedObject's dispatch
+     * convention and does NOT appear in the interface XML - these are
+     * `SwitchWorkspace`, `AddWorkspace`, `RemoveWorkspace` and
+     * `ReorderWorkspace` on the bus.
+     */
+
+    SwitchWorkspaceAsync(params, invocation) {
+        const [index] = params;
+        replyWhenSettled(invocation, this._wm.switchWorkspace(index));
+    }
+
+    AddWorkspaceAsync(params, invocation) {
+        replyWhenSettled(
+            invocation,
+            this._wm.addWorkspace(),
+            index => new GLib.Variant('(i)', [index])
+        );
+    }
+
+    RemoveWorkspaceAsync(params, invocation) {
+        const [index] = params;
+        replyWhenSettled(invocation, this._wm.removeWorkspace(index));
+    }
+
+    ReorderWorkspaceAsync(params, invocation) {
+        const [index, newIndex] = params;
+        replyWhenSettled(invocation, this._wm.reorderWorkspace(index, newIndex));
+    }
+
+    MoveWindowToWorkspaceAsync(params, invocation) {
+        const [id, index] = params;
+        replyWhenSettled(invocation, this._wm.moveWindowToWorkspace(id, index));
     }
 
     /* Asynchronous by necessity, not by preference.

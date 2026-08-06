@@ -114,14 +114,44 @@ to opt into `verification_level` themselves.
 
 ## `permissions.toml` — per-capability policy
 
-Thirteen capabilities exist, one per gated (mutating) command. Read-only
-commands (`window list`, `a11y find`, etc.) can't be gated at all:
+Nineteen capabilities exist, one per gated command. Read-only commands
+(`window list`, `workspace list`, `monitor list`, `a11y find`, etc.) can't be
+gated at all:
 
 | Interface | Capabilities |
 |---|---|
-| `org.wgaf.Windows1` | `FocusWindow`, `MoveWindow`, `ResizeWindow`, `CloseWindow` |
+| `org.wgaf.Windows1` — windows | `FocusWindow`, `MoveWindow`, `ResizeWindow`, `CloseWindow`, `MoveWindowToWorkspace`, `WatchWindows` |
+| `org.wgaf.Windows1` — workspaces | `SwitchWorkspace`, `AddWorkspace`, `RemoveWorkspace`, `ReorderWorkspace` |
 | `org.wgaf.Input1` | `TypeText`, `KeyPress`, `KeyRelease`, `MouseMove`, `MouseMoveAbsolute`, `MouseClick`, `MouseScroll` |
 | `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement` |
+
+Each name is the D-Bus method it gates, and the command it belongs to is the
+obvious one — `SwitchWorkspace` is `wgaf workspace switch`, and so on.
+
+`WatchWindows` is the odd one: it gates *observing* rather than acting, since
+`wgaf window watch` opens a feed of every window title that appears for as long
+as it runs. Note it is a statement of intent rather than a wall — anything
+running as you can listen on the session bus without asking wgaf — but denying
+it means `wgaf window watch` says so instead of sitting on a silent stream.
+
+The four workspace capabilities are deliberately separate rather than one
+`ManageWorkspaces`, so that "let automation move around my desktop, but not
+rearrange it" is a thing you can actually write:
+
+```toml
+[capabilities]
+AddWorkspace = "Deny"
+RemoveWorkspace = "Deny"
+ReorderWorkspace = "Deny"
+# SwitchWorkspace stays allowed
+```
+
+`MoveWindowToWorkspace` is listed with the *window* capabilities above rather
+than with these, and gated separately from both. It changes neither how many
+workspaces exist nor which one you are on — it takes one of your windows out of
+sight. Allowing automation to navigate your desktop is not the same as letting
+it rearrange your windows behind you, so denying it leaves `wgaf workspace
+switch` working and stops `wgaf window move-to-workspace`.
 
 Each can be `Allow`, `Deny`, or `Prompt`:
 

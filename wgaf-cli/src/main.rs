@@ -59,12 +59,29 @@ enum Command {
     /// again once input is allowed.
     Release,
 
-    /// Window management commands (list/focus/move/resize/close, plus
-    /// workspace listing), backed by the daemon's `org.wgaf.Windows1`
-    /// D-Bus interface.
+    /// Window management commands (list/focus/move/resize/close), backed by
+    /// the daemon's `org.wgaf.Windows1` D-Bus interface.
     Window {
         #[command(subcommand)]
         command: WindowCommand,
+    },
+
+    /// Workspace commands (list/switch/add/remove/reorder), backed by the
+    /// daemon's `org.wgaf.Windows1` D-Bus interface.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+
+    /// Monitor commands, backed by the daemon's `org.wgaf.Windows1` D-Bus
+    /// interface.
+    ///
+    /// Unlike every other command here, this one does not need the wgaf GNOME
+    /// Shell extension: the layout is read from Mutter's own display
+    /// configuration.
+    Monitor {
+        #[command(subcommand)]
+        command: MonitorCommand,
     },
 
     /// Type a string of text (ASCII/US-QWERTY only), backed by the
@@ -361,14 +378,88 @@ enum WindowCommand {
     /// Close a window by id.
     Close(WindowId),
 
-    /// List all workspaces.
-    Workspaces,
+    /// Send a window to another workspace.
+    ///
+    /// The window moves; you stay where you are. Run `wgaf workspace switch`
+    /// afterwards to follow it. The command does not return until the window is
+    /// actually on that workspace.
+    ///
+    /// The workspace has to exist already — use `wgaf workspace add` first if
+    /// it does not.
+    MoveToWorkspace {
+        #[command(flatten)]
+        id: WindowId,
+        /// The workspace index, as reported by `wgaf workspace list`.
+        index: i32,
+    },
 }
 
 #[derive(Args)]
 struct WindowId {
     /// The window id, as reported by `wgaf window list`.
     id: u32,
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    /// List all workspaces, with their window counts and which one is active.
+    List,
+
+    /// Show how the workspaces are arranged: how many there are, which is
+    /// active, the grid GNOME lays them out in, and whether GNOME is managing
+    /// their number itself.
+    ///
+    /// That last one is worth knowing before using `add` or `remove`: with
+    /// dynamic workspaces — GNOME's default — the Shell keeps one empty
+    /// workspace at the end and reclaims any other that empties.
+    Layout,
+
+    /// Switch to a workspace by index.
+    ///
+    /// The command does not return until that workspace is actually active, so
+    /// a following `wgaf window list` sees the new one.
+    Switch(WorkspaceIndex),
+
+    /// Add a workspace at the end, printing its index.
+    ///
+    /// The new workspace is not switched to — run `wgaf workspace switch` for
+    /// that. With dynamic workspaces on, GNOME may reclaim it as soon as it is
+    /// left empty; `wgaf workspace layout` says which mode you are in.
+    Add,
+
+    /// Remove a workspace by index.
+    ///
+    /// Windows on it are not closed — GNOME moves them to a neighbouring
+    /// workspace. The last remaining workspace cannot be removed.
+    Remove(WorkspaceIndex),
+
+    /// Move a workspace to a different position.
+    ///
+    /// Every other workspace shifts to make room, so indices read before this
+    /// are out of date afterwards.
+    Reorder {
+        #[command(flatten)]
+        index: WorkspaceIndex,
+        /// The position to move it to.
+        new_index: i32,
+    },
+}
+
+#[derive(Args)]
+struct WorkspaceIndex {
+    /// The workspace index, as reported by `wgaf workspace list`.
+    index: i32,
+}
+
+#[derive(Subcommand)]
+enum MonitorCommand {
+    /// List the monitors making up the desktop.
+    ///
+    /// Positions and sizes are in the same coordinate space as `wgaf window
+    /// list` and `wgaf mouse move-to`, and are already adjusted for scaling and
+    /// rotation — so a coordinate inside one of these rectangles is one the
+    /// pointer can actually be moved to.
+    List,
 }
 
 #[tokio::main]
@@ -465,7 +556,28 @@ async fn run(cli: Cli) -> CliResult<Outcome> {
             WindowCommand::Close(WindowId { id }) => {
                 commands::window::close(bus_name, id, json).await?
             }
-            WindowCommand::Workspaces => commands::window::workspaces(bus_name, json).await?,
+            WindowCommand::MoveToWorkspace {
+                id: WindowId { id },
+                index,
+            } => commands::window::move_to_workspace(bus_name, id, index, json).await?,
+        },
+        Command::Workspace { command } => match command {
+            WorkspaceCommand::List => commands::workspace::list(bus_name, json).await?,
+            WorkspaceCommand::Layout => commands::workspace::layout(bus_name, json).await?,
+            WorkspaceCommand::Switch(WorkspaceIndex { index }) => {
+                commands::workspace::switch(bus_name, index, json).await?
+            }
+            WorkspaceCommand::Add => commands::workspace::add(bus_name, json).await?,
+            WorkspaceCommand::Remove(WorkspaceIndex { index }) => {
+                commands::workspace::remove(bus_name, index, json).await?
+            }
+            WorkspaceCommand::Reorder {
+                index: WorkspaceIndex { index },
+                new_index,
+            } => commands::workspace::reorder(bus_name, index, new_index, json).await?,
+        },
+        Command::Monitor { command } => match command {
+            MonitorCommand::List => commands::monitor::list(bus_name, json).await?,
         },
         Command::Type { text, window } => {
             commands::input::type_text(bus_name, &text, window, json).await?
@@ -653,12 +765,88 @@ mod tests {
     }
 
     #[test]
-    fn parses_window_workspaces() {
-        let cli = Cli::try_parse_from(["wgaf", "window", "workspaces"]).expect("parse");
+    fn parses_workspace_list() {
+        let cli = Cli::try_parse_from(["wgaf", "workspace", "list"]).expect("parse");
         assert!(matches!(
             cli.command,
-            Command::Window {
-                command: WindowCommand::Workspaces
+            Command::Workspace {
+                command: WorkspaceCommand::List
+            }
+        ));
+    }
+
+    /// Workspace listing moved out of `wgaf window` when the workspace noun
+    /// gained its mutating verbs — switching a workspace is not an operation
+    /// on a window, and two spellings of one command is how a CLI drifts.
+    /// Pinned so it cannot quietly come back as a second way to do this.
+    #[test]
+    fn workspaces_is_no_longer_a_window_subcommand() {
+        assert!(Cli::try_parse_from(["wgaf", "window", "workspaces"]).is_err());
+    }
+
+    #[test]
+    fn parses_workspace_switch() {
+        let cli = Cli::try_parse_from(["wgaf", "workspace", "switch", "2"]).expect("parse");
+        match cli.command {
+            Command::Workspace {
+                command: WorkspaceCommand::Switch(WorkspaceIndex { index }),
+            } => assert_eq!(index, 2),
+            _ => panic!("expected Workspace(Switch)"),
+        }
+    }
+
+    #[test]
+    fn parses_workspace_add_and_layout() {
+        assert!(matches!(
+            Cli::try_parse_from(["wgaf", "workspace", "add"])
+                .expect("parse")
+                .command,
+            Command::Workspace {
+                command: WorkspaceCommand::Add
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["wgaf", "workspace", "layout"])
+                .expect("parse")
+                .command,
+            Command::Workspace {
+                command: WorkspaceCommand::Layout
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_workspace_reorder_with_both_positions() {
+        let cli = Cli::try_parse_from(["wgaf", "workspace", "reorder", "3", "1"]).expect("parse");
+        match cli.command {
+            Command::Workspace {
+                command:
+                    WorkspaceCommand::Reorder {
+                        index: WorkspaceIndex { index },
+                        new_index,
+                    },
+            } => {
+                assert_eq!(index, 3);
+                assert_eq!(new_index, 1);
+            }
+            _ => panic!("expected Workspace(Reorder)"),
+        }
+    }
+
+    #[test]
+    fn rejects_workspace_commands_missing_their_index() {
+        assert!(Cli::try_parse_from(["wgaf", "workspace", "switch"]).is_err());
+        assert!(Cli::try_parse_from(["wgaf", "workspace", "remove"]).is_err());
+        assert!(Cli::try_parse_from(["wgaf", "workspace", "reorder", "1"]).is_err());
+    }
+
+    #[test]
+    fn parses_monitor_list() {
+        let cli = Cli::try_parse_from(["wgaf", "monitor", "list"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Command::Monitor {
+                command: MonitorCommand::List
             }
         ));
     }

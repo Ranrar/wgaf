@@ -50,18 +50,26 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
-      # Two system dependencies. `dbus` because the tests need a session bus,
-      # and `libxkbcommon-dev` because the daemon links against xkbcommon to
+      # Three system dependencies. `dbus` because the tests need a session bus,
+      # `libxkbcommon-dev` because the daemon links against xkbcommon to
       # read the session's keyboard layout — without it the build fails at the
       # link step with `unable to find library -lxkbcommon`, which is easy to
       # misread as a Rust problem. GitHub's own runner image happens to ship
       # it; the slimmer images `act` uses locally do not, so naming it here
-      # keeps the two honest with each other.
+      # keeps the two honest with each other. `gjs` runs the extension's own
+      # unit tests — it is the JS interpreter alone, not GNOME Shell, so it
+      # brings no session with it.
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y dbus libxkbcommon-dev
+        run: sudo apt-get update && sudo apt-get install -y dbus libxkbcommon-dev gjs
 
       - name: Build
         run: cargo build --workspace --all-targets
+
+      # The extension is a separate GJS program the Rust compiler never sees, so
+      # nothing above covers a line of it. This runs the parts that do not need
+      # a live GNOME Shell — no session, no windows, nothing synthesized.
+      - name: Extension unit tests
+        run: make test-extension
 
       # Under dbus-run-session because three permissions::notify tests register
       # a stub notification service on the session bus.

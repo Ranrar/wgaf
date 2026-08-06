@@ -13,8 +13,8 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::{OnceCell, RwLock};
-use wgaf_common::dict::{WindowRecordDict, WorkspaceRecordDict};
-use wgaf_common::{WindowRecord, WorkspaceRecord};
+use wgaf_common::dict::{WindowRecordDict, WorkAreaDict, WorkspaceRecordDict};
+use wgaf_common::{MonitorRecord, Rect, WindowRecord, WorkspaceLayout, WorkspaceRecord};
 
 use display_config::{DisplayConfig, DisplayConfigError, MonitorLayout};
 use proxy::ShellExtensionProxy;
@@ -38,6 +38,13 @@ const REQUIRED_EXTENSION_METHODS: &[&str] = &[
     "ResizeWindow",
     "CloseWindow",
     "GetWorkspaces",
+    "GetWorkspaceLayout",
+    "SwitchWorkspace",
+    "AddWorkspace",
+    "RemoveWorkspace",
+    "ReorderWorkspace",
+    "MoveWindowToWorkspace",
+    "GetWorkAreas",
     "WarpPointer",
     "GetPointer",
 ];
@@ -76,6 +83,19 @@ pub enum WindowsError {
     /// The extension reported that no window with this id exists.
     #[error("window {0} not found")]
     WindowNotFound(u32),
+
+    /// The extension reported that no workspace at this index exists.
+    #[error("workspace {0} not found")]
+    WorkspaceNotFound(i32),
+
+    /// The extension issued the operation, re-read the state, and the change
+    /// never became readable — so the desktop is as it was.
+    ///
+    /// The extension's own message is carried through rather than rewritten:
+    /// it is the side that knows what was expected and what was found, and it
+    /// already reads as a sentence.
+    #[error("{0}")]
+    OperationNotApplied(String),
 
     /// The requested pointer position is not on any monitor.
     ///
@@ -648,6 +668,84 @@ impl WindowManager {
         Ok(dicts.into_iter().map(WorkspaceRecordDict::into).collect())
     }
 
+    pub async fn get_workspace_layout(&self) -> Result<WorkspaceLayout, WindowsError> {
+        self.ensure_extension_available().await?;
+        Ok(self.proxy.get_workspace_layout().await?.into())
+    }
+
+    /// Makes the workspace at `index` active.
+    ///
+    /// The extension confirms the switch took effect before replying, so this
+    /// returning `Ok` means the workspace is active — not merely that the
+    /// request was sent. A switch that never landed arrives here as
+    /// [`WindowsError::OperationNotApplied`].
+    pub async fn switch_workspace(&self, index: i32) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .switch_workspace(index)
+            .await
+            .map_err(|e| translate_workspace_error(e, index))
+    }
+
+    /// Appends a workspace, returning its index.
+    ///
+    /// See [`WorkspaceLayout::dynamic`] for why that index may be short-lived
+    /// on a stock GNOME session.
+    pub async fn add_workspace(&self) -> Result<i32, WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .add_workspace()
+            .await
+            // No index to attribute a `WorkspaceNotFound` to, and this call
+            // takes none — only the not-applied translation can apply.
+            .map_err(|e| translate_workspace_error(e, -1))
+    }
+
+    pub async fn remove_workspace(&self, index: i32) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .remove_workspace(index)
+            .await
+            .map_err(|e| translate_workspace_error(e, index))
+    }
+
+    pub async fn reorder_workspace(&self, index: i32, new_index: i32) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .reorder_workspace(index, new_index)
+            .await
+            .map_err(|e| translate_workspace_error(e, index))
+    }
+
+    /// Sends a window to another workspace, leaving the active workspace alone.
+    ///
+    /// The extension confirms the window reports itself on the target before
+    /// replying, so `Ok` means it is there — not that the request was sent.
+    ///
+    /// Two error names are reachable and they mean different things: the window
+    /// id is unknown ([`WindowsError::WindowNotFound`]), or the workspace index
+    /// is ([`WindowsError::WorkspaceNotFound`]). Both are translated, so a
+    /// caller does not have to read the message to tell which argument was
+    /// wrong.
+    pub async fn move_window_to_workspace(&self, id: u32, index: i32) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .move_window_to_workspace(id, index)
+            .await
+            .map_err(|e| {
+                // The window check first, then the workspace one — the two
+                // translators cannot be composed because each consumes the
+                // `zbus::Error`, and this is the only call that can raise
+                // either.
+                if let zbus::Error::MethodError(name, _, _) = &e
+                    && name.as_str() == wgaf_common::EXTENSION_ERROR_WINDOW_NOT_FOUND
+                {
+                    return WindowsError::WindowNotFound(id);
+                }
+                translate_workspace_error(e, index)
+            })
+    }
+
     /// Mutter's display-configuration client, built on first use.
     ///
     /// Deliberately **not** behind `ensure_extension_available`: a session with
@@ -668,6 +766,100 @@ impl WindowManager {
             return Ok(layout);
         }
         self.refresh_monitor_layout().await
+    }
+
+    /// The monitors making up the desktop, for `org.wgaf.Windows1.GetMonitors`.
+    ///
+    /// # Always a fresh read, unlike [`Self::monitor_layout`]
+    ///
+    /// The cache exists to keep a D-Bus round trip off the pointer path, which
+    /// consults the layout on every warp and only needs it to answer "is this
+    /// coordinate on a screen" — a question a stale answer degrades gracefully
+    /// (see the `monitor_layout` field's refresh-policy note). A caller asking
+    /// *what the monitors are* is asking for the current state directly, and
+    /// handing them a layout from before the projector was plugged in would be
+    /// a wrong answer rather than a slow one. So this refreshes, and the
+    /// pointer path gets the newer cache as a side benefit.
+    ///
+    /// # Not behind `ensure_extension_available`
+    ///
+    /// Same reason [`Self::display_config`] is not: this reads Mutter's own
+    /// `org.gnome.Mutter.DisplayConfig`, so it answers on a session with no
+    /// wgaf extension installed.
+    /// # The work area comes from the extension, and is optional
+    ///
+    /// `DisplayConfig` knows the monitors and nothing about struts, so the
+    /// usable area has to come from Mutter's window manager — which only the
+    /// extension can reach. A session without the extension therefore gets the
+    /// monitor list with `work_area: None`, rather than no list at all.
+    pub async fn list_monitors(&self) -> Result<Vec<MonitorRecord>, WindowsError> {
+        let layout = self.refresh_monitor_layout().await?;
+        let work_areas = self.work_areas().await;
+
+        Ok(layout
+            .monitors()
+            .iter()
+            .map(|m| MonitorRecord {
+                connector: m.connector.clone(),
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+                scale: m.scale,
+                transform: m.transform,
+                primary: m.primary,
+                // Matched on the monitor's rectangle rather than on a position
+                // in either list — see `work_areas` for why an index would be
+                // a guess.
+                work_area: work_areas
+                    .iter()
+                    .find(|w| {
+                        w.x == m.x && w.y == m.y && w.width == m.width && w.height == m.height
+                    })
+                    .map(|w| Rect {
+                        x: w.work_area_x,
+                        y: w.work_area_y,
+                        width: w.work_area_width,
+                        height: w.work_area_height,
+                    }),
+            })
+            .collect())
+    }
+
+    /// The extension's work-area report, or an empty list if it cannot be had.
+    ///
+    /// # Failing to an empty list rather than an error, deliberately
+    ///
+    /// This is the only part of [`Self::list_monitors`] that needs the
+    /// extension, and the monitor layout is useful without it. Propagating the
+    /// failure would make "the extension is not installed" take out a command
+    /// that reads Mutter directly and would otherwise work — the exact coupling
+    /// `display_config.rs` was written to avoid.
+    ///
+    /// # Why the join is on geometry and not on an index
+    ///
+    /// `get_work_area_for_monitor()` takes a Mutter monitor index;
+    /// `DisplayConfig` reports connectors. That the two enumerate monitors in
+    /// the same order is plausible and **unmeasured** — GNOME Shell's `Eval`
+    /// endpoint is disabled, so it could not be checked from outside the
+    /// compositor. Rather than assume it, the extension reports each monitor's
+    /// own rectangle and this matches on that: two monitors cannot occupy one
+    /// rectangle, so a match is exact and a mismatch is visible instead of
+    /// silently pairing the wrong work area with the wrong screen.
+    async fn work_areas(&self) -> Vec<WorkAreaDict> {
+        if self.ensure_extension_available().await.is_err() {
+            return Vec::new();
+        }
+        match self.proxy.get_work_areas().await {
+            Ok(areas) => areas,
+            Err(err) => {
+                // Debug rather than warn: on a session with no extension this
+                // is the steady state, and the caller still gets their
+                // monitors. `forward_window_events` makes the same call.
+                tracing::debug!(error = %err, "could not read work areas from the extension");
+                Vec::new()
+            }
+        }
     }
 
     /// Re-reads the layout from Mutter and replaces the cache.
@@ -730,11 +922,37 @@ fn translate_window_error(err: zbus::Error, id: u32) -> WindowsError {
     WindowsError::from(err)
 }
 
+/// The workspace-path equivalent of [`translate_window_error`], mapping the
+/// extension's two named workspace errors onto daemon-level ones.
+///
+/// `OperationNotApplied` keeps the extension's own description rather than
+/// discarding it: unlike `WindowNotFound` — where the daemon already knows the
+/// id and the text adds nothing — the interesting part here is *what was
+/// expected and what was found*, which only the extension observed. A
+/// description-less reply falls back to naming the operation, so the error is
+/// never empty.
+fn translate_workspace_error(err: zbus::Error, index: i32) -> WindowsError {
+    if let zbus::Error::MethodError(name, description, _) = &err {
+        if name.as_str() == wgaf_common::EXTENSION_ERROR_WORKSPACE_NOT_FOUND {
+            return WindowsError::WorkspaceNotFound(index);
+        }
+        if name.as_str() == wgaf_common::EXTENSION_ERROR_OPERATION_NOT_APPLIED {
+            return WindowsError::OperationNotApplied(
+                description
+                    .clone()
+                    .unwrap_or_else(|| "the compositor did not apply the operation".to_string()),
+            );
+        }
+    }
+    WindowsError::from(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use wgaf_common::dict::WorkspaceLayoutDict;
     use zbus::object_server::SignalEmitter;
 
     // These tests need a session bus — the whole `wgaf-daemon` integration
@@ -815,6 +1033,26 @@ mod tests {
         fn resize_window(&self, _id: u32, _width: i32, _height: i32) {}
         fn close_window(&self, _id: u32) {}
         fn get_workspaces(&self) -> Vec<WorkspaceRecordDict> {
+            vec![]
+        }
+        fn get_workspace_layout(&self) -> WorkspaceLayoutDict {
+            WorkspaceLayout {
+                n_workspaces: 1,
+                active: 0,
+                rows: 1,
+                columns: 1,
+                dynamic: false,
+            }
+            .into()
+        }
+        fn switch_workspace(&self, _index: i32) {}
+        fn add_workspace(&self) -> i32 {
+            0
+        }
+        fn remove_workspace(&self, _index: i32) {}
+        fn reorder_workspace(&self, _index: i32, _new_index: i32) {}
+        fn move_window_to_workspace(&self, _id: u32, _index: i32) {}
+        fn get_work_areas(&self) -> Vec<WorkAreaDict> {
             vec![]
         }
         fn warp_pointer(&self, x: i32, y: i32) -> (i32, i32) {

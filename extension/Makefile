@@ -5,6 +5,7 @@
 # elsewhere.
 #
 # Usage:
+#   make test      - run the extension's unit tests (needs only gjs)
 #   make schemas   - compile the settings schema (the kill-switch shortcut)
 #   make pack      - build wgaf@wgaf.dev.shell-extension.zip via `gnome-extensions pack`
 #   make install   - pack, then install to ~/.local/share/gnome-shell/extensions/
@@ -15,11 +16,29 @@
 
 UUID := wgaf@wgaf.dev
 SCHEMA := schemas/org.gnome.shell.extensions.wgaf.gschema.xml
-SRC_FILES := metadata.json extension.js dbusInterface.js windows.js pointer.js $(SCHEMA)
+SRC_FILES := metadata.json extension.js dbusInterface.js windows.js pointer.js confirm.js $(SCHEMA)
 PACK_FILE := $(UUID).shell-extension.zip
 INSTALL_DIR := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
-.PHONY: pack schemas install enable disable uninstall clean
+.PHONY: pack schemas install enable disable uninstall clean test
+
+# Unit tests that run outside GNOME Shell.
+#
+# Only the parts of the bridge that do not reach for `global.display`,
+# `global.workspace_manager` or Clutter's seat can be covered this way, because
+# those exist only inside a running Shell and there is no way to start one for a
+# test. Today that is confirm.js. It is also the piece where an untested bug is
+# quietest: every mutating method routes its "did that actually happen?" check
+# through it, and a broken check reports success for changes that never landed.
+#
+# Deliberately NOT in SRC_FILES above - tests are not shipped in the bundle.
+TESTS := tests/confirm-test.js tests/workspace-grid-test.js
+
+test:
+	@for t in $(TESTS); do \
+		echo "--- $$t"; \
+		gjs -m $$t || exit 1; \
+	done
 
 pack: $(PACK_FILE)
 
@@ -37,6 +56,7 @@ $(PACK_FILE): $(SRC_FILES)
 		--extra-source=windows.js \
 		--extra-source=dbusInterface.js \
 		--extra-source=pointer.js \
+		--extra-source=confirm.js \
 		--schema=$(SCHEMA) \
 		.
 

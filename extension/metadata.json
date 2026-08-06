@@ -1,9 +1,9 @@
 {
     "uuid": "wgaf@wgaf.dev",
     "name": "wgaf Window Bridge",
-    "description": "Minimal GNOME Shell bridge exposing window/workspace introspection and control over D-Bus (org.gnome.Shell.Extensions.Wgaf.V1) for the wgaf automation daemon, plus the emergency key for wgaf's kill switch (Escape by default), which stops all wgaf input automation until you run `wgaf release`. No input synthesis, no accessibility calls.",
+    "description": "Minimal GNOME Shell bridge exposing window, workspace and monitor introspection and control over D-Bus (org.gnome.Shell.Extensions.Wgaf.V1) for the wgaf automation daemon. It can also move the mouse pointer to an exact position, which only the compositor knows the geometry for. It owns the emergency key for wgaf's kill switch (Escape by default), which stops all wgaf input automation until you run `wgaf release`. It generates no keyboard or button events, and makes no accessibility calls.",
     "settings-schema": "org.gnome.shell.extensions.wgaf",
     "shell-version": ["50"],
     "url": "https://github.com/Ranrar/wgaf",
-    "version-name": "0.8.0"
+    "version-name": "0.8.2"
 }

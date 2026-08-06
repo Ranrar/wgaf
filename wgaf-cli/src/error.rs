@@ -11,7 +11,7 @@
 //! had actually happened.
 //!
 //! This module also owns what used to be two separate facts about the same
-//! 22 daemon error-name constants: [`error_name_label`] (a human label, used
+//! set of daemon error-name constants: [`error_name_label`] (a human label, used
 //! only when a reply carries no description) and this file's classification
 //! into a [`Verdict`]. Keeping those as two `match` statements is exactly the
 //! drift risk the ADR warns about — *"these must be decided deliberately and
@@ -39,9 +39,11 @@ pub enum Verdict {
     /// running automation. Exit code 3.
     Denied,
     /// Permitted and attempted; the world was not, or did not become, what
-    /// the caller assumed (today: a targeted input call's focus
-    /// precondition — see `INPUT_ERROR_VERIFICATION_FAILED`). Must not stop
-    /// running automation. Exit code 4.
+    /// the caller assumed — a targeted input call's focus precondition
+    /// (`INPUT_ERROR_VERIFICATION_FAILED`), or a compositor operation whose
+    /// expected state change never appeared
+    /// (`WINDOWS_ERROR_OPERATION_NOT_APPLIED`). Must not stop running
+    /// automation. Exit code 4.
     Unverified,
 }
 
@@ -178,6 +180,18 @@ fn classify(name: &str) -> Option<(&'static str, Verdict)> {
     use Verdict::{Denied, Error, Unverified};
     Some(match name {
         wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND => ("window not found", Error),
+        wgaf_common::WINDOWS_ERROR_WORKSPACE_NOT_FOUND => ("workspace not found", Error),
+        // The second `Unverified`, and ADR-0007 names this case in as many
+        // words: "an action returned successfully and the expected state
+        // change never appeared". Nothing malfunctioned — the extension issued
+        // the operation, re-read the state, and reported honestly that the
+        // desktop had not moved. Calling it an error would tell a user to check
+        // their setup, and calling it a denial would send them to
+        // `permissions.toml`; neither has anything to do with it, and unlike
+        // both it may simply need trying again.
+        wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED => {
+            ("the operation was not applied", Unverified)
+        }
         wgaf_common::WINDOWS_ERROR_EXTENSION_UNAVAILABLE => {
             ("GNOME Shell Extension bridge unavailable", Error)
         }
@@ -199,7 +213,11 @@ fn classify(name: &str) -> Option<(&'static str, Verdict)> {
         // wgaf refused on purpose.
         wgaf_common::INPUT_ERROR_STOPPED => ("input stopped", Denied),
         wgaf_common::INPUT_ERROR_OUT_OF_BOUNDS => ("off screen", Error),
-        wgaf_common::INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE => {
+        // Two error names, one fault, deliberately not merged: they are raised
+        // by different interfaces (`GetMonitors` and the pointer path), so a
+        // client that only ever calls one still only has to know one name.
+        wgaf_common::INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE
+        | wgaf_common::WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE => {
             ("monitor layout unavailable", Error)
         }
         wgaf_common::INPUT_ERROR_WINDOW_NOT_FOUND => ("window not found", Error),
@@ -429,15 +447,15 @@ mod tests {
         // Guards the scan itself: a refactor that moves or reformats these
         // constants would otherwise turn this test into a silent no-op.
         assert_eq!(
-            checked, 22,
-            "expected 22 daemon error-name constants, found {checked}. If an error was \
+            checked, 25,
+            "expected 25 daemon error-name constants, found {checked}. If an error was \
              genuinely added or removed, update this number; if not, the scan has stopped \
              matching how `wgaf-common` declares them and is silently passing."
         );
     }
 
     /// The other half of `every_daemon_error_constant_is_recognized_by_the_cli`:
-    /// every one of the same 22 constants also maps to the `Verdict` W16.1
+    /// every one of the same 25 constants also maps to the `Verdict` W16.1
     /// (`plan-first-release.md` §16 / ADR-0007) documents for it. Hand-listed
     /// rather than scanned, since the *value* — not merely the presence — is
     /// what a scan cannot check; keep the count in sync with that test's.
@@ -448,6 +466,9 @@ mod tests {
             (wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND, Error),
             (wgaf_common::WINDOWS_ERROR_EXTENSION_UNAVAILABLE, Error),
             (wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED, Denied),
+            (wgaf_common::WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE, Error),
+            (wgaf_common::WINDOWS_ERROR_WORKSPACE_NOT_FOUND, Error),
+            (wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED, Unverified),
             (wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE, Error),
             (wgaf_common::INPUT_ERROR_UNKNOWN_KEY, Error),
             (wgaf_common::INPUT_ERROR_CHARACTER_NOT_TYPEABLE, Error),
@@ -470,7 +491,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            22,
+            25,
             "keep this list's length in sync with \
              every_daemon_error_constant_is_recognized_by_the_cli's count"
         );

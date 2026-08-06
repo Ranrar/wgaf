@@ -50,9 +50,20 @@ Checked items work today.
 ### Window management
 - [x] List windows with position, size, workspace, and focus state
 - [x] Focus, move, resize, and close windows
-- [x] Query workspaces
-- [ ] Minimize and maximize
+- [x] Send a window to another workspace
 - [x] Window open, close, and focus events
+- [ ] Minimize, maximize, and fullscreen
+- [ ] Keep a window always on top, or on every workspace
+- [ ] Raise and lower windows
+- [ ] More about each window: its process, its type, the dialog it belongs to,
+      and the monitor it's on
+
+### Workspaces & monitors
+- [x] List workspaces, and switch, add, remove, and reorder them
+- [x] See how many workspaces there are, which is active, and how they're
+      arranged — including whether GNOME is managing the number for you
+- [x] List your monitors, with position, size, rotation, and scale
+- [x] The area of each monitor left usable by the top bar and docks
 
 ### Keyboard & mouse
 - [x] Type text, on whatever keyboard layout your desktop uses
@@ -66,7 +77,13 @@ Checked items work today.
 - [x] List running accessible applications
 - [x] Read an application's UI tree
 - [x] Find elements by name, role, or description
-- [x] Click elements, focus them, and fill text fields
+- [x] Click elements and fill text fields
+- [ ] Focus an element by name — GTK4 refuses the request, so this does not
+      work on GTK applications and cannot be fixed from wgaf's side
+- [ ] Read text back out of a widget, to check what was typed
+- [ ] Drive sliders, combo boxes, lists, and tables
+- [ ] Scroll an off-screen element into view before clicking it
+- [ ] Wait for an element to appear, disappear, or change
 - [ ] Durable element names, so a script survives the application restarting
 
 ### Safety & permissions
@@ -283,6 +300,11 @@ command can produce.
   `message`.
 - Window and workspace commands need the GNOME Shell extension, and it only
   loads on login — so log out and back in once after installing or updating it.
+  `wgaf monitor list` is the exception and works without it, though it can only
+  report each monitor's usable area when the extension is there.
+- If GNOME is managing your workspaces for you (it does by default), a workspace
+  added with `wgaf workspace add` is taken back again as soon as it is left
+  empty. `wgaf workspace layout` tells you which mode you are in.
 
 ## The goal
 

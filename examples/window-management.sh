@@ -23,6 +23,13 @@ require_wgaf_built
 trap cleanup EXIT
 
 start_daemon
+
+# Checked here rather than before the daemon started, because the daemon is
+# what knows which extension methods it needs. A session still running the
+# extension it was logged in with fails this and says so, instead of dying
+# partway through with a raw D-Bus error once windows are already on screen.
+require_extension_ready
+
 start_app window-test
 
 # The application is running before its windows are on screen, and wgaf
