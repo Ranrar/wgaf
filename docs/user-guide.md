@@ -5,6 +5,19 @@ Practical guide to using wgaf. For every command's exact flags, see the
 [Installation](installation.md); for the settings and policy files, see
 [Configuration](configuration.md).
 
+## Seeing it work first
+
+If you would rather watch than read, the [`examples/`](../examples/) directory
+holds scripts that open real windows and drive them, printing a pass or fail
+line for each step:
+
+```sh
+./examples/window-management.sh
+```
+
+They are ordinary shell using the same commands described below, so any line
+can be copied out and run on its own.
+
 ## Before you start
 
 Make sure `wgaf-daemon` is running (`wgaf-daemon &`, or installed as a
@@ -44,14 +57,33 @@ fresh one from `window list` rather than reusing an old number.
 
 ## Typing and clicking
 
-Keyboard/mouse input goes to whatever currently has focus on the whole
-desktop, not a specific window you name — so focus the window first if you
-want text to land in it:
+Keyboard input goes to whatever currently has focus on the whole desktop. You
+can name the window you meant instead, and wgaf will make sure that window has
+focus before it types a single character:
 
 ```sh
-wgaf window focus 7
-wgaf type "hello world"
+wgaf type "hello world" --window 7
 ```
+
+That is worth preferring over focusing first and typing second:
+
+```sh
+wgaf window focus 7      # two separate commands, and
+wgaf type "hello world"  # anything can steal focus in between
+```
+
+Between those two lines a dialog can appear, an application can finish starting
+and grab focus, or you can alt-tab — and the text goes wherever focus ended up.
+Naming the window closes that gap: the check happens inside the one command, and
+on a long piece of text it is repeated as it types, so a window losing focus part
+way through stops the rest rather than spraying it somewhere else.
+
+If the window cannot be focused, nothing is typed and wgaf says so. `--window`
+works on `wgaf key press`, `key release` and `key combo` too. Leaving it off
+behaves exactly as it always has.
+
+**Mouse commands have no equivalent** — a click goes wherever the pointer is,
+and your own hand moves the same pointer.
 
 Press individual keys, e.g. to hold a modifier for a shortcut:
 
@@ -110,7 +142,22 @@ element you want:
 
 ```sh
 wgaf a11y list-apps
-wgaf a11y find --app gtk4-demo --role "push button" --name Save
+wgaf a11y find --app "Text Editor" --name Save
+```
+
+**Look before you filter.** `--role` narrows a search to one kind of control,
+but the words applications use are their own: the same button is a `button` to
+a GTK application and a `push button` to something else. A role that does not
+match is not an error — you simply get nothing back, which looks exactly like
+the element not existing. Run `wgaf a11y tree` first and filter by what you
+actually saw:
+
+```sh
+wgaf a11y tree --app "Text Editor" --max-depth 3
+# button   "Save"
+# text box "Document"
+
+wgaf a11y find --app "Text Editor" --role button --name Save
 ```
 
 Take the element reference from the output (looks like
@@ -125,7 +172,7 @@ wgaf a11y focus :1.87#/org/a11y/atspi/accessible/1234
 If you're not sure what to search for, browse the whole structure first:
 
 ```sh
-wgaf a11y tree --app gtk4-demo
+wgaf a11y tree --app "Text Editor"
 ```
 
 References only stay valid while that specific element is still on screen —
@@ -141,6 +188,36 @@ either side of the subcommand:
 wgaf --json window list
 wgaf window list --json
 ```
+
+### Telling apart the three ways a command can not happen
+
+A script usually wants to know *why* something did not work, because the
+answers call for different responses. `wgaf` says so in its exit code:
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| `0` | It worked | carry on |
+| `1` | Something failed unexpectedly — no daemon, no input device, an id that does not exist | usually stop; something needs fixing |
+| `2` | The command line itself was wrong | fix the command |
+| `3` | Refused on purpose — your `permissions.toml`, a configured limit, or the emergency stop | change the policy, or accept it and carry on |
+| `4` | Allowed and attempted, but the desktop was not as assumed — the window you named could not be focused | often worth simply trying again |
+
+Only `1` means something is broken. A `3` is wgaf doing exactly what you
+configured, and a `4` is the desktop moving underneath you — neither should
+stop a whole script unless you decide it should:
+
+```sh
+wgaf type "hello" --window 7
+case $? in
+  0) echo "typed" ;;
+  4) echo "window was not focused; retrying later" ;;
+  3) echo "not permitted; skipping" ;;
+  *) echo "something is wrong"; exit 1 ;;
+esac
+```
+
+With `--json`, the same distinction arrives as an `"outcome"` field carrying
+`error`, `denied` or `unverified`.
 
 ## Configuration files
 
@@ -321,7 +398,7 @@ A typical sequence: focus or find the thing you want, then act on it.
 wgaf window focus 7
 wgaf type "hello"
 
-wgaf a11y find --app gtk4-demo --role "push button" --name Save
+wgaf a11y find --app "Text Editor" --role button --name Save
 wgaf a11y click :1.87#/org/a11y/atspi/accessible/1234
 ```
 

@@ -140,9 +140,14 @@ Some things are not missing features and will not be added:
   acceleration to relative motion, so `wgaf mouse move 50 0` does not move the
   pointer 50 logical pixels. `input-test`'s coordinates prove motion arrived and
   in which direction; they do not measure the argument.
-- **A click aimed at a particular widget.** wgaf has no absolute pointer
-  positioning yet, so a test cannot put the pointer on the button. `input-test`
-  captures clicks across the whole window for that reason.
+- ~~**A click aimed at a particular widget.**~~ **This is now possible** —
+  `wgaf mouse move-to` places the pointer on an exact position, and
+  `input-test` reports where its button is, so a test can aim at the centre of
+  it. What is still true is that a test must *ask* rather than hardcode — a
+  fixed coordinate asserts against this application's current layout rather
+  than against wgaf, and breaks silently the first time a margin changes.
+  Clicks are still captured across the whole window so a miss is visible
+  rather than looking like nothing happened.
 - **A successful `wgaf a11y focus`.** GTK4's AT-SPI bridge answers
   `Component.GrabFocus` with `NotSupported` for every widget, on every version
   measured so far, so no GTK4 application can demonstrate a focus grab.

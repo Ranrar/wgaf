@@ -542,13 +542,13 @@ Finds elements within an application.
 | Flag | Required | Meaning |
 |---|---|---|
 | `--app` | yes | Application name — matched against `list-apps`' output; exact match preferred, falls back to substring. |
-| `--role` | no | AT-SPI role name (e.g. `push button`, `menu item`), case-insensitive, whole-value match. Empty (default) matches any role. |
+| `--role` | no | The kind of control, case-insensitive, **whole-value match**. The words come from the application's own toolkit, so run `wgaf a11y tree` first and use what it prints — GTK applications say `button` and `text box` where others say `push button` and `entry`. A role that does not match returns nothing rather than an error. Empty (default) matches any role. |
 | `--name` | no | Case-insensitive substring match against the element's accessible name. Empty (default) matches any name. |
 | `--description` | no | Case-insensitive substring match against the element's accessible description. Empty (default) matches any description. |
 | `--max-results` | no | Cap on results. `0` (default) uses the daemon's built-in default of 100; hard-capped at 1000 regardless of what you pass. |
 
 ```sh
-wgaf a11y find --app gtk4-demo --role "push button" --name Save
+wgaf a11y find --app "Text Editor" --role button --name Save
 ```
 
 ### `wgaf a11y tree --app <name> [--max-depth <n>]`

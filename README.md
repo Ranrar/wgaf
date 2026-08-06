@@ -52,7 +52,7 @@ Checked items work today.
 - [x] Focus, move, resize, and close windows
 - [x] Query workspaces
 - [ ] Minimize and maximize
-- [ ] Window open, close, and focus events
+- [x] Window open, close, and focus events
 
 ### Keyboard & mouse
 - [x] Type text, on whatever keyboard layout your desktop uses
@@ -117,6 +117,13 @@ See the [user guide](docs/user-guide.md) for how to use each of these, the
 [CLI reference](docs/cli-reference.md) for every command's exact flags, and
 the [example walkthrough](docs/example-walkthrough.md) for a complete task
 done start to finish.
+
+Or watch it work. [`examples/`](examples/) holds scripts you can run that open
+real windows and drive them, printing a pass or fail line per step:
+
+```sh
+./examples/window-management.sh
+```
 
 ## How it works
 
@@ -208,8 +215,9 @@ Drive a UI by element name rather than coordinates. Find the element first,
 then act on the reference it prints:
 
 ```sh
-wgaf a11y find --app gtk4-demo --role "push button" --name Save
-# push button   Save   :1.87#/org/a11y/atspi/accessible/1234
+wgaf a11y list-apps
+wgaf a11y find --app "Text Editor" --name Save
+# button   Save   :1.87#/org/a11y/atspi/accessible/1234
 
 wgaf a11y click ':1.87#/org/a11y/atspi/accessible/1234'
 ```

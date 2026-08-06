@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`examples/` — scripts you can run to watch wgaf work.** Five of them, each a demonstration of one thing: managing windows, typing into a window you name, operating controls by name, moving and clicking and scrolling, and the emergency stop. They open real windows on your desktop, drive them with the ordinary `wgaf` command, and print a pass or fail line per step.
+
+  They are written in shell and call the same `wgaf` you would type, on purpose. A reader can copy any line out of one and run it. Every check compares what wgaf was asked to do against what the application on the other side actually reports receiving — never against wgaf's own account of itself, because a bug in wgaf would then confirm its own success.
+
+  Each starts a wgaf of its own with its own settings, so your configuration is not read or changed and a wgaf you already have running is undisturbed. Missing pieces are reported before anything opens on screen, naming the command that fixes them. They pause between steps so you can see what happened; `WGAF_EXAMPLE_PACE=0` turns that off.
+
+  The `input-test` application they drive gained a scrollable list, a count of the Escape presses it has received, and an optional dialog — each because a claim could not otherwise be shown to be true. Scrolling in particular could previously only be proven to have *arrived*, never to have moved anything.
+
 - **`wgaf type`, `wgaf key press`, `wgaf key release` and `wgaf key combo` gained an optional `--window <id>`, so a call can name the window it is meant for instead of trusting whatever the desktop happens to have focused.** Previously the only way to aim at a window was to run `wgaf window focus` first and hope nothing moved focus in between — two separate D-Bus calls with a real gap between them, and either a script's own actions (a dialog appearing, an application stealing focus on startup) or the person at the keyboard alt-tabbing away could win that race. `--window` resolves and enforces the target inside the one call instead, closing the gap rather than narrowing it.
 
   It does not merely check and refuse: if the named window isn't focused, the daemon focuses it first — gated by the `FocusWindow` capability, since a focus correction is a real use of it — and waits for the actual `WindowFocusChanged` event confirming the correction took, bounded by a two-second timeout rather than a blind sleep. Nothing is synthesized until that confirmation arrives. If it doesn't arrive in time (most often GNOME's own focus-stealing prevention silently declining the correction), the call fails and says focus could not be confirmed, rather than typing into whatever was in front.
@@ -52,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The prompt case changed for a different reason: it said "the user declined the permission prompt (or it timed out)", which claims you chose something. On a timeout nobody chose anything — wgaf simply waited and gave up. It now says the prompt "was declined or went unanswered", which is what actually happened. The audit log continues to record `denied` and `prompted-deny` separately, so how a refusal was reached is still recoverable.
 
 ### Fixed
+
+- **Every documented example of searching by role was one that finds nothing.** The guides all told you to write `--role "push button"`. That is the name the accessibility standard uses, but not the one GTK applications answer to — they say `button`, and `text box` where the docs said `entry`. Because a role that does not match is not an error, following the documentation returned an empty result, which looks exactly like the element not existing. So the examples sent people looking for a fault in their application, or in wgaf.
+
+  Corrected everywhere, and the guidance changed rather than just the strings: run `wgaf a11y tree` first and filter by the words you actually saw. Those words belong to the application's toolkit, so no fixed example can be right for every application — which is why the previous one was wrong in the first place.
+
+  The same examples also referred to `gtk4-demo`, which this project no longer uses or expects you to have installed.
+
+- **Two claims in the documentation had stopped being true.** The roadmap still listed window open/close/focus events as unbuilt after `wgaf window watch` shipped, and the test-application notes still said wgaf could not place the pointer at an exact position, which `wgaf mouse move-to` has been able to do for some time.
 
 - **"That element is gone" now says so, whichever command you asked.** If you found an element with `wgaf a11y find`, and the application closed before you used it, `wgaf a11y click` correctly told you the element was gone — while `wgaf a11y info` on the same reference reported a raw D-Bus failure that named no element and suggested no remedy. Same situation, two different answers, and only one of them useful.
 

@@ -147,18 +147,22 @@ wgaf a11y tree --app "Text Editor"
 ```
 
 This prints one line per UI element, each with a **role** (what kind of
-thing it is — `push button`, `menu item`, `text`, etc.) and a **name**
-(its visible label, roughly). Look for a `push button` named `Save`.
+thing it is — `button`, `menu item`, `text box`, etc.) and a **name**
+(its visible label, roughly). Look for a `button` named `Save`.
+
+The role words are the application's own, so `wgaf a11y tree` is the reliable
+way to learn them — a role that does not match returns nothing at all rather
+than telling you it was wrong.
 Exact roles and labels vary between apps, and even between versions of the
 same app — which is exactly why you check here first instead of assuming.
 Once you've found it, narrow down to it directly:
 
 ```sh
-wgaf a11y find --app "Text Editor" --role "push button" --name Save
+wgaf a11y find --app "Text Editor" --role button --name Save
 ```
 
 ```
-push button          Save                      :1.87#/org/a11y/atspi/accessible/1234
+button               Save                      :1.87#/org/a11y/atspi/accessible/1234
 ```
 
 That long `:1.87#/org/a11y/atspi/accessible/1234` value is the **element
@@ -220,7 +224,7 @@ wgaf window move "$id" 100 100
 wgaf window resize "$id" 900 600
 wgaf type "Automated with wgaf."
 
-ref=$(wgaf --json a11y find --app "Text Editor" --role "push button" --name Save \
+ref=$(wgaf --json a11y find --app "Text Editor" --role button --name Save \
     | jq -r '.[0].element | "\(.bus_name)#\(.object_path)"')
 wgaf a11y click "$ref"
 ```

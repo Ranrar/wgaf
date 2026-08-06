@@ -604,9 +604,15 @@ mod tests {
             "down",
             "left",
             "right",
-            "escape", // dismissing a dialog
-            "tab",    // moving through one
-            "f1",     // function keys
+            // Not "dismissing a dialog", which is what this used to say: while
+            // wgaf holds an input device the compositor takes Escape for the
+            // emergency stop, so a synthesized one reaches no application at
+            // all. `docs/cli-reference.md` says so, and points at `wgaf a11y`
+            // for dismissing a dialog. Kept here because the key still
+            // resolves and is still worth covering.
+            "escape",
+            "tab", // moving through a dialog
+            "f1",  // function keys
             "f12",
             "home",
             "end",

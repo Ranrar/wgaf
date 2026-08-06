@@ -1,7 +1,12 @@
 //! A GTK4 application that reports the keyboard and mouse input it receives,
 //! for testing that wgaf's synthesized input actually reaches an application.
 //!
-//! It draws one window containing a text entry and a button, and nothing else.
+//! It draws one window containing a text entry, a button, a count of the
+//! Escape presses it has seen, and a list long enough to scroll. With
+//! `--dialog` it also opens a dialog window with a Close button, for
+//! demonstrating that a dialog is dismissed through the accessibility
+//! interface rather than by sending Escape — the desktop takes that key for
+//! the emergency stop while wgaf is running.
 //! Every key, click, pointer motion and scroll it observes rewrites its report
 //! file. A test drives wgaf, then reads that file — never asking wgaf what
 //! happened, which is the whole point (see the `report` crate's documentation).
@@ -49,9 +54,13 @@
 //!   does not move the pointer 50 logical pixels. The reported coordinates prove
 //!   motion *arrived* and in which direction; they are not a measurement of the
 //!   command's argument, and `docs/cli-reference.md` says the same thing.
-//! - **Clicks can only be aimed at the window, not at a widget.** wgaf has no
-//!   absolute pointer positioning yet, so a test cannot put the pointer on the
-//!   button. That is why clicks are captured window-wide — see [`build_ui`].
+//! - **Aim a click by asking, never by hardcoding.** `wgaf mouse move-to`
+//!   can place the pointer exactly, so a click *can* be aimed at the button —
+//!   but only via the reported `button_x`/`button_y`/`button_width`/
+//!   `button_height`. A hardcoded coordinate asserts against this
+//!   application's current layout rather than against wgaf, and breaks
+//!   silently the first time a margin changes. Clicks are still captured
+//!   window-wide so a miss is visible — see [`build_ui`].
 //! - **`seq` advances per event, so typing produces a burst.** Take `seq` as a
 //!   baseline once the application is up, then wait for it to exceed that.
 
@@ -65,7 +74,7 @@ use gtk4::prelude::*;
 use gtk4::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, EventControllerKey,
     EventControllerMotion, EventControllerScroll, EventControllerScrollFlags, GestureClick,
-    HeaderBar, Label, Orientation, PropagationPhase,
+    HeaderBar, Label, Orientation, PolicyType, PropagationPhase, ScrolledWindow, Window,
 };
 use report::Reporter;
 use serde::Serialize;
@@ -82,6 +91,20 @@ const TITLE: &str = "wgaf input-test";
 /// Fixed starting geometry. Deliberately roomy: a click can only be aimed at
 /// the window as a whole, so a bigger target is a more reliable one.
 const SIZE: (i32, i32) = (640, 480);
+
+/// How many lines the scrollable list holds.
+///
+/// Far more than can fit, so `scroll_maximum` is comfortably above zero on any
+/// window size a test might use. A list that only just overflows would make a
+/// scroll assertion depend on the height of a label.
+const SCROLLABLE_LINES: u32 = 200;
+
+/// The visible height of the scrollable area, in logical pixels.
+///
+/// Small enough to leave room for the entry and the button above it, large
+/// enough that the pointer can be aimed at its middle without landing on
+/// either.
+const SCROLLABLE_HEIGHT: i32 = 160;
 
 /// How many key and click events the report keeps.
 ///
@@ -109,6 +132,16 @@ struct Args {
     /// Where to write the JSON report. The directory must already exist.
     #[arg(long, value_name = "PATH")]
     report: PathBuf,
+
+    /// Open a dialog window with a Close button.
+    ///
+    /// Off by default, so nothing that does not ask for it sees a second
+    /// window. Turn it on to demonstrate dismissing a dialog the supported
+    /// way: pressing its own button through the accessibility interface.
+    /// Escape cannot do it while wgaf is running, because the desktop takes
+    /// that key for the emergency stop before any application sees it.
+    #[arg(long)]
+    dialog: bool,
 }
 
 /// One key event as the application received it.
@@ -243,6 +276,31 @@ struct State<'a> {
     /// must expect the sign to flip.
     scroll_dx: f64,
     scroll_dy: f64,
+    /// Whether the dismissible dialog window is currently showing.
+    ///
+    /// The visible consequence of an Escape. `false` from the start unless
+    /// `--dialog` was given, so a test that cares must open it deliberately.
+    dialog_open: bool,
+    /// How many times Escape has been pressed since the application started.
+    ///
+    /// Reported *and* shown in the window, so a person watching and a script
+    /// reading the file agree about whether an Escape arrived. The emergency
+    /// stop deliberately ignores an Escape wgaf synthesized itself, and
+    /// without this there is no way to tell that from the key never being
+    /// delivered at all.
+    escape_presses: u64,
+    /// How far down the scrollable area actually is, in logical pixels.
+    ///
+    /// **This is the field that makes scrolling testable at all.** The counts
+    /// and deltas above prove a scroll *event arrived*; they say nothing about
+    /// whether anything moved, because a scroll delivered to a widget with
+    /// nothing to scroll still increments them. This moves only when the view
+    /// does.
+    scroll_position: f64,
+    /// The largest value [`Self::scroll_position`] can reach. Zero means the
+    /// content fits and there is nothing to scroll — worth asserting before
+    /// concluding that a scroll failed.
+    scroll_maximum: f64,
 }
 
 /// Everything the application has observed, plus the widgets it reads state
@@ -254,6 +312,20 @@ struct Observed {
     entry: Entry,
     window: ApplicationWindow,
     button: Button,
+    /// The dismissible dialog window, hidden when Escape arrives. Created
+    /// whether or not it is shown; only shown when `--dialog` was given.
+    dialog: Window,
+    /// The on-screen counter of Escape presses, updated as they arrive.
+    escape_label: Label,
+    /// How many times Escape has been pressed, from any keyboard.
+    escape_presses: u64,
+    /// The scrollable area, read for its position at report time.
+    ///
+    /// Held rather than tracked through signals because the position is a
+    /// *state*, not an event: what a test needs to know is where the view
+    /// ended up, and asking the widget at report time cannot drift from the
+    /// truth the way an accumulated total can.
+    scrolled: ScrolledWindow,
     keys: Vec<KeyEvent>,
     key_event_count: u64,
     clicks: Vec<ClickEvent>,
@@ -302,6 +374,15 @@ impl Observed {
             scroll_count: self.scroll_count,
             scroll_dx: self.scroll_dx,
             scroll_dy: self.scroll_dy,
+            dialog_open: self.dialog.is_visible(),
+            escape_presses: self.escape_presses,
+            scroll_position: self.scrolled.vadjustment().value(),
+            scroll_maximum: {
+                let a = self.scrolled.vadjustment();
+                // How far the view can travel: the range minus the part of it
+                // already on screen. Zero would mean nothing to scroll.
+                (a.upper() - a.page_size()).max(0.0)
+            },
         }
     }
 }
@@ -355,6 +436,23 @@ fn record_key(app: &Rc<App>, key: Key, keycode: u32, state: ModifierType, presse
     {
         let mut observed = app.observed.borrow_mut();
         observed.key_event_count += 1;
+
+        // Escape is counted separately and shown on screen, because it is the
+        // one key whose *arrival* has to be visible: the emergency stop is
+        // supposed to ignore an Escape wgaf sent itself, and "nothing
+        // happened" looks identical to "the key never got here". This makes
+        // the difference something a person can see.
+        if pressed && key == Key::Escape {
+            observed.escape_presses += 1;
+            observed
+                .escape_label
+                .set_label(&format!("Escape received: {}", observed.escape_presses));
+            // What a person actually sees. Dismissing a panel on Escape is
+            // ordinary application behaviour, and it is what makes a
+            // synthesized Escape indistinguishable from a real one to anyone
+            // watching the screen.
+            observed.dialog.set_visible(false);
+        }
         push_capped(
             &mut observed.keys,
             KeyEvent {
@@ -418,7 +516,7 @@ fn main() -> gtk4::glib::ExitCode {
             eprintln!("input-test: ignoring a repeat activation");
             return;
         };
-        build_ui(application, reporter);
+        build_ui(application, reporter, args.dialog);
     });
 
     // The arguments were parsed by clap above; GTK must not try to parse them
@@ -449,7 +547,7 @@ fn main() -> gtk4::glib::ExitCode {
 /// Every handler returns `Proceed`, so observing an event never stops it
 /// reaching the widget it was aimed at — the entry must still receive the text
 /// it is being typed into.
-fn build_ui(application: &Application, reporter: Reporter) {
+fn build_ui(application: &Application, reporter: Reporter, show_dialog: bool) {
     let window = ApplicationWindow::builder()
         .application(application)
         .title(TITLE)
@@ -467,6 +565,62 @@ fn build_ui(application: &Application, reporter: Reporter) {
 
     let button = Button::builder().label("Click target").build();
 
+    // Escape gets its own visible counter, because it is the one key whose
+    // arrival has to be observable by eye. The emergency stop ignores an
+    // Escape that wgaf sent itself — and "the handbrake stayed off" looks
+    // exactly like "the key never arrived" unless something on screen moves.
+    let escape_label = Label::builder()
+        .label("Escape received: 0")
+        .halign(Align::Start)
+        .build();
+
+    // A real dialog window rather than a panel inside the main one, because
+    // the point is for a person to *see* it: a separate, modal window on top
+    // is unmistakable, where a box in the layout reads as part of the page.
+    // Escape dismisses it, which is ordinary dialog behaviour.
+    let dialog_body = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .margin_top(24)
+        .margin_bottom(24)
+        .margin_start(24)
+        .margin_end(24)
+        .build();
+    dialog_body.append(
+        &Label::builder()
+            .label("A dialog is open.\n\nEscape will not close this while wgaf is\nrunning — press the Close dialog button instead.")
+            .build(),
+    );
+
+    // A real button, because Escape cannot be used to dismiss a dialog while
+    // wgaf is running: the desktop takes that key for the emergency stop. The
+    // supported way is to press the dialog's own button through the
+    // accessibility interface, and this is the button to press.
+    // Named distinctly rather than just "Close": the window decorations
+    // already provide close buttons, so a plain "Close" matches several
+    // things and a script would have to guess which.
+    let dialog_close = Button::builder().label("Close dialog").build();
+    dialog_body.append(&dialog_close);
+
+    let dialog = Window::builder()
+        .title("wgaf input-test — dialog")
+        .default_width(320)
+        .default_height(140)
+        // Deliberately *not* modal. A modal dialog holds the keyboard for as
+        // long as it is up, so the window behind it cannot be focused at all —
+        // which means anything aiming input at the main window is correctly
+        // refused until the dialog goes away. Transient keeps it on top and
+        // visible without taking the rest of the application hostage.
+        .modal(false)
+        .resizable(false)
+        .child(&dialog_body)
+        .build();
+    dialog.set_titlebar(Some(&HeaderBar::builder().build()));
+    dialog.set_transient_for(Some(&window));
+    // Hidden rather than destroyed on close, so `dialog_open` keeps answering
+    // after it has been dismissed instead of the widget going away.
+    dialog.set_hide_on_close(true);
+
     let content = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .spacing(12)
@@ -478,12 +632,34 @@ fn build_ui(application: &Application, reporter: Reporter) {
         .vexpand(true)
         .hexpand(true)
         .build();
+    // A list long enough that it cannot fit, so there is somewhere for a
+    // scroll to actually go. Without this the application still *counts*
+    // scroll events, which is what made a scroll impossible to verify: the
+    // count rises whether or not anything moved.
+    let scrollable_content = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(4)
+        .build();
+    for line in 1..=SCROLLABLE_LINES {
+        scrollable_content.append(&Label::builder().label(format!("line {line}")).build());
+    }
+
+    let scrolled = ScrolledWindow::builder()
+        .vscrollbar_policy(PolicyType::Automatic)
+        .hscrollbar_policy(PolicyType::Never)
+        .min_content_height(SCROLLABLE_HEIGHT)
+        .vexpand(true)
+        .child(&scrollable_content)
+        .build();
+
     content.append(&caption(
-        "wgaf input-test\n\nType into the entry, click anywhere.\nEverything received is written \
-         to the report file.",
+        "wgaf input-test\n\nType into the entry, click anywhere, scroll the list.\nEverything \
+         received is written to the report file.",
     ));
     content.append(&entry);
     content.append(&button);
+    content.append(&escape_label);
+    content.append(&scrolled);
     window.set_child(Some(&content));
 
     let app = Rc::new(App {
@@ -491,6 +667,10 @@ fn build_ui(application: &Application, reporter: Reporter) {
             entry: entry.clone(),
             window: window.clone(),
             button: button.clone(),
+            dialog: dialog.clone(),
+            escape_label: escape_label.clone(),
+            escape_presses: 0,
+            scrolled: scrolled.clone(),
             keys: Vec::new(),
             key_event_count: 0,
             clicks: Vec::new(),
@@ -520,6 +700,33 @@ fn build_ui(application: &Application, reporter: Reporter) {
         move |_, key, keycode, state| record_key(&app, key, keycode, state, false)
     });
     window.add_controller(keys);
+
+    // The dialog needs its own copy. It is a separate, modal toplevel, so
+    // while it is up the keyboard goes to it and the main window's controller
+    // above never sees the key that is supposed to dismiss it.
+    let dialog_keys = EventControllerKey::new();
+    dialog_keys.set_propagation_phase(PropagationPhase::Capture);
+    dialog_keys.connect_key_pressed({
+        let app = Rc::clone(&app);
+        move |_, key, keycode, state| {
+            record_key(&app, key, keycode, state, true);
+            gtk4::glib::Propagation::Proceed
+        }
+    });
+    dialog_keys.connect_key_released({
+        let app = Rc::clone(&app);
+        move |_, key, keycode, state| record_key(&app, key, keycode, state, false)
+    });
+    dialog.add_controller(dialog_keys);
+
+    dialog_close.connect_clicked({
+        let app = Rc::clone(&app);
+        let dialog = dialog.clone();
+        move |_| {
+            dialog.set_visible(false);
+            app.report();
+        }
+    });
 
     let clicks = GestureClick::new();
     // Button 0 means every button, so `wgaf mouse click right` and `middle` are
@@ -587,6 +794,18 @@ fn build_ui(application: &Application, reporter: Reporter) {
     });
     window.add_controller(scroll);
 
+    // Report again once the view has actually moved.
+    //
+    // The controller above runs in the capture phase — before the scrolled
+    // window has done anything with the event — so the report it writes still
+    // carries the *old* position. Without this, a test that scrolled and then
+    // waited for a new report would read the position from before the scroll
+    // and conclude nothing moved.
+    scrolled.vadjustment().connect_value_changed({
+        let app = Rc::clone(&app);
+        move |_| app.report()
+    });
+
     // Report whenever focus changes, so a harness can wait for the window to be
     // focused before it sends anything — the precondition that decides whether
     // the input arrives at all.
@@ -624,6 +843,9 @@ fn build_ui(application: &Application, reporter: Reporter) {
     // `set_focus` and neither is more obviously right at the call site.
     GtkWindowExt::set_focus(&window, Some(&entry));
     window.present();
+    if show_dialog {
+        dialog.present();
+    }
 
     // The first report says "up, nothing has happened yet" — the state a test
     // waits for before it starts driving anything.
