@@ -43,10 +43,60 @@
 //! category of gap as `windows_stub.rs`'s "no real GNOME Shell session"
 //! limitation.
 
+mod harness;
+
 use std::process::{Child, Command};
 use std::time::Duration;
 
+use harness::TestApp;
+use wgaf_common::WindowRecord;
+use wgaf_common::dict::WindowRecordDict;
 use zbus::Connection;
+
+/// `input-test`'s main window title, matched to find its id. Must stay in step
+/// with `TITLE` in `tests/apps/input-test/src/main.rs`.
+const INPUT_TEST_TITLE: &str = "wgaf input-test";
+
+/// Opens `input-test`, waits for it to hold the keyboard, and returns it with
+/// the window id to aim at.
+///
+/// # Why the typing tests below have a window at all now
+///
+/// They used to have none. They synthesized into whatever happened to be
+/// focused and relied on `input_device_settle_ms = 0` to make the events go
+/// nowhere — a deliberate race, documented as "a mitigation, not a guarantee".
+/// On 2026-08-07 it was lost badly enough to put ~4096 characters on the
+/// maintainer's shell prompt, the sixth such escape and the first into a
+/// terminal, where a newline in the payload would have executed it.
+///
+/// The fix is the guard wgaf already ships and these tests predate: aim at a
+/// window by id, and let `TypeTextAt` refuse when that window is not focused.
+/// A stray run now fails the test loudly instead of typing into the developer's
+/// session — wgaf's own safety feature applied to wgaf's own suite.
+///
+/// **`input_device_settle_ms` is therefore left at its default here.** Zeroing
+/// it was only ever a way to stop delivery; with a real target, delivery is the
+/// point, and suppressing it would give up the assertion the window makes
+/// possible.
+async fn app_to_type_into(connection: &Connection, bus_name: &str) -> (TestApp, u32) {
+    let app = TestApp::spawn("input-test").await;
+    app.wait_for("the input-test window to take keyboard focus", |report| {
+        report.bool("window_focused")
+    })
+    .await;
+
+    let records: Vec<WindowRecordDict> = harness::windows(connection, bus_name, "ListWindows", &())
+        .await
+        .expect("ListWindows failed — is the wgaf GNOME Shell extension installed and current?");
+    let id = records
+        .into_iter()
+        .map(WindowRecord::from)
+        .find(|w| w.title == INPUT_TEST_TITLE)
+        .unwrap_or_else(|| panic!("`{INPUT_TEST_TITLE}` is not in `wgaf window list`"))
+        .id;
+
+    (app, id)
+}
 
 /// Kills the spawned daemon even if an assertion panics mid-test, and keeps
 /// its config file alive until then (removing it earlier would race the
@@ -80,36 +130,64 @@ fn spawn_daemon_with_config(
     nonce: &str,
     extra_config: &str,
 ) -> DaemonGuard {
+    spawn_daemon_inner(daemon_bus_name, device_name, nonce, extra_config, true)
+}
+
+/// As [`spawn_daemon_with_config`], but with the device left to settle
+/// normally, so what it synthesizes actually arrives.
+///
+/// For the tests that aim at a window of their own — see [`app_to_type_into`].
+fn spawn_daemon_that_delivers(
+    daemon_bus_name: &str,
+    device_name: &str,
+    nonce: &str,
+    extra_config: &str,
+) -> DaemonGuard {
+    spawn_daemon_inner(daemon_bus_name, device_name, nonce, extra_config, false)
+}
+
+fn spawn_daemon_inner(
+    daemon_bus_name: &str,
+    device_name: &str,
+    nonce: &str,
+    extra_config: &str,
+    events_go_nowhere: bool,
+) -> DaemonGuard {
     let config_path = std::env::temp_dir().join(format!("wgaf-daemon-input-test-{nonce}.toml"));
-    // `extension_bus_name` is deliberately left at the default — these tests
-    // never touch `org.wgaf.Windows1`, so it doesn't matter whether the
-    // (nonexistent, in this sandbox) extension is reachable.
-    // `input_device_settle_ms = 0` is a **safety setting here, not a
-    // performance one**, and must not be removed without reading this.
+    // `extension_bus_name` is left at the default. The device-free tests never
+    // touch `org.wgaf.Windows1` at all; the ones that aim at a window need the
+    // real extension, which is present wherever they are allowed to run.
     //
-    // These tests synthesize real keystrokes through a real kernel device.
-    // They verify that synthesis reaches the *kernel*; they do not verify that
-    // anything receives it, and they have no window of their own to aim at. So
-    // if the device is live, every character they type lands in whatever window
-    // currently has focus on the developer's desktop — and one of them types
-    // 4096 characters with the rate limiter switched off.
+    // `input_device_settle_ms = 0` is a **safety setting for the tests that do
+    // not type**, and must not be removed without reading this.
     //
-    // The settle wait exists so the first real command is not discarded (see
-    // `input::DEFAULT_DEVICE_SETTLE_MS`). Switching it off restores, for these
-    // tests only, the property that the events go nowhere: the device is
-    // created and written to before udev has published it and the compositor
-    // has opened it. That is exactly what this suite wants and exactly what a
-    // user does not.
+    // It used to apply to the whole suite, as the only thing standing between a
+    // 4096-character `TypeText` and the developer's focused window: zeroing the
+    // settle wait means the device is written to before udev has published it
+    // and the compositor has opened it, so the events go nowhere. That was
+    // always **a mitigation, not a guarantee** — it is a race, and on
+    // 2026-08-07 it was lost badly enough to leave ~4096 characters on a shell
+    // prompt.
     //
-    // **This is a mitigation, not a guarantee.** It is still a race, so a slow
-    // enough test run could still deliver. The real fix is to run this suite
-    // against a nested compositor rather than the developer's own session; the
-    // day that exists, this line should be reconsidered rather than kept out of
-    // habit.
+    // The tests that type no longer rely on it. They open a window of their own
+    // and aim at it with `TypeTextAt`, so a run where focus is somewhere else
+    // is refused rather than delivered — see `app_to_type_into`. They spawn
+    // their daemons *without* this setting, because with a real target,
+    // delivery is what they want.
+    //
+    // What is left using it is the tests that only need the device to exist:
+    // pointer moves, teardown, and the limiter's refusal path. For those,
+    // nothing should arrive anywhere, and the race is a belt to the braces of
+    // the payloads being harmless.
+    let settle = if events_go_nowhere {
+        "input_device_settle_ms = 0\n"
+    } else {
+        ""
+    };
     std::fs::write(
         &config_path,
         format!(
-            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\ninput_device_settle_ms = 0\n{extra_config}"
+            "bus_name = \"{daemon_bus_name}\"\nlog_level = \"error\"\ninput_device_name = \"{device_name}\"\n{settle}{extra_config}"
         ),
     )
     .expect("failed to write test config");
@@ -217,15 +295,17 @@ async fn poll_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     }
 }
 
-#[ignore = "takes over the desktop: types `ab1!` and `a`, clicks and scrolls into a real \
-            session. Needs a real /dev/uinput — run via `make test-desktop`."]
+#[ignore = "takes over the desktop: opens an input-test window and types into it, then clicks \
+            and scrolls. Needs a real /dev/uinput and the wgaf GNOME Shell extension — run via \
+            `make test-desktop`."]
 #[tokio::test]
 async fn input_methods_succeed_against_a_real_uinput_device() {
     let pid = std::process::id();
     let daemon_bus_name = format!("org.wgaf.Test.Input.Ok{pid}");
     let device_name = format!("wgaf test device ok {pid}");
 
-    let _daemon = spawn_daemon(&daemon_bus_name, &device_name, &format!("ok{pid}"));
+    let _daemon =
+        spawn_daemon_that_delivers(&daemon_bus_name, &device_name, &format!("ok{pid}"), "");
     let connection = wait_for_daemon(&daemon_bus_name).await;
 
     // The device is created lazily on first use (see
@@ -265,16 +345,48 @@ async fn input_methods_succeed_against_a_real_uinput_device() {
         "expected an eventN handler in device block:\n{block}"
     );
 
-    // Exercise every remaining Input1 method for real.
-    call_input::<(), _>(&connection, &daemon_bus_name, "TypeText", &("ab1!",))
+    // Everything that types is aimed at a window this test opened, so a run
+    // where focus is somewhere else is refused rather than sprayed into it.
+    let (app, window) = app_to_type_into(&connection, &daemon_bus_name).await;
+
+    call_input::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "TypeTextAt",
+        &("ab1!", window),
+    )
+    .await
+    .expect("TypeTextAt should succeed");
+    call_input::<(), _>(&connection, &daemon_bus_name, "KeyPressAt", &("a", window))
         .await
-        .expect("TypeText should succeed");
-    call_input::<(), _>(&connection, &daemon_bus_name, "KeyPress", &("a",))
-        .await
-        .expect("KeyPress should succeed");
-    call_input::<(), _>(&connection, &daemon_bus_name, "KeyRelease", &("a",))
-        .await
-        .expect("KeyRelease should succeed");
+        .expect("KeyPressAt should succeed");
+    call_input::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "KeyReleaseAt",
+        &("a", window),
+    )
+    .await
+    .expect("KeyReleaseAt should succeed");
+
+    // And now that it lands somewhere known, assert that it landed. The old
+    // version of this test could only say the call returned; with a window to
+    // aim at, the application's own account of what arrived is available and
+    // there is no reason not to use it.
+    let typed = app
+        .wait_for("the typed text to reach the entry", |report| {
+            report.str("typed").contains("ab1!")
+        })
+        .await;
+    assert!(
+        typed.str("typed").contains("ab1!"),
+        "expected `ab1!` in the entry, got {:?}",
+        typed.str("typed")
+    );
+
+    // The pointer methods keep no target: a click goes wherever the pointer
+    // is, and wgaf has no equivalent of `--window` for it (backlog §2). They
+    // stay last so that a failure above stops before anything is clicked.
     call_input::<(), _>(&connection, &daemon_bus_name, "MouseClick", &("left",))
         .await
         .expect("MouseClick should succeed");
@@ -425,16 +537,16 @@ async fn a_runaway_flood_is_refused_with_the_rate_limited_error() {
 
 /// A rate of `0` switches the limiter off entirely, so the documented escape
 /// hatch in `config.toml` actually works.
-#[ignore = "takes over the desktop: types 4096 real characters into a real session, the \
-            largest payload in the suite. Needs a real /dev/uinput — run via \
-            `make test-desktop`."]
+#[ignore = "takes over the desktop: opens an input-test window and types 4096 real characters \
+            into it, the largest payload in the suite. Needs a real /dev/uinput and the wgaf \
+            GNOME Shell extension — run via `make test-desktop`."]
 #[tokio::test]
 async fn a_rate_of_zero_disables_the_limiter() {
     let pid = std::process::id();
     let daemon_bus_name = format!("org.wgaf.Test.Input.NoLimit{pid}");
     let device_name = format!("wgaf test device nolimit {pid}");
 
-    let _daemon = spawn_daemon_with_config(
+    let _daemon = spawn_daemon_that_delivers(
         &daemon_bus_name,
         &device_name,
         &format!("nolimit{pid}"),
@@ -442,12 +554,17 @@ async fn a_rate_of_zero_disables_the_limiter() {
     );
     let connection = wait_for_daemon(&daemon_bus_name).await;
 
+    // **The payload that escaped.** 4096 characters used to go to whatever had
+    // focus; on 2026-08-07 that was a shell prompt. It is aimed at a window
+    // this test owns now, so the worst a lost race can do is fail the test.
+    let (_app, window) = app_to_type_into(&connection, &daemon_bus_name).await;
+
     // The same call the previous test refuses at a rate of 1. This one needs
     // a real device, since with the limiter disabled it proceeds to synthesis.
     let text: String = std::iter::repeat_n('a', 4096).collect();
-    call_input::<(), _>(&connection, &daemon_bus_name, "TypeText", &(text,))
+    call_input::<(), _>(&connection, &daemon_bus_name, "TypeTextAt", &(text, window))
         .await
-        .expect("with the limiter disabled, a large TypeText should be accepted");
+        .expect("with the limiter disabled, a large TypeTextAt should be accepted");
 }
 
 /// `input_max_type_text_chars` actually caps a single `TypeText`, and the

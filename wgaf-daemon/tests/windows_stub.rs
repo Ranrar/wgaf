@@ -57,9 +57,18 @@ enum StubExtensionError {
     WindowNotFound(String),
     WorkspaceNotFound(String),
     OperationNotApplied(String),
+    OperationNotSupported(String),
 }
 
+/// The canned window as it starts out, before any window-state call.
+///
+/// Most call sites only want its id or its untouched shape, so this stays the
+/// no-argument one and [`canned_window_in`] is what `ListWindows` uses.
 fn canned_window() -> WindowRecord {
+    canned_window_in(&StubWindowState::default())
+}
+
+fn canned_window_in(state: &StubWindowState) -> WindowRecord {
     WindowRecord {
         id: 1,
         title: "Stub Terminal".to_string(),
@@ -70,8 +79,33 @@ fn canned_window() -> WindowRecord {
         width: 800,
         height: 600,
         focused: true,
-        maximized: false,
+        maximized: state.maximized_horizontally && state.maximized_vertically,
+        minimized: state.minimized,
+        fullscreen: state.fullscreen,
+        above: state.above,
+        on_all_workspaces: state.on_all_workspaces,
     }
+}
+
+/// The canned window's mutable state, for the same reason [`StubWorkspaces`]
+/// holds real workspace state: what a caller checks about these six operations
+/// is their *effect*, and a stub that accepted `SetWindowMinimized` while
+/// always reporting `minimized: false` would pass a test asserting the call
+/// succeeded and prove nothing at all.
+///
+/// The two maximize axes are held separately rather than as one flag, because
+/// the per-axis behaviour is the part most easily got wrong — unmaximizing
+/// horizontally must leave a vertically maximized window vertically maximized,
+/// and a single boolean cannot express the difference between doing that and
+/// clearing both.
+#[derive(Default)]
+struct StubWindowState {
+    minimized: bool,
+    maximized_horizontally: bool,
+    maximized_vertically: bool,
+    fullscreen: bool,
+    above: bool,
+    on_all_workspaces: bool,
 }
 
 fn canned_workspace() -> WorkspaceRecord {
@@ -121,11 +155,13 @@ impl Default for StubWorkspaces {
 /// to reject those first, and a stub that silently accepted them would hide
 /// exactly the bug the check exists to prevent.
 ///
-/// Its workspace state is real too — see [`StubWorkspaces`].
+/// Its workspace and window state are real too — see [`StubWorkspaces`] and
+/// [`StubWindowState`].
 #[derive(Default)]
 struct StubExtension {
     pointer: std::sync::Mutex<(i32, i32)>,
     workspaces: std::sync::Mutex<StubWorkspaces>,
+    window: std::sync::Mutex<StubWindowState>,
 }
 
 #[interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
@@ -170,11 +206,80 @@ impl StubExtension {
     }
 
     fn list_windows(&self) -> Vec<WindowRecordDict> {
-        vec![canned_window().into()]
+        vec![canned_window_in(&self.window.lock().expect("stub window lock")).into()]
     }
 
     fn focus_window(&self, id: u32) -> Result<(), StubExtensionError> {
         self.check_known(id)
+    }
+
+    /* The six window-state operations.
+     *
+     * Each records the change so `ListWindows` reports it, which is what lets a
+     * test assert the effect through the daemon rather than only that the call
+     * returned. None of them models a confirmation timeout: the real extension
+     * confirms before replying and raises `OperationNotApplied` when it cannot,
+     * and that translation is covered by the workspace path already.
+     */
+
+    fn set_window_minimized(&self, id: u32, minimized: bool) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        self.window.lock().expect("stub window lock").minimized = minimized;
+        Ok(())
+    }
+
+    /// Both axes, matching the real extension.
+    ///
+    /// The two are still stored separately rather than as one flag, because
+    /// Mutter tracks them separately and a user can leave a window maximized on
+    /// one axis with GNOME's own keybindings. A stub with a single boolean
+    /// could not represent the window this method has to cope with.
+    fn set_window_maximized(&self, id: u32, maximized: bool) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        let mut window = self.window.lock().expect("stub window lock");
+        window.maximized_horizontally = maximized;
+        window.maximized_vertically = maximized;
+        Ok(())
+    }
+
+    fn set_window_fullscreen(&self, id: u32, fullscreen: bool) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        self.window.lock().expect("stub window lock").fullscreen = fullscreen;
+        Ok(())
+    }
+
+    fn set_window_above(&self, id: u32, above: bool) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        self.window.lock().expect("stub window lock").above = above;
+        Ok(())
+    }
+
+    fn set_window_on_all_workspaces(
+        &self,
+        id: u32,
+        on_all_workspaces: bool,
+    ) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        self.window
+            .lock()
+            .expect("stub window lock")
+            .on_all_workspaces = on_all_workspaces;
+        Ok(())
+    }
+
+    /// Stacking order is not modelled — one window has nothing to be above or
+    /// below — so this checks the id and stops there. What it is really
+    /// covering is the argument round trip and the `WindowNotFound`
+    /// translation; whether a raise actually raises needs a real compositor and
+    /// belongs in `tests/window_management.rs`.
+    fn restack_window(&self, id: u32, stacking: &str) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        match stacking {
+            "raise" | "lower" => Ok(()),
+            other => Err(StubExtensionError::OperationNotSupported(format!(
+                "unknown stacking direction `{other}`"
+            ))),
+        }
     }
 
     fn move_window(&self, id: u32, _x: i32, _y: i32) -> Result<(), StubExtensionError> {
@@ -1297,6 +1402,295 @@ async fn a_denied_move_to_workspace_is_refused() {
         wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED,
         "denied move",
     );
+}
+
+// --- Window state operations (W18.1) ---------------------------------------
+
+/// Reads one window record back through the daemon's own `ListWindows`.
+///
+/// The whole point of these tests: every window-state assertion below goes
+/// through the public interface rather than reaching into the stub, so a method
+/// that replied successfully without changing anything fails here instead of
+/// passing on its own return value.
+async fn window_state(connection: &zbus::Connection, bus: &str) -> WindowRecord {
+    let dicts: Vec<WindowRecordDict> = call_windows(connection, bus, "ListWindows", &())
+        .await
+        .expect("ListWindows should succeed");
+    dicts
+        .into_iter()
+        .map(WindowRecord::from)
+        .find(|w| w.id == canned_window().id)
+        .expect("the canned window is in the list")
+}
+
+/// Each of the five state flags is set, read back, cleared, and read back
+/// again.
+///
+/// Both directions matter and the second is the one that would be missed: a
+/// method that ignored its boolean and always set the flag would pass every
+/// "turn it on" assertion.
+#[tokio::test]
+async fn each_window_state_is_set_and_cleared_and_visible_to_the_next_call() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WinState{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WinState{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("winstate{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+    let id = canned_window().id;
+
+    /// A method name paired with the record field it is supposed to move.
+    type StateCase = (&'static str, fn(&WindowRecord) -> bool);
+
+    let cases: &[StateCase] = &[
+        ("SetWindowMinimized", |w| w.minimized),
+        ("SetWindowFullscreen", |w| w.fullscreen),
+        ("SetWindowAbove", |w| w.above),
+        ("SetWindowOnAllWorkspaces", |w| w.on_all_workspaces),
+    ];
+
+    for (method, read) in cases {
+        assert!(
+            !read(&window_state(&connection, &daemon_bus_name).await),
+            "{method}: the canned window should start with this state clear"
+        );
+
+        call_windows::<(), _>(&connection, &daemon_bus_name, method, &(id, true))
+            .await
+            .unwrap_or_else(|e| panic!("{method}(true) should succeed: {e}"));
+        assert!(
+            read(&window_state(&connection, &daemon_bus_name).await),
+            "{method}(true) reported success without the state changing"
+        );
+
+        call_windows::<(), _>(&connection, &daemon_bus_name, method, &(id, false))
+            .await
+            .unwrap_or_else(|e| panic!("{method}(false) should succeed: {e}"));
+        assert!(
+            !read(&window_state(&connection, &daemon_bus_name).await),
+            "{method}(false) reported success without the state changing back"
+        );
+    }
+}
+
+/// Maximizing and unmaximizing move both axes together.
+///
+/// `SetWindowMaximized` took a `directions` argument for a few hours. It was
+/// removed once Mutter 18 was measured to always maximize both axes whatever
+/// the flags say, so this asserts the contract that replaced it: the record's
+/// `maximized` — which means *both* axes — follows the request in both
+/// directions.
+#[tokio::test]
+async fn maximizing_moves_both_axes_together() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WinMax{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WinMax{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("winmax{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+    let id = canned_window().id;
+
+    assert!(
+        !window_state(&connection, &daemon_bus_name).await.maximized,
+        "the canned window should start unmaximized"
+    );
+
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "SetWindowMaximized",
+        &(id, true),
+    )
+    .await
+    .expect("maximizing should succeed");
+    assert!(
+        window_state(&connection, &daemon_bus_name).await.maximized,
+        "SetWindowMaximized(true) reported success without the state changing"
+    );
+
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "SetWindowMaximized",
+        &(id, false),
+    )
+    .await
+    .expect("unmaximizing should succeed");
+    assert!(
+        !window_state(&connection, &daemon_bus_name).await.maximized,
+        "SetWindowMaximized(false) reported success without the state changing back"
+    );
+}
+
+/// Raising and lowering reach the extension with the direction intact.
+///
+/// The stub models no stacking order — one window has nothing to be above —
+/// so this covers the argument round trip and the id check only. Whether a
+/// raise actually raises needs a real compositor and lives in
+/// `tests/window_management.rs`.
+#[tokio::test]
+async fn restacking_accepts_both_directions_and_rejects_anything_else() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WinStack{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WinStack{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("winstack{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+    let id = canned_window().id;
+
+    for direction in ["raise", "lower"] {
+        call_windows::<(), _>(
+            &connection,
+            &daemon_bus_name,
+            "RestackWindow",
+            &(id, direction),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("RestackWindow({direction}) should succeed: {e}"));
+    }
+
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "RestackWindow",
+        &(id, "sideways"),
+    )
+    .await
+    .expect_err("an unknown stacking direction must not be accepted");
+    assert_named_error(err, wgaf_common::WINDOWS_ERROR_INVALID_ARGUMENT);
+}
+
+/// An unknown window id comes back as `WindowNotFound` from every one of the
+/// six, not as a generic failure.
+#[tokio::test]
+async fn window_state_operations_report_an_unknown_id_by_name() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WinStateMissing{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WinStateMissing{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("winstatemissing{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+    let missing = canned_window().id + 999;
+
+    for method in [
+        "SetWindowMinimized",
+        "SetWindowFullscreen",
+        "SetWindowAbove",
+        "SetWindowOnAllWorkspaces",
+    ] {
+        let err = call_windows::<(), _>(&connection, &daemon_bus_name, method, &(missing, true))
+            .await
+            .unwrap_err();
+        assert_error_name(err, wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND, method);
+    }
+
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "SetWindowMaximized",
+        &(missing, true),
+    )
+    .await
+    .unwrap_err();
+    assert_error_name(
+        err,
+        wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND,
+        "SetWindowMaximized",
+    );
+
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "RestackWindow",
+        &(missing, "raise"),
+    )
+    .await
+    .unwrap_err();
+    assert_error_name(
+        err,
+        wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND,
+        "RestackWindow",
+    );
+}
+
+/// Each of the six carries its own capability: denying one leaves the other
+/// five working.
+///
+/// The half that would otherwise go unchecked is the second: a policy lookup
+/// that matched the wrong variant, or one gate standing in for all six, would
+/// pass a test that only asserted the denial.
+#[tokio::test]
+async fn denying_one_window_state_capability_leaves_the_others_working() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.WinStateDeny{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.WinStateDeny{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon_with_policy(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("winstatedeny{pid}"),
+        "[capabilities]\nSetWindowAbove = \"Deny\"\n",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+    let id = canned_window().id;
+
+    let err = call_windows::<(), _>(&connection, &daemon_bus_name, "SetWindowAbove", &(id, true))
+        .await
+        .expect_err("a denied SetWindowAbove must fail");
+    assert_error_name(
+        err,
+        wgaf_common::WINDOWS_ERROR_PERMISSION_DENIED,
+        "denied SetWindowAbove",
+    );
+
+    for method in [
+        "SetWindowMinimized",
+        "SetWindowFullscreen",
+        "SetWindowOnAllWorkspaces",
+    ] {
+        call_windows::<(), _>(&connection, &daemon_bus_name, method, &(id, true))
+            .await
+            .unwrap_or_else(|e| {
+                panic!("{method} must not be denied by SetWindowAbove's rule: {e}")
+            });
+    }
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "SetWindowMaximized",
+        &(id, true),
+    )
+    .await
+    .expect("SetWindowMaximized must not be denied by SetWindowAbove's rule");
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "RestackWindow",
+        &(id, "raise"),
+    )
+    .await
+    .expect("RestackWindow must not be denied by SetWindowAbove's rule");
 }
 
 // --- Monitor listing (W18.2) -----------------------------------------------

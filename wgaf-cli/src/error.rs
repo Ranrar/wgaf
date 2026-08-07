@@ -192,6 +192,21 @@ fn classify(name: &str) -> Option<(&'static str, Verdict)> {
         wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED => {
             ("the operation was not applied", Unverified)
         }
+        // Nearly the opposite of the line above, and classified the other way
+        // for it. Nothing was attempted and the world is exactly as expected —
+        // the window answered the question up front. Same bucket as
+        // `ActionNotSupported`, and for the same reason the third outcome does
+        // not rescue either: there is nothing here to retry.
+        wgaf_common::WINDOWS_ERROR_OPERATION_NOT_SUPPORTED => {
+            ("the window does not support that", Error)
+        }
+        // A malformed call. Not a denial (no policy was consulted) and not a
+        // verification failure (the desktop is irrelevant — the request never
+        // named a real operation), so it is the plain first category. Reaching
+        // it through the CLI takes some doing, since clap rejects these values
+        // before a call is made; it is for everything else that speaks to the
+        // daemon.
+        wgaf_common::WINDOWS_ERROR_INVALID_ARGUMENT => ("invalid argument", Error),
         wgaf_common::WINDOWS_ERROR_EXTENSION_UNAVAILABLE => {
             ("GNOME Shell Extension bridge unavailable", Error)
         }
@@ -223,6 +238,13 @@ fn classify(name: &str) -> Option<(&'static str, Verdict)> {
         wgaf_common::INPUT_ERROR_WINDOW_NOT_FOUND => ("window not found", Error),
         // The one D-Bus error this taxonomy's third outcome exists for.
         wgaf_common::INPUT_ERROR_VERIFICATION_FAILED => ("focus could not be verified", Unverified),
+        // The third `Unverified`, and the same category as the one above:
+        // permitted, attempted, and the target was not in the state the caller
+        // assumed. Not an error — nothing malfunctioned and the window is
+        // exactly where the user left it — and not a denial, since no policy
+        // was consulted. Retryable in the way ADR-0007 means: restore the
+        // window and the same call works.
+        wgaf_common::INPUT_ERROR_WINDOW_MINIMIZED => ("the window is minimized", Unverified),
         wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE => {
             ("AT-SPI accessibility bus unavailable", Error)
         }
@@ -447,15 +469,15 @@ mod tests {
         // Guards the scan itself: a refactor that moves or reformats these
         // constants would otherwise turn this test into a silent no-op.
         assert_eq!(
-            checked, 25,
-            "expected 25 daemon error-name constants, found {checked}. If an error was \
+            checked, 28,
+            "expected 28 daemon error-name constants, found {checked}. If an error was \
              genuinely added or removed, update this number; if not, the scan has stopped \
              matching how `wgaf-common` declares them and is silently passing."
         );
     }
 
     /// The other half of `every_daemon_error_constant_is_recognized_by_the_cli`:
-    /// every one of the same 25 constants also maps to the `Verdict` W16.1
+    /// every one of the same 28 constants also maps to the `Verdict` W16.1
     /// (`plan-first-release.md` §16 / ADR-0007) documents for it. Hand-listed
     /// rather than scanned, since the *value* — not merely the presence — is
     /// what a scan cannot check; keep the count in sync with that test's.
@@ -469,6 +491,11 @@ mod tests {
             (wgaf_common::WINDOWS_ERROR_MONITOR_LAYOUT_UNAVAILABLE, Error),
             (wgaf_common::WINDOWS_ERROR_WORKSPACE_NOT_FOUND, Error),
             (wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED, Unverified),
+            // Adjacent lines, opposite verdicts, and that is the point: an
+            // unapplied operation may work on a retry, an unsupported one
+            // never will.
+            (wgaf_common::WINDOWS_ERROR_OPERATION_NOT_SUPPORTED, Error),
+            (wgaf_common::WINDOWS_ERROR_INVALID_ARGUMENT, Error),
             (wgaf_common::INPUT_ERROR_DEVICE_UNAVAILABLE, Error),
             (wgaf_common::INPUT_ERROR_UNKNOWN_KEY, Error),
             (wgaf_common::INPUT_ERROR_CHARACTER_NOT_TYPEABLE, Error),
@@ -482,6 +509,7 @@ mod tests {
             (wgaf_common::INPUT_ERROR_MONITOR_LAYOUT_UNAVAILABLE, Error),
             (wgaf_common::INPUT_ERROR_WINDOW_NOT_FOUND, Error),
             (wgaf_common::INPUT_ERROR_VERIFICATION_FAILED, Unverified),
+            (wgaf_common::INPUT_ERROR_WINDOW_MINIMIZED, Unverified),
             (wgaf_common::ACCESSIBILITY_ERROR_BUS_UNAVAILABLE, Error),
             (wgaf_common::ACCESSIBILITY_ERROR_APP_NOT_FOUND, Error),
             (wgaf_common::ACCESSIBILITY_ERROR_ELEMENT_NOT_FOUND, Error),
@@ -491,7 +519,7 @@ mod tests {
         ];
         assert_eq!(
             cases.len(),
-            25,
+            28,
             "keep this list's length in sync with \
              every_daemon_error_constant_is_recognized_by_the_cli's count"
         );

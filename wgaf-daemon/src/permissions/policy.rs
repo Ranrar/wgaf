@@ -98,6 +98,31 @@ pub enum Capability {
     /// `SwitchWorkspace` so automation can navigate has not thereby agreed to
     /// have their windows rearranged behind them.
     MoveWindowToWorkspace,
+    /// Minimizing a window, or restoring one.
+    ///
+    /// One capability for both directions, like the five below, because the
+    /// pair is one decision: an operator who is willing to have automation
+    /// minimize their windows has no separate interest in whether it may put
+    /// them back. Splitting them would produce the state nobody wants — windows
+    /// that can be hidden and not restored.
+    SetWindowMinimized,
+    SetWindowMaximized,
+    SetWindowFullscreen,
+    /// Keeping a window above the others, or stopping.
+    ///
+    /// Worth its own line rather than sharing with the two above: an
+    /// always-on-top window covers whatever the user is looking at and stays
+    /// there, which is a different thing to consent to than a window changing
+    /// size.
+    SetWindowAbove,
+    SetWindowOnAllWorkspaces,
+    /// Raising a window to the top of its stack layer, or lowering it.
+    ///
+    /// Separate from [`Capability::FocusWindow`] because the two are not the
+    /// same act: focusing raises *and* redirects the keyboard, raising only
+    /// changes what is visible. A caller allowed to rearrange what is on top
+    /// has not thereby been allowed to move keyboard focus.
+    RestackWindow,
     // org.wgaf.Input1
     TypeText,
     KeyPress,
@@ -145,6 +170,12 @@ impl Capability {
         Capability::RemoveWorkspace,
         Capability::ReorderWorkspace,
         Capability::MoveWindowToWorkspace,
+        Capability::SetWindowMinimized,
+        Capability::SetWindowMaximized,
+        Capability::SetWindowFullscreen,
+        Capability::SetWindowAbove,
+        Capability::SetWindowOnAllWorkspaces,
+        Capability::RestackWindow,
         Capability::TypeText,
         Capability::KeyPress,
         Capability::KeyRelease,
@@ -183,16 +214,22 @@ impl Capability {
             Capability::RemoveWorkspace => 7,
             Capability::ReorderWorkspace => 8,
             Capability::MoveWindowToWorkspace => 9,
-            Capability::TypeText => 10,
-            Capability::KeyPress => 11,
-            Capability::KeyRelease => 12,
-            Capability::MouseMove => 13,
-            Capability::MouseMoveAbsolute => 14,
-            Capability::MouseClick => 15,
-            Capability::MouseScroll => 16,
-            Capability::InvokeAction => 17,
-            Capability::SetText => 18,
-            Capability::FocusElement => 19,
+            Capability::SetWindowMinimized => 10,
+            Capability::SetWindowMaximized => 11,
+            Capability::SetWindowFullscreen => 12,
+            Capability::SetWindowAbove => 13,
+            Capability::SetWindowOnAllWorkspaces => 14,
+            Capability::RestackWindow => 15,
+            Capability::TypeText => 16,
+            Capability::KeyPress => 17,
+            Capability::KeyRelease => 18,
+            Capability::MouseMove => 19,
+            Capability::MouseMoveAbsolute => 20,
+            Capability::MouseClick => 21,
+            Capability::MouseScroll => 22,
+            Capability::InvokeAction => 23,
+            Capability::SetText => 24,
+            Capability::FocusElement => 25,
         }
     }
 
@@ -211,6 +248,12 @@ impl Capability {
             Capability::RemoveWorkspace => "RemoveWorkspace",
             Capability::ReorderWorkspace => "ReorderWorkspace",
             Capability::MoveWindowToWorkspace => "MoveWindowToWorkspace",
+            Capability::SetWindowMinimized => "SetWindowMinimized",
+            Capability::SetWindowMaximized => "SetWindowMaximized",
+            Capability::SetWindowFullscreen => "SetWindowFullscreen",
+            Capability::SetWindowAbove => "SetWindowAbove",
+            Capability::SetWindowOnAllWorkspaces => "SetWindowOnAllWorkspaces",
+            Capability::RestackWindow => "RestackWindow",
             Capability::TypeText => "TypeText",
             Capability::KeyPress => "KeyPress",
             Capability::KeyRelease => "KeyRelease",

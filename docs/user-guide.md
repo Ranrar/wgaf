@@ -55,6 +55,48 @@ wgaf window close 7
 Window ids can change between sessions or after an app restarts — get a
 fresh one from `window list` rather than reusing an old number.
 
+### Minimizing, maximizing and the rest
+
+Six more pairs change what a window *is* rather than where it is:
+
+```sh
+wgaf window minimize 7      wgaf window unminimize 7
+wgaf window maximize 7      wgaf window unmaximize 7
+wgaf window fullscreen 7    wgaf window unfullscreen 7
+wgaf window above 7         wgaf window unabove 7      # keep it in front
+wgaf window stick 7         wgaf window unstick 7      # on every workspace
+wgaf window raise 7         wgaf window lower 7        # front or back
+```
+
+Each one waits until the change has actually happened, so the next command you
+run sees it. `wgaf window list` reports all of these back, so you can ask what
+state a window is in as well as set it.
+
+**None of them does a second thing for you.** Restoring a minimized window
+doesn't focus it, maximizing doesn't raise it, and leaving fullscreen doesn't put
+the window back where it was. Run the other command if you want the other thing.
+
+Three of these are worth knowing a detail about:
+
+- **Maximizing is always both directions.** GNOME can maximize a window sideways
+  only from its own keyboard shortcuts, but it gives no way for another program
+  to ask for that — so wgaf doesn't offer an option it couldn't honour. Use
+  `wgaf window resize` with the usable area from `wgaf monitor list --json` if
+  you need it.
+- **`unstick` leaves the window on the workspace you're looking at**, not the one
+  it came from. So sticking a window, switching workspace and unsticking it has
+  moved it there.
+- **`raise` isn't `focus`.** Raising brings a window to the front of its layer
+  and leaves the keyboard where it was; focusing does both. And raising can't
+  lift a window past one you've kept above — that's a layer of its own.
+
+Some windows refuse. A dialog may say it can't be maximized, and a window GNOME
+keeps on every workspace can't be unstuck. wgaf asks first and tells you the
+reason instead of appearing to work.
+
+Typing at a minimized window is refused rather than sent elsewhere — see
+[Typing and clicking](#typing-and-clicking).
+
 ## Workspaces
 
 See what you have, and which one you're on:
@@ -154,6 +196,17 @@ way through stops the rest rather than spraying it somewhere else.
 If the window cannot be focused, nothing is typed and wgaf says so. `--window`
 works on `wgaf key press`, `key release` and `key combo` too. Leaving it off
 behaves exactly as it always has.
+
+A **minimized** window is refused for the same reason: it can't hold the
+keyboard, so the text would land in whatever window can. Restore it first, and
+the two steps chain:
+
+```sh
+wgaf window unminimize 7 && wgaf type "hello" --window 7
+```
+
+wgaf won't restore it for you — un-hiding a window you chose to hide isn't part
+of what you asked for.
 
 **Mouse commands have no equivalent** — a click goes wherever the pointer is,
 and your own hand moves the same pointer.

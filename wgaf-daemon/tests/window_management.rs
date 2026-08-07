@@ -541,3 +541,300 @@ async fn close_window_closes_the_one_it_names() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+// --- Window state (W18.1) ---------------------------------------------------
+//
+// Each of these asserts against what `window-test` says about itself, not
+// against wgaf's reply, for the reason this file's header gives. That is what
+// limits which of the six can be covered here at all:
+//
+//   maximize, fullscreen  — GTK reports both directly.
+//   minimize              — via GTK's `suspended`, its only account of "not
+//                           visible to the user"; see the field's comment in
+//                           window-test.
+//   above, stick, restack — NOT COVERED, and not by oversight. A Wayland client
+//                           is told nothing about its stacking order, its layer,
+//                           or which workspaces it appears on; there is no
+//                           getter in GTK4 and nothing in the protocol. The only
+//                           other source is `wgaf window list`, and asserting on
+//                           that would check the extension's own report against
+//                           the extension — the same trap `wgaf window move` is
+//                           deliberately absent for. If a real oracle ever turns
+//                           up, this is where those tests go.
+
+/// `SetWindowMaximized` maximizes and unmaximizes, verified by the application
+/// and cross-checked against the geometry the compositor reports.
+///
+/// # This test had a hole, and it is worth knowing what it was
+///
+/// It used to drive a `directions` argument and assert only on GTK's
+/// `is_maximized()`, in the sequence both → un-horizontal → horizontal → un-both.
+/// **It passed against a build where the direction was completely ignored**,
+/// because `is_maximized()` means *both* axes: a horizontal request that really
+/// maximized both satisfies every step. The defect was found by running the
+/// command by hand and reading the window's size.
+///
+/// The argument is gone — Mutter 18 has no per-axis maximize to offer (see
+/// `setWindowMaximized` in `extension/windows.js` for the measurements) — so
+/// the hole is closed by removing the thing it hid. What remains is the check
+/// that both axes really move, and the geometry cross-check below is what makes
+/// "maximized" mean something beyond a flag the toolkit set.
+#[tokio::test]
+#[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
+            Run deliberately after `make test-apps`, with --test-threads=1."]
+async fn maximizing_changes_what_the_application_reports() {
+    let _lock = lock_window_test().await;
+    let fixture = Fixture::start("maximize").await;
+
+    let main = fixture.window(MAIN_TITLE).await;
+    let report = fixture.app.read().expect("window-test stopped reporting");
+    assert!(
+        !reported_bool(&report, "main", "maximized"),
+        "the main window starts maximized, so this test would prove nothing"
+    );
+
+    let set = async |maximized: bool| {
+        harness::windows::<(), _>(
+            &fixture.connection,
+            &fixture.bus_name,
+            "SetWindowMaximized",
+            &(main.id, maximized),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("SetWindowMaximized({maximized}) failed: {e}"));
+    };
+
+    let await_maximized = async |expected: bool, what: &str| {
+        fixture
+            .app
+            .try_wait_for(SETTLE, |report| {
+                reported_bool(report, "main", "maximized") == expected
+            })
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "the main window never reported maximized={expected} after {what}. \
+                     Last report:\n{}",
+                    last.map(|r| format!("{:#}", r.json()))
+                        .unwrap_or_else(|| "<none>".into())
+                )
+            });
+    };
+
+    set(true).await;
+    await_maximized(true, "maximizing").await;
+
+    // The application only knows a boolean — xdg-shell carries one `maximized`
+    // state and no geometry claim — so the compositor's frame rect is what
+    // says the window actually grew. A toolkit flag set without a resize
+    // behind it would pass the assertion above and fail this one.
+    let maximized = fixture.window(MAIN_TITLE).await;
+    assert!(
+        maximized.width > main.width && maximized.height > main.height,
+        "the window reports maximized but is still {}x{} (it was {}x{})",
+        maximized.width,
+        maximized.height,
+        main.width,
+        main.height
+    );
+
+    set(false).await;
+    await_maximized(false, "unmaximizing").await;
+
+    let restored = fixture.window(MAIN_TITLE).await;
+    assert_eq!(
+        (restored.width, restored.height),
+        (main.width, main.height),
+        "unmaximizing did not return the window to the size it started at"
+    );
+}
+
+/// `SetWindowFullscreen` puts a window fullscreen and takes it back out,
+/// verified by the application.
+///
+/// Kept apart from the maximize test rather than folded in with it: the two are
+/// different states and a window can be in both, so a test that set them in
+/// sequence could pass while confusing one for the other.
+#[tokio::test]
+#[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
+            Run deliberately after `make test-apps`, with --test-threads=1."]
+async fn fullscreen_changes_what_the_application_reports() {
+    let _lock = lock_window_test().await;
+    let fixture = Fixture::start("fullscreen").await;
+
+    let main = fixture.window(MAIN_TITLE).await;
+    let report = fixture.app.read().expect("window-test stopped reporting");
+    assert!(
+        !reported_bool(&report, "main", "fullscreen"),
+        "the main window starts fullscreen, so this test would prove nothing"
+    );
+
+    for (fullscreen, what) in [(true, "going fullscreen"), (false, "leaving fullscreen")] {
+        harness::windows::<(), _>(
+            &fixture.connection,
+            &fixture.bus_name,
+            "SetWindowFullscreen",
+            &(main.id, fullscreen),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("SetWindowFullscreen({fullscreen}) failed: {e}"));
+
+        fixture
+            .app
+            .try_wait_for(SETTLE, |report| {
+                reported_bool(report, "main", "fullscreen") == fullscreen
+            })
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "the main window never reported fullscreen={fullscreen} after {what}. \
+                     Last report:\n{}",
+                    last.map(|r| format!("{:#}", r.json()))
+                        .unwrap_or_else(|| "<none>".into())
+                )
+            });
+    }
+
+    // Fullscreen must not have been implemented as a maximize. They are
+    // different states with different geometry — a maximized window stops at
+    // the work area — and a script placing other windows depends on the
+    // difference.
+    let after = fixture.app.read().expect("window-test stopped reporting");
+    assert!(
+        !reported_bool(&after, "main", "maximized"),
+        "leaving fullscreen left the window maximized, which nothing asked for. Report:\n{:#}",
+        after.json()
+    );
+}
+
+/// `SetWindowMinimized` minimizes and restores, verified by the application
+/// rather than by wgaf's own record.
+///
+/// Restoring is asserted as well as minimizing, and it is the half worth
+/// having: a run that left the maintainer's window minimized would be a test
+/// that damaged the session it borrowed.
+#[tokio::test]
+#[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
+            Run deliberately after `make test-apps`, with --test-threads=1."]
+async fn minimizing_hides_the_window_from_the_application_and_restoring_brings_it_back() {
+    let _lock = lock_window_test().await;
+    let fixture = Fixture::start("minimize").await;
+
+    let main = fixture.window(MAIN_TITLE).await;
+    let report = fixture.app.read().expect("window-test stopped reporting");
+    assert!(
+        !reported_bool(&report, "main", "suspended"),
+        "the main window is already out of view, so this test would prove nothing. \
+         Report:\n{:#}",
+        report.json()
+    );
+
+    for (minimized, what) in [(true, "minimizing"), (false, "restoring")] {
+        harness::windows::<(), _>(
+            &fixture.connection,
+            &fixture.bus_name,
+            "SetWindowMinimized",
+            &(main.id, minimized),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("SetWindowMinimized({minimized}) failed: {e}"));
+
+        fixture
+            .app
+            .try_wait_for(SETTLE, |report| {
+                reported_bool(report, "main", "suspended") == minimized
+            })
+            .await
+            .unwrap_or_else(|last| {
+                panic!(
+                    "the main window never reported suspended={minimized} after {what}. \
+                     GTK reports `suspended` rather than `minimized` because a Wayland client \
+                     is never told which it is — see the field's comment in window-test. \
+                     Last report:\n{}",
+                    last.map(|r| format!("{:#}", r.json()))
+                        .unwrap_or_else(|| "<none>".into())
+                )
+            });
+    }
+
+    // Restoring must not have focused it as a side effect. Nothing here asked
+    // for that, and doing it would be `FocusWindow`'s capability being spent
+    // without being checked.
+    let after = fixture.window(MAIN_TITLE).await;
+    assert!(
+        !after.minimized,
+        "`wgaf window list` still reports the window minimized after restoring it"
+    );
+}
+
+/// The extension's named errors reach the daemon by name, not as a generic
+/// D-Bus failure.
+///
+/// # This is the test whose absence hid a live bug for three releases
+///
+/// Every daemon-side error translation was unit-tested against
+/// `tests/windows_stub.rs`, which implements the extension in Rust and emits
+/// names correctly — so the daemon half was proven and the *extension* half was
+/// never executed by anything. It turned out the extension's reply path
+/// discarded the name entirely (`return_gerror` re-encodes it as
+/// `org.gtk.GDBus.UnmappedGError…`), which meant `WindowNotFound`,
+/// `WorkspaceNotFound` and `OperationNotApplied` had never once arrived
+/// intact. Found by inspection, not by a failing test. See the S2 in
+/// `issues.md`.
+///
+/// So this asserts the one thing no stub can: that a name survives the real
+/// GJS. Closing a window and then acting on its id is the cheapest way to
+/// provoke one.
+#[tokio::test]
+#[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
+            Run deliberately after `make test-apps`, with --test-threads=1."]
+async fn a_named_error_from_the_extension_survives_the_trip_to_the_daemon() {
+    let _lock = lock_window_test().await;
+    let fixture = Fixture::start("errorname").await;
+
+    // An id no window has. Derived from a real one so it is plausibly shaped
+    // rather than a magic number, and high enough that Mutter's stable
+    // sequence will not have reached it.
+    let absent = fixture.window(MAIN_TITLE).await.id + 100_000;
+
+    let err = harness::windows::<(), _>(
+        &fixture.connection,
+        &fixture.bus_name,
+        "FocusWindow",
+        &(absent,),
+    )
+    .await
+    .expect_err("focusing a window that does not exist must fail");
+
+    match err {
+        zbus::Error::MethodError(name, description, _) => assert_eq!(
+            name.as_str(),
+            wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND,
+            "the extension's WindowNotFound did not survive as a name — it arrived as \
+             `{name}` with description {description:?}. If this says \
+             `org.gtk.GDBus.UnmappedGError…`, the extension is replying through \
+             `return_gerror` again; only `return_dbus_error` keeps the name."
+        ),
+        other => panic!("expected a named MethodError, got {other:?}"),
+    }
+
+    // And the same through a window-state method, which is the newer path and
+    // the one with a second named error of its own.
+    let err = harness::windows::<(), _>(
+        &fixture.connection,
+        &fixture.bus_name,
+        "SetWindowMinimized",
+        &(absent, true),
+    )
+    .await
+    .expect_err("minimizing a window that does not exist must fail");
+
+    match err {
+        zbus::Error::MethodError(name, _, _) => assert_eq!(
+            name.as_str(),
+            wgaf_common::WINDOWS_ERROR_WINDOW_NOT_FOUND,
+            "SetWindowMinimized lost the error name"
+        ),
+        other => panic!("expected a named MethodError, got {other:?}"),
+    }
+}

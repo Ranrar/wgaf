@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-08-07
+
+**This release needs the GNOME Shell extension reinstalled**, and Wayland only
+loads an extension's code at login:
+
+```sh
+make -C extension install
+# then log out and back in
+```
+
+Until you do, the new window commands fail with a message saying the installed
+extension is older than the daemon. Everything that worked before keeps working.
+
+### Added
+
+- **Window state: minimize, maximize, fullscreen, keep-above, show-on-all-workspaces, and raise/lower.** wgaf could move a window and resize it and close it, and could not minimize one. Twelve commands in six pairs fill that in — `wgaf window minimize` / `unminimize`, `maximize` / `unmaximize`, `fullscreen` / `unfullscreen`, `above` / `unabove`, `stick` / `unstick`, `raise` / `lower`.
+
+  **Each returns only once the window really is in that state.** The extension re-reads the state inside the compositor before replying, the same promise `wgaf workspace switch` makes, so the next command you run sees the change with no sleep in between. A change that is allowed, attempted, and then does not happen is reported as such — exit code 4 — rather than as a success.
+
+  **Maximizing is always both directions**, because GNOME provides no way for a program to ask for one. It can do it from its own keyboard shortcuts, but the request another program makes is applied to both directions whatever it asked for — measured directly inside the compositor. Rather than accept a `--direction` option and quietly ignore it, `wgaf window maximize` does not offer one. To fill the width but not the height, read the usable area from `wgaf monitor list --json` and use `wgaf window resize`.
+
+  **Nothing does a second thing on your behalf.** Restoring a window does not focus it, maximizing does not raise it, un-fullscreening does not put it back where it was. Each of those is its own command with its own permission — the same split that stops `wgaf window move-to-workspace` from taking you along with the window.
+
+  **Some windows say no, and now say why.** A dialog can declare itself unmaximizable, and a window GNOME keeps on every workspace cannot be unstuck. wgaf asks before trying and reports the reason, instead of issuing a request that quietly achieves nothing. That is a different outcome from "it was attempted and did not take", and it is reported differently, because only one of the two is worth retrying.
+
+  Six new permissions — `SetWindowMinimized`, `SetWindowMaximized`, `SetWindowFullscreen`, `SetWindowAbove`, `SetWindowOnAllWorkspaces`, `RestackWindow` — one per state rather than one for all of them, so the ones that take over your screen can be denied on their own. Each covers both directions of its pair: a rule that let automation hide your windows but not restore them would only produce windows you cannot get back.
+
+  Raising works within a window's layer, which is GNOME's model rather than a wgaf limit: `raise` cannot lift a window past one that is kept above. And raising does not move the keyboard — `wgaf window focus` is what does both.
+
+  One thing to know about `unstick`: it leaves the window on the workspace **you are looking at**, not the one it was on before it was stuck. Nothing remembers where it came from. So sticking a window, switching workspace, and unsticking it has moved it — run `wgaf window move-to-workspace` afterwards if you wanted it left behind.
+
+- **`examples/window-state.sh`** — all twelve commands driven against real windows, each checked against what the application itself reports.
+
+- **`wgaf window list` reports minimized, fullscreen, above and on-all-workspaces.** Four states that were previously either settable-but-unreadable or neither. They appear in the bracketed list at the end of each line, and as fields in `--json`.
+
+### Changed
+
+- **`wgaf type --window` refuses a minimized window instead of typing anyway.** A minimized window cannot hold the keyboard, so the text would have landed in whatever window did — the exact hazard `--window` exists to prevent, arriving by another route. wgaf now checks first and stops, naming the window and the command that fixes it. It deliberately does **not** restore the window for you: un-hiding a window you chose to hide is not part of what you asked for, and it is `wgaf window unminimize`'s job with its own permission. `wgaf window unminimize 42 && wgaf type --window 42 "hello"` is the two-step.
+
+### Fixed
+
+- **Named errors from the GNOME Shell extension reached the daemon unrecognizable, so specific failures were reported as generic ones.** `wgaf window focus` on a closed window said "D-Bus error" rather than "window not found"; `wgaf workspace switch 99` did not say the workspace was missing; and a workspace change that never took effect was not reported as retryable at all, so exit code 4 was unreachable through those commands.
+
+  The cause is a GLib detail with no visible symptom on the extension side: the reply path the extension used discards a D-Bus error's name and buries it in the message text, leaving the daemon matching against names that never arrived. Every error the extension raises now uses the one reply path that keeps the name intact, and every method that can fail goes through it. As a side effect the compositor's journal stops collecting a warning for each refused call.
+
 ## [0.8.3] - 2026-08-07
 
 ### Added

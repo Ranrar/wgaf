@@ -52,9 +52,9 @@ Checked items work today.
 - [x] Focus, move, resize, and close windows
 - [x] Send a window to another workspace
 - [x] Window open, close, and focus events
-- [ ] Minimize, maximize, and fullscreen
-- [ ] Keep a window always on top, or on every workspace
-- [ ] Raise and lower windows
+- [x] Minimize, maximize, and fullscreen
+- [x] Keep a window always on top, or on every workspace
+- [x] Raise and lower windows
 - [ ] More about each window: its process, its type, the dialog it belongs to,
       and the monitor it's on
 
@@ -218,6 +218,20 @@ wgaf window move 7 100 100
 wgaf window resize 7 1280 800
 wgaf window close 7
 ```
+
+Change what a window is, rather than where it is — each has an opposite
+(`unminimize`, `unmaximize`, `unfullscreen`, `unabove`, `unstick`, `lower`):
+
+```sh
+wgaf window minimize 7
+wgaf window maximize 7
+wgaf window fullscreen 7
+wgaf window above 7        # keep it in front of everything else
+wgaf window stick 7        # show it on every workspace
+wgaf window raise 7
+```
+
+These wait until the change has actually happened, so the next command sees it.
 
 Type and click:
 

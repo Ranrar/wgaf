@@ -107,6 +107,16 @@ enum InputApiError {
     /// a third outcome, a verification failure: permitted and attempted, and
     /// the world was not what the caller assumed.
     VerificationFailed(String),
+    /// A targeted method's window is minimized, so nothing was synthesized and
+    /// the window was left as it was — see
+    /// `crate::windows::WindowManager::ensure_focused`.
+    ///
+    /// The same ADR-0007 category as [`Self::VerificationFailed`]: permitted,
+    /// attempted, and the world was not what the caller assumed. Its own name
+    /// because the two need different remedies — restore the window, versus try
+    /// again and hope focus-stealing prevention relents — and a script should
+    /// not have to read a message to tell them apart.
+    WindowMinimized(String),
 }
 
 impl From<InputError> for InputApiError {
@@ -157,13 +167,20 @@ impl From<WindowsError> for InputApiError {
             WindowsError::WindowNotFound(id) => {
                 Self::WindowNotFound(format!("window {id} not found"))
             }
-            // Workspace failures, and unreachable from here: no method on
-            // `org.wgaf.Input1` names a workspace or mutates one. Mapping them
-            // onto an input-shaped error name would be a lie, so the catch-all
-            // keeps the message intact for the impossible case — the same
-            // treatment `WindowsApiError` gives `OutOfBounds` in the mirror
-            // situation.
-            err @ (WindowsError::WorkspaceNotFound(_) | WindowsError::OperationNotApplied(_)) => {
+            // Also reachable via `verify_target`: `ensure_focused` refuses a
+            // minimized window rather than restoring it, because input aimed at
+            // one lands wherever focus actually is. Carries the message through
+            // — it already names the window and the command that fixes it.
+            err @ WindowsError::WindowMinimized(_) => Self::WindowMinimized(err.to_string()),
+            // Workspace and window-state failures, and unreachable from here:
+            // no method on `org.wgaf.Input1` names a workspace or changes a
+            // window's state. Mapping them onto an input-shaped error name
+            // would be a lie, so the catch-all keeps the message intact for the
+            // impossible case — the same treatment `WindowsApiError` gives
+            // `OutOfBounds` in the mirror situation.
+            err @ (WindowsError::WorkspaceNotFound(_)
+            | WindowsError::OperationNotApplied(_)
+            | WindowsError::OperationNotSupported(_)) => {
                 Self::ZBus(zbus::Error::Failure(err.to_string()))
             }
         }
@@ -984,6 +1001,10 @@ mod tests {
                     height: 100,
                     focused: self.focused.load(Ordering::SeqCst),
                     maximized: false,
+                    minimized: false,
+                    fullscreen: false,
+                    above: false,
+                    on_all_workspaces: false,
                 }
                 .into(),
             ]
@@ -1026,6 +1047,15 @@ mod tests {
         fn remove_workspace(&self, _index: i32) {}
         fn reorder_workspace(&self, _index: i32, _new_index: i32) {}
         fn move_window_to_workspace(&self, _id: u32, _index: i32) {}
+        // Likewise present only for the member check: nothing on
+        // `org.wgaf.Input1` changes a window's state either. `verify_target`
+        // *reads* `minimized` — through `ListWindows` above, not through these.
+        fn set_window_minimized(&self, _id: u32, _minimized: bool) {}
+        fn set_window_maximized(&self, _id: u32, _directions: &str, _maximized: bool) {}
+        fn set_window_fullscreen(&self, _id: u32, _fullscreen: bool) {}
+        fn set_window_above(&self, _id: u32, _above: bool) {}
+        fn set_window_on_all_workspaces(&self, _id: u32, _on_all_workspaces: bool) {}
+        fn restack_window(&self, _id: u32, _stacking: &str) {}
         fn get_work_areas(&self) -> Vec<wgaf_common::dict::WorkAreaDict> {
             vec![]
         }

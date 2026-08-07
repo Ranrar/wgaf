@@ -11,6 +11,7 @@ what the application itself reports.
 | Example | What it shows | Types or clicks? |
 |---|---|---|
 | `window-management.sh` | Listing, moving, focusing, resizing and closing real windows | no |
+| `window-state.sh` | Minimizing, maximizing, fullscreen, keep-above, show-on-all-workspaces, raise and lower | no |
 | `desktop-layout.sh` | Listing your screens, switching workspaces, and sending a window to another one | no |
 | `typing.sh` | Typing into a window you name, and holding a key across another | **yes** |
 | `widgets.sh` | Operating buttons and text boxes by name rather than by coordinate | no |
@@ -21,6 +22,14 @@ what the application itself reports.
 windows in it: it switches workspaces, and adds one if your desktop only has a
 single workspace. It puts you back on the workspace you started on and removes
 anything it added, including if you press Ctrl-C partway through.
+
+`window-state.sh` briefly switches workspace too, for the one step that needs
+it: proving a window shown on every workspace really does follow you to another
+one. It switches back afterwards. Two of its steps — keep-above, and raise and
+lower — are the only checks in any example that read the answer back from wgaf
+rather than from the application, because a window is told nothing about its own
+stacking order by the desktop. The script says so where it happens; watch the
+screen for the part it cannot check.
 
 `handbrake.sh` is the one example that needs you at the keyboard rather than
 away from it — it asks you to press Escape, and then to release it. It also

@@ -14,7 +14,7 @@ use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::{OnceCell, RwLock};
 use wgaf_common::dict::{WindowRecordDict, WorkAreaDict, WorkspaceRecordDict};
-use wgaf_common::{MonitorRecord, Rect, WindowRecord, WorkspaceLayout, WorkspaceRecord};
+use wgaf_common::{MonitorRecord, Rect, Stacking, WindowRecord, WorkspaceLayout, WorkspaceRecord};
 
 use display_config::{DisplayConfig, DisplayConfigError, MonitorLayout};
 use proxy::ShellExtensionProxy;
@@ -44,6 +44,12 @@ const REQUIRED_EXTENSION_METHODS: &[&str] = &[
     "RemoveWorkspace",
     "ReorderWorkspace",
     "MoveWindowToWorkspace",
+    "SetWindowMinimized",
+    "SetWindowMaximized",
+    "SetWindowFullscreen",
+    "SetWindowAbove",
+    "SetWindowOnAllWorkspaces",
+    "RestackWindow",
     "GetWorkAreas",
     "WarpPointer",
     "GetPointer",
@@ -96,6 +102,33 @@ pub enum WindowsError {
     /// already reads as a sentence.
     #[error("{0}")]
     OperationNotApplied(String),
+
+    /// The window itself will not do what was asked, and Mutter said so before
+    /// anything was attempted.
+    ///
+    /// The extension asks `can_minimize()` / `can_maximize()` /
+    /// `is_always_on_all_workspaces()` first, so this is the window's own
+    /// answer. Its message is carried through for the same reason
+    /// [`Self::OperationNotApplied`]'s is.
+    ///
+    /// **Nearly the opposite of that variant**, and the difference is what a
+    /// caller needs in order to decide whether to try again: an unapplied
+    /// operation was issued and may land next time, this one was never issued
+    /// and never will.
+    #[error("{0}")]
+    OperationNotSupported(String),
+
+    /// The target window is minimized, so nothing typed at it could reach it.
+    ///
+    /// Raised by [`WindowManager::ensure_focused`] **before** any focus change
+    /// is attempted, and the window is left minimized — restoring it is
+    /// `SetWindowMinimized`'s job and carries its own capability. See the
+    /// method's doc comment for why this is refused rather than corrected.
+    #[error(
+        "window {0} is minimized, so nothing typed at it would reach it — run \
+         `wgaf window unminimize {0}` first"
+    )]
+    WindowMinimized(u32),
 
     /// The requested pointer position is not on any monitor.
     ///
@@ -560,6 +593,29 @@ impl WindowManager {
     /// See [`FocusOutcome::TimedOut`]. This method reports the fact plainly
     /// through `Ok((_, FocusOutcome::TimedOut))` rather than an `Err`.
     ///
+    /// # A minimized window is refused, not restored
+    ///
+    /// A minimized window cannot hold keyboard focus, so input aimed at one
+    /// would land in whatever window does — the exact hazard this guard exists
+    /// to prevent, reached by a different route. The check happens before any
+    /// focus change is attempted and raises
+    /// [`WindowsError::WindowMinimized`].
+    ///
+    /// **Restoring it instead was considered and rejected.** Unminimizing is
+    /// [`Self::set_window_minimized`]'s job and carries its own capability;
+    /// doing it from inside a targeted `TypeText` would let one capability
+    /// quietly perform another's work, and would un-hide a window the user
+    /// deliberately hid. It is the same split that stops
+    /// [`Self::move_window_to_workspace`] from switching workspace and
+    /// [`Self::add_workspace`] from activating what it adds. The two-step is
+    /// explicit and composes:
+    /// `wgaf window unminimize <id> && wgaf type --window <id> …`.
+    ///
+    /// Leaving it to the focus timeout was also rejected: it fails safe
+    /// already — focus never confirms, so nothing is typed — but reports
+    /// "focus could not be confirmed" for a cause that was knowable up front,
+    /// after waiting out the timeout to say so.
+    ///
     /// # No permission awareness here, deliberately
     ///
     /// This method does not know about `Capability`/`PermissionGate`, and
@@ -580,6 +636,14 @@ impl WindowManager {
             .into_iter()
             .find(|window| window.id == id)
             .ok_or(WindowsError::WindowNotFound(id))?;
+
+        // Before the focused check, not after: a minimized window cannot be
+        // focused, so `focused` is already false and the ordering only decides
+        // which of the two answers the caller gets. "It is minimized" is the
+        // one that says what to do about it.
+        if record.minimized {
+            return Err(WindowsError::WindowMinimized(id));
+        }
 
         if record.focused {
             return Ok((record, FocusOutcome::AlreadyFocused));
@@ -660,6 +724,109 @@ impl WindowManager {
             .close_window(id)
             .await
             .map_err(|e| translate_window_error(e, id))
+    }
+
+    // --- Window state -------------------------------------------------------
+    //
+    // Six operations, all the same shape: delegate to the extension, which
+    // confirms the state actually changed before replying, and translate its
+    // two named refusals. `Ok` therefore means the window IS in that state, not
+    // that the request was sent — the same promise the workspace mutations
+    // make, and the reason `ResizeWindow` above is the odd one out (it still
+    // returns early; see the open S3 in `issues.md`).
+    //
+    // None of them does a neighbouring operation's job: restoring does not
+    // focus, maximizing does not raise, un-fullscreening does not resize.
+
+    /// Minimizes a window, or restores it.
+    ///
+    /// Restoring deliberately does **not** focus. That is
+    /// [`Self::focus_window`], gated by its own capability, and a caller
+    /// wanting both says so.
+    pub async fn set_window_minimized(&self, id: u32, minimized: bool) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .set_window_minimized(id, minimized)
+            .await
+            .map_err(|e| translate_window_state_error(e, id))
+    }
+
+    /// Maximizes or unmaximizes a window, on both axes.
+    ///
+    /// There is no per-axis option because Mutter 18 has none to offer:
+    /// `maximize()` takes no direction and overwrites the flags that look like
+    /// they would supply one. Measured inside the Shell — the numbers are in
+    /// `setWindowMaximized`'s comment in `extension/windows.js`, and the
+    /// rejected alternative is in `backlog.md`.
+    pub async fn set_window_maximized(&self, id: u32, maximized: bool) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .set_window_maximized(id, maximized)
+            .await
+            .map_err(|e| translate_window_state_error(e, id))
+    }
+
+    /// Makes a window fullscreen, or returns it to its previous size.
+    ///
+    /// Not the same as maximizing: a fullscreen window covers the top bar and
+    /// any dock, where a maximized one stops at the work area. A script
+    /// positioning other windows afterwards cares about the difference.
+    pub async fn set_window_fullscreen(
+        &self,
+        id: u32,
+        fullscreen: bool,
+    ) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .set_window_fullscreen(id, fullscreen)
+            .await
+            .map_err(|e| translate_window_state_error(e, id))
+    }
+
+    /// Keeps a window above other windows, or stops doing so.
+    pub async fn set_window_above(&self, id: u32, above: bool) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .set_window_above(id, above)
+            .await
+            .map_err(|e| translate_window_state_error(e, id))
+    }
+
+    /// Shows a window on every workspace, or returns it to one.
+    ///
+    /// **Un-sticking leaves the window on the active workspace**, not on the
+    /// one it was on beforehand — a window on all workspaces is on the current
+    /// one too, and that is the one it keeps. For a caller that switched
+    /// workspace in between, this call is therefore also a move.
+    ///
+    /// A window the compositor puts on every workspace for its own reasons
+    /// cannot be moved off them, and comes back as
+    /// [`WindowsError::OperationNotSupported`] naming that reason rather than
+    /// as a change that silently never happened.
+    pub async fn set_window_on_all_workspaces(
+        &self,
+        id: u32,
+        on_all_workspaces: bool,
+    ) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .set_window_on_all_workspaces(id, on_all_workspaces)
+            .await
+            .map_err(|e| translate_window_state_error(e, id))
+    }
+
+    /// Raises a window to the top of its stack layer, or lowers it to the
+    /// bottom.
+    ///
+    /// **Within its layer**, which is Mutter's model rather than a limit here:
+    /// a raised ordinary window still sits below an always-on-top one, and
+    /// changing that is [`Self::set_window_above`]. Raising does not focus.
+    pub async fn restack_window(&self, id: u32, stacking: Stacking) -> Result<(), WindowsError> {
+        self.ensure_extension_available().await?;
+        self.proxy
+            .restack_window(id, stacking.as_str())
+            .await
+            .map_err(|e| translate_window_state_error(e, id))
     }
 
     pub async fn get_workspaces(&self) -> Result<Vec<WorkspaceRecord>, WindowsError> {
@@ -922,6 +1089,34 @@ fn translate_window_error(err: zbus::Error, id: u32) -> WindowsError {
     WindowsError::from(err)
 }
 
+/// [`translate_window_error`] plus the two outcomes only the window-state
+/// operations can produce: the compositor not applying a change it was asked
+/// for, and the window refusing one outright.
+///
+/// Both keep the extension's own description, for the reason
+/// [`translate_workspace_error`] gives — the extension is the side that saw
+/// what was expected and what was there instead, and the daemon would only be
+/// guessing at it.
+fn translate_window_state_error(err: zbus::Error, id: u32) -> WindowsError {
+    if let zbus::Error::MethodError(name, description, _) = &err {
+        if name.as_str() == wgaf_common::EXTENSION_ERROR_OPERATION_NOT_APPLIED {
+            return WindowsError::OperationNotApplied(
+                description
+                    .clone()
+                    .unwrap_or_else(|| "the compositor did not apply the operation".to_string()),
+            );
+        }
+        if name.as_str() == wgaf_common::EXTENSION_ERROR_OPERATION_NOT_SUPPORTED {
+            return WindowsError::OperationNotSupported(
+                description
+                    .clone()
+                    .unwrap_or_else(|| format!("window {id} will not do that")),
+            );
+        }
+    }
+    translate_window_error(err, id)
+}
+
 /// The workspace-path equivalent of [`translate_window_error`], mapping the
 /// extension's two named workspace errors onto daemon-level ones.
 ///
@@ -992,6 +1187,13 @@ mod tests {
         /// `None` models focus-stealing prevention silently declining the
         /// request: `FocusWindow` succeeds and nothing else happens.
         focus_succeeds_and_emits_for: Option<u32>,
+        /// Whether the canned window reports itself minimized.
+        ///
+        /// A plain field rather than an `AtomicBool` because nothing here ever
+        /// changes it: `ensure_focused` is supposed to refuse a minimized
+        /// window outright, so a test that saw this flip would be watching the
+        /// bug it exists to catch.
+        minimized: bool,
     }
 
     #[zbus::interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
@@ -1009,6 +1211,10 @@ mod tests {
                     height: 100,
                     focused: self.focused.load(Ordering::SeqCst),
                     maximized: false,
+                    minimized: self.minimized,
+                    fullscreen: false,
+                    above: false,
+                    on_all_workspaces: false,
                 }
                 .into(),
             ]
@@ -1052,6 +1258,12 @@ mod tests {
         fn remove_workspace(&self, _index: i32) {}
         fn reorder_workspace(&self, _index: i32, _new_index: i32) {}
         fn move_window_to_workspace(&self, _id: u32, _index: i32) {}
+        fn set_window_minimized(&self, _id: u32, _minimized: bool) {}
+        fn set_window_maximized(&self, _id: u32, _directions: &str, _maximized: bool) {}
+        fn set_window_fullscreen(&self, _id: u32, _fullscreen: bool) {}
+        fn set_window_above(&self, _id: u32, _above: bool) {}
+        fn set_window_on_all_workspaces(&self, _id: u32, _on_all_workspaces: bool) {}
+        fn restack_window(&self, _id: u32, _stacking: &str) {}
         fn get_work_areas(&self) -> Vec<WorkAreaDict> {
             vec![]
         }
@@ -1089,6 +1301,18 @@ mod tests {
         focused: bool,
         focus_succeeds_and_emits_for: Option<u32>,
     ) -> WindowManager {
+        manager_against_stub_window(tag, focused, focus_succeeds_and_emits_for, false).await
+    }
+
+    /// [`manager_against_stub`] with the canned window's minimized state
+    /// spelled out. Separate so the four existing tests stay readable — only
+    /// the minimize test cares.
+    async fn manager_against_stub_window(
+        tag: &str,
+        focused: bool,
+        focus_succeeds_and_emits_for: Option<u32>,
+        minimized: bool,
+    ) -> WindowManager {
         let bus_name = format!("org.wgaf.Test.EnsureFocused{tag}{}", std::process::id());
         let stub_connection = zbus::connection::Builder::session()
             .expect("session bus builder")
@@ -1099,6 +1323,7 @@ mod tests {
                 StubExtension {
                     focused: AtomicBool::new(focused),
                     focus_succeeds_and_emits_for,
+                    minimized,
                 },
             )
             .expect("serve stub extension")
@@ -1121,6 +1346,52 @@ mod tests {
         )
         .await
         .expect("connect to the stub extension")
+    }
+
+    /// A minimized window is refused by name, immediately, without trying to
+    /// focus it and without restoring it.
+    ///
+    /// The stub's `focus_succeeds_and_emits_for` is set to the window's own id,
+    /// so if `ensure_focused` were to attempt the focus anyway it would
+    /// *succeed* and this test would see `Corrected` — which is the failure
+    /// worth catching, since it is the one that ends with keystrokes going to
+    /// whatever window really had focus.
+    ///
+    /// The timeout is deliberately long enough to be noticed: refusing up front
+    /// means not waiting it out, and a regression to "let the focus confirmation
+    /// time out" would take two seconds to reach a worse-worded answer.
+    #[tokio::test]
+    async fn a_minimized_window_is_refused_before_focus_is_attempted() {
+        let manager =
+            manager_against_stub_window("Minimized", false, Some(STUB_WINDOW_ID), true).await;
+
+        let started = std::time::Instant::now();
+        let error = manager
+            .ensure_focused(STUB_WINDOW_ID, Duration::from_secs(2))
+            .await
+            .expect_err("a minimized window must not be reported as focusable");
+
+        assert!(
+            matches!(error, WindowsError::WindowMinimized(id) if id == STUB_WINDOW_ID),
+            "expected WindowMinimized, got {error:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the refusal must not wait out the focus timeout — took {:?}",
+            started.elapsed()
+        );
+
+        // Left minimized. Restoring it is `SetWindowMinimized`'s job and carries
+        // its own capability; doing it here would be one capability performing
+        // another's work, which is the whole reason this refuses.
+        let record = manager
+            .list_windows()
+            .await
+            .expect("stub answers ListWindows")
+            .into_iter()
+            .find(|w| w.id == STUB_WINDOW_ID)
+            .expect("the canned window is still there");
+        assert!(record.minimized, "the window must be left minimized");
     }
 
     #[tokio::test]

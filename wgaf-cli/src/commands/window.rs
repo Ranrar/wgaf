@@ -30,11 +30,27 @@ pub async fn list(bus_name: &str, json: bool) -> CliResult<()> {
         println!("No windows.");
     } else {
         for w in &windows {
-            let flags = match (w.focused, w.maximized) {
-                (true, true) => " [focused, maximized]",
-                (true, false) => " [focused]",
-                (false, true) => " [maximized]",
-                (false, false) => "",
+            // Built rather than matched now that there are six states: the
+            // fixed table this replaced would need sixty-four arms, and only
+            // the states that are actually set are worth the line width.
+            // `--json` carries every field regardless.
+            let mut states = Vec::new();
+            for (set, name) in [
+                (w.focused, "focused"),
+                (w.minimized, "minimized"),
+                (w.maximized, "maximized"),
+                (w.fullscreen, "fullscreen"),
+                (w.above, "above"),
+                (w.on_all_workspaces, "all workspaces"),
+            ] {
+                if set {
+                    states.push(name);
+                }
+            }
+            let flags = if states.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", states.join(", "))
             };
             println!(
                 "{:>4}  ws={:<3} {:>5},{:<5} {:>4}x{:<4}  {:<20}  {}{}",
@@ -219,6 +235,147 @@ pub async fn move_to_workspace(bus_name: &str, id: u32, index: i32, json: bool) 
     // "moved", not "asked to move": the daemon does not return until the window
     // reports itself on that workspace.
     crate::output::print_ok(json, &format!("moved window {id} to workspace {index}"));
+    Ok(())
+}
+
+/// The six window-state operations, each the daemon side of a pair of CLI
+/// verbs.
+///
+/// Every message below is written in the past tense — "minimized window 7", not
+/// "asked to minimize" — and that is accurate rather than optimistic: the
+/// daemon does not reply until the extension has re-read the state and seen the
+/// change. An operation that never landed comes back as an error instead.
+pub async fn set_minimized(bus_name: &str, id: u32, minimized: bool, json: bool) -> CliResult<()> {
+    call_window_state(
+        bus_name,
+        "SetWindowMinimized",
+        &(id, minimized),
+        json,
+        &format!(
+            "{} window {id}",
+            if minimized { "minimized" } else { "restored" }
+        ),
+    )
+    .await
+}
+
+pub async fn set_maximized(bus_name: &str, id: u32, maximized: bool, json: bool) -> CliResult<()> {
+    call_window_state(
+        bus_name,
+        "SetWindowMaximized",
+        &(id, maximized),
+        json,
+        &format!("{}maximized window {id}", if maximized { "" } else { "un" }),
+    )
+    .await
+}
+
+pub async fn set_fullscreen(
+    bus_name: &str,
+    id: u32,
+    fullscreen: bool,
+    json: bool,
+) -> CliResult<()> {
+    call_window_state(
+        bus_name,
+        "SetWindowFullscreen",
+        &(id, fullscreen),
+        json,
+        &format!(
+            "window {id} {} fullscreen",
+            if fullscreen { "is now" } else { "left" }
+        ),
+    )
+    .await
+}
+
+pub async fn set_above(bus_name: &str, id: u32, above: bool, json: bool) -> CliResult<()> {
+    call_window_state(
+        bus_name,
+        "SetWindowAbove",
+        &(id, above),
+        json,
+        &format!(
+            "window {id} is {} kept above other windows",
+            if above { "now" } else { "no longer" }
+        ),
+    )
+    .await
+}
+
+pub async fn set_on_all_workspaces(
+    bus_name: &str,
+    id: u32,
+    on_all_workspaces: bool,
+    json: bool,
+) -> CliResult<()> {
+    call_window_state(
+        bus_name,
+        "SetWindowOnAllWorkspaces",
+        &(id, on_all_workspaces),
+        json,
+        &format!(
+            "window {id} is {}",
+            if on_all_workspaces {
+                "now on every workspace"
+            } else {
+                "back on one workspace"
+            }
+        ),
+    )
+    .await
+}
+
+pub async fn restack(
+    bus_name: &str,
+    id: u32,
+    stacking: wgaf_common::Stacking,
+    json: bool,
+) -> CliResult<()> {
+    call_window_state(
+        bus_name,
+        "RestackWindow",
+        &(id, stacking.as_str()),
+        json,
+        &format!(
+            "{} window {id}",
+            match stacking {
+                wgaf_common::Stacking::Raise => "raised",
+                wgaf_common::Stacking::Lower => "lowered",
+            }
+        ),
+    )
+    .await
+}
+
+/// One `org.wgaf.Windows1` call with no reply body, reported as `message` on
+/// success.
+///
+/// Exists because the six functions above differ only in the method name, the
+/// argument tuple and the sentence — extracting the rest keeps the wording
+/// visible instead of buried in six identical call blocks.
+async fn call_window_state<A>(
+    bus_name: &str,
+    method: &str,
+    args: &A,
+    json: bool,
+    message: &str,
+) -> CliResult<()>
+where
+    A: serde::Serialize + zbus::zvariant::DynamicType,
+{
+    let connection = connect().await?;
+    connection
+        .call_method(
+            Some(bus_name),
+            wgaf_common::WINDOWS_OBJECT_PATH,
+            Some(wgaf_common::WINDOWS_INTERFACE_NAME),
+            method,
+            args,
+        )
+        .await
+        .map_err(map_err)?;
+    crate::output::print_ok(json, message);
     Ok(())
 }
 

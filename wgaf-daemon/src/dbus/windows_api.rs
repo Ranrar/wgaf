@@ -12,6 +12,7 @@ use zbus::DBusError;
 use zbus::interface;
 use zbus::message::Header;
 
+use wgaf_common::Stacking;
 use wgaf_common::dict::{
     MonitorRecordDict, WindowRecordDict, WorkspaceLayoutDict, WorkspaceRecordDict,
 };
@@ -45,6 +46,18 @@ enum WindowsApiError {
     /// outcome a script most needs to branch on: nothing broke, and nothing
     /// changed.
     OperationNotApplied(String),
+    /// The window itself refused, before anything was attempted — a dialog
+    /// that cannot be maximized, a window the compositor keeps on every
+    /// workspace.
+    ///
+    /// Kept apart from [`Self::OperationNotApplied`] because the two call for
+    /// opposite responses: that one may work on a retry, this one never will.
+    OperationNotSupported(String),
+    /// A named-choice argument — `RestackWindow`'s `stacking` — that names
+    /// none of the accepted values.
+    ///
+    /// The only error here about the call rather than the desktop.
+    InvalidArgument(String),
     /// `GetMonitors` could not read the layout from Mutter.
     ///
     /// Kept distinct from [`Self::ExtensionUnavailable`] because the two send
@@ -64,10 +77,22 @@ impl From<WindowsError> for WindowsApiError {
                 Self::WorkspaceNotFound(format!("workspace {index} not found"))
             }
             WindowsError::OperationNotApplied(reason) => Self::OperationNotApplied(reason),
+            WindowsError::OperationNotSupported(reason) => Self::OperationNotSupported(reason),
             WindowsError::ExtensionUnavailable { .. } => {
                 Self::ExtensionUnavailable(err.to_string())
             }
             WindowsError::DBus(e) => Self::ZBus(e),
+
+            // Only `org.wgaf.Input1`'s targeted methods can reach this, via
+            // `ensure_focused`, and that interface has its own named error for
+            // it. No method on `org.wgaf.Windows1` calls `ensure_focused` at
+            // all, so this is unreachable here — the catch-all keeps the
+            // message intact rather than inventing a window-ish name for it,
+            // the same treatment `OutOfBounds` gets below and for the same
+            // reason.
+            err @ WindowsError::WindowMinimized(_) => {
+                Self::ZBus(zbus::Error::Failure(err.to_string()))
+            }
 
             // `GetMonitors` reaches this one, and it is the only method on this
             // interface that can — every other caller of the display
@@ -85,6 +110,25 @@ impl From<WindowsError> for WindowsApiError {
                 Self::ZBus(zbus::Error::Failure(err.to_string()))
             }
         }
+    }
+}
+
+impl From<String> for WindowsApiError {
+    /// A `stacking` argument that names nothing.
+    ///
+    /// The parse error's own message names both the bad value and the accepted
+    /// ones, so it is carried through unchanged.
+    ///
+    /// **The standard `org.freedesktop.DBus.Error.InvalidArgs` would have been
+    /// the better name and is not reachable from here.** Returning it through
+    /// the `#[zbus(error)]` catch-all flattens it to
+    /// `org.freedesktop.zbus.Error`, which a client cannot branch on at all —
+    /// measured, not assumed: an integration test asserted the standard name
+    /// and got that instead. A wgaf-prefixed name is also what every other
+    /// error on this interface uses, so the fallback is the consistent choice
+    /// rather than merely the available one.
+    fn from(message: String) -> Self {
+        Self::InvalidArgument(message)
     }
 }
 
@@ -456,6 +500,125 @@ impl WindowsApi {
             .check(Capability::MoveWindowToWorkspace, connection, &header)
             .await?;
         Ok(self.manager.move_window_to_workspace(id, index).await?)
+    }
+
+    /// Minimize a window, or restore it.
+    ///
+    /// Restoring does **not** focus the window — `FocusWindow` is a separate
+    /// method with a separate capability. Returning `Ok` means the window is in
+    /// that state, not that the request was sent.
+    async fn set_window_minimized(
+        &self,
+        id: u32,
+        minimized: bool,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::SetWindowMinimized, connection, &header)
+            .await?;
+        Ok(self.manager.set_window_minimized(id, minimized).await?)
+    }
+
+    /// Maximize or unmaximize a window.
+    ///
+    /// **Both axes.** There is deliberately no per-axis argument: Mutter's
+    /// `maximize()` takes no direction and overwrites the flags that appear to
+    /// supply one, measured inside the Shell — see `setWindowMaximized` in
+    /// `extension/windows.js`. An argument that could not be honoured would be
+    /// worse than none.
+    async fn set_window_maximized(
+        &self,
+        id: u32,
+        maximized: bool,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::SetWindowMaximized, connection, &header)
+            .await?;
+        Ok(self.manager.set_window_maximized(id, maximized).await?)
+    }
+
+    /// Make a window fullscreen, or return it to its previous size.
+    ///
+    /// Not a synonym for maximizing: a fullscreen window covers the top bar and
+    /// any dock, a maximized one stops at the work area.
+    async fn set_window_fullscreen(
+        &self,
+        id: u32,
+        fullscreen: bool,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::SetWindowFullscreen, connection, &header)
+            .await?;
+        Ok(self.manager.set_window_fullscreen(id, fullscreen).await?)
+    }
+
+    /// Keep a window above other windows, or stop doing so.
+    ///
+    /// This changes the window's stack layer, so it outranks `RestackWindow`
+    /// entirely — a raised ordinary window still sits below one of these.
+    async fn set_window_above(
+        &self,
+        id: u32,
+        above: bool,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::SetWindowAbove, connection, &header)
+            .await?;
+        Ok(self.manager.set_window_above(id, above).await?)
+    }
+
+    /// Show a window on every workspace, or return it to one.
+    ///
+    /// **Turning this off leaves the window on the *active* workspace**, not on
+    /// whichever one it was on before — nothing remembers that. So a caller that
+    /// sticks a window, switches workspace, and unsticks it has moved that
+    /// window. Measured, not assumed; see `setWindowOnAllWorkspaces` in
+    /// `extension/windows.js`.
+    ///
+    /// A window the compositor puts on every workspace for its own reasons
+    /// cannot be moved off them, and is refused with `OperationNotSupported`
+    /// naming that reason.
+    async fn set_window_on_all_workspaces(
+        &self,
+        id: u32,
+        on_all_workspaces: bool,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        self.permissions
+            .check(Capability::SetWindowOnAllWorkspaces, connection, &header)
+            .await?;
+        Ok(self
+            .manager
+            .set_window_on_all_workspaces(id, on_all_workspaces)
+            .await?)
+    }
+
+    /// Raise a window to the top of its stack layer, or lower it to the bottom.
+    /// `stacking` is `raise` or `lower`.
+    ///
+    /// **Within its layer**, which is Mutter's model: raising cannot lift a
+    /// window past an always-on-top one. Raising does not focus, though
+    /// focusing does raise.
+    async fn restack_window(
+        &self,
+        id: u32,
+        stacking: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), WindowsApiError> {
+        let stacking: Stacking = stacking.parse().map_err(WindowsApiError::from)?;
+        self.permissions
+            .check(Capability::RestackWindow, connection, &header)
+            .await?;
+        Ok(self.manager.restack_window(id, stacking).await?)
     }
 
     /// The logical monitors making up the desktop.

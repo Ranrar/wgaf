@@ -38,7 +38,12 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import {OperationNotAppliedError, WindowNotFoundError, WorkspaceNotFoundError} from './windows.js';
+import {
+    OperationNotAppliedError,
+    OperationNotSupportedError,
+    WindowNotFoundError,
+    WorkspaceNotFoundError,
+} from './windows.js';
 
 export const DBUS_BUS_NAME = 'org.gnome.Shell.Extensions.Wgaf';
 export const DBUS_OBJECT_PATH = '/org/gnome/Shell/Extensions/Wgaf';
@@ -54,6 +59,7 @@ export const DBusErrors = {
     WINDOW_NOT_FOUND: `${ERROR_PREFIX}.WindowNotFound`,
     WORKSPACE_NOT_FOUND: `${ERROR_PREFIX}.WorkspaceNotFound`,
     OPERATION_NOT_APPLIED: `${ERROR_PREFIX}.OperationNotApplied`,
+    OPERATION_NOT_SUPPORTED: `${ERROR_PREFIX}.OperationNotSupported`,
 };
 
 export const DBUS_INTERFACE_XML = `
@@ -101,6 +107,30 @@ export const DBUS_INTERFACE_XML = `
       <arg type="u" direction="in" name="id"/>
       <arg type="i" direction="in" name="index"/>
     </method>
+    <method name="SetWindowMinimized">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="b" direction="in" name="minimized"/>
+    </method>
+    <method name="SetWindowMaximized">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="b" direction="in" name="maximized"/>
+    </method>
+    <method name="SetWindowFullscreen">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="b" direction="in" name="fullscreen"/>
+    </method>
+    <method name="SetWindowAbove">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="b" direction="in" name="above"/>
+    </method>
+    <method name="SetWindowOnAllWorkspaces">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="b" direction="in" name="on_all_workspaces"/>
+    </method>
+    <method name="RestackWindow">
+      <arg type="u" direction="in" name="id"/>
+      <arg type="s" direction="in" name="stacking"/>
+    </method>
     <method name="GetWorkAreas">
       <arg type="aa{sv}" direction="out" name="work_areas"/>
     </method>
@@ -129,8 +159,9 @@ export const DBUS_INTERFACE_XML = `
 /**
  * Window record field shape (also the shape of the WindowCreated signal's
  * payload): id (u), title (s), app_id (s), workspace (i), x/y/width/height
- * (i), focused (b), maximized (b). `id` is Meta.Window's stable sequence
- * number, not its (Wayland-unsafe) X11 XID - see windows.js.
+ * (i), focused (b), maximized (b), minimized (b), fullscreen (b), above (b),
+ * on_all_workspaces (b). `id` is Meta.Window's stable sequence number, not its
+ * (Wayland-unsafe) X11 XID - see windows.js.
  */
 function windowRecordToVariantDict(record) {
     return {
@@ -144,6 +175,10 @@ function windowRecordToVariantDict(record) {
         height: new GLib.Variant('i', record.height),
         focused: new GLib.Variant('b', record.focused),
         maximized: new GLib.Variant('b', record.maximized),
+        minimized: new GLib.Variant('b', record.minimized),
+        fullscreen: new GLib.Variant('b', record.fullscreen),
+        above: new GLib.Variant('b', record.above),
+        on_all_workspaces: new GLib.Variant('b', record.on_all_workspaces),
     };
 }
 
@@ -211,50 +246,94 @@ function workAreaToVariantDict(record) {
     };
 }
 
-/** Map a JS exception thrown out of WindowManager into a named D-Bus error
- * where we recognize it, or pass it through unchanged otherwise. Unknown
- * exceptions still safely become a generic D-Bus error reply via
- * Gio.DBusExportedObject's own exception handling - they don't crash the
- * Shell process - but only errors we explicitly recognize get a stable,
- * documented D-Bus error name the daemon can match on.
+/** The D-Bus error name for an exception thrown out of WindowManager, or null
+ * for anything this file does not recognize.
+ *
+ * The daemon matches on these names, never on message text - see
+ * `translate_window_error` in wgaf-daemon/src/windows/mod.rs.
  */
-function translateError(error) {
+function errorName(error) {
     if (error instanceof WindowNotFoundError)
-        return Gio.DBusError.new_for_dbus_error(DBusErrors.WINDOW_NOT_FOUND, error.message);
+        return DBusErrors.WINDOW_NOT_FOUND;
     if (error instanceof WorkspaceNotFoundError)
-        return Gio.DBusError.new_for_dbus_error(DBusErrors.WORKSPACE_NOT_FOUND, error.message);
+        return DBusErrors.WORKSPACE_NOT_FOUND;
     if (error instanceof OperationNotAppliedError)
-        return Gio.DBusError.new_for_dbus_error(DBusErrors.OPERATION_NOT_APPLIED, error.message);
-    return error;
+        return DBusErrors.OPERATION_NOT_APPLIED;
+    if (error instanceof OperationNotSupportedError)
+        return DBusErrors.OPERATION_NOT_SUPPORTED;
+    return null;
 }
 
-/** Complete a D-Bus invocation from a Promise, translating a rejection into a
- * named D-Bus error the same way the synchronous methods' try/catch does.
+/** Fail a D-Bus invocation with a named error the daemon can match on.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY NOT return_gerror(), AND WHY NOT THROW
+ * ---------------------------------------------------------------------------
+ * Both lose the name. Measured on this machine (GLib 2.86 / gjs 1.86,
+ * 2026-08-07) rather than reasoned about:
+ *
+ *   Gio.DBusError.new_for_dbus_error('org.gnome.Shell.Extensions.Wgaf.Error.WindowNotFound', ...)
+ *     is_remote_error:  true
+ *     get_remote_error: org.gnome.Shell.Extensions.Wgaf.Error.WindowNotFound
+ *     encode_gerror:    org.gtk.GDBus.UnmappedGError.Quark._g_2dio_2derror_2dquark.Code36
+ *
+ * `return_gerror()` replies with `encode_gerror()`'s answer, which is the third
+ * line - the name is thrown away and the caller receives a generic unmapped
+ * GError with the real name buried in the message text. Throwing is no better:
+ * gjs's `_handleDBusError` sends a GLib.Error through `return_gerror()` for
+ * exactly the same result, and logs a warning into the compositor's journal on
+ * the way past.
+ *
+ * `return_dbus_error(name, message)` is the one path that puts the name on the
+ * wire intact, so it is the only one used here. Everything that can fail with a
+ * named error therefore replies through this function rather than throwing -
+ * which is why the mutating methods below are all `<Name>Async` handlers even
+ * when the work they do is synchronous.
+ *
+ * Unrecognized exceptions become org.freedesktop.DBus.Error.Failed with the
+ * message attached, so a bug in windows.js still produces a reply rather than
+ * leaving the caller waiting.
+ */
+function failInvocation(invocation, error) {
+    const name = errorName(error);
+    if (name)
+        invocation.return_dbus_error(name, error.message);
+    else
+        invocation.return_error_literal(Gio.DBusError, Gio.DBusError.FAILED, `wgaf: ${error.message}`);
+}
+
+/** Run `work()` and complete the D-Bus invocation from its result, whether it
+ * finishes immediately or returns a Promise.
  *
  * `toVariant` builds the reply tuple for a method that returns something;
  * omitting it replies with the empty tuple, which is what a method with no
  * out-args needs.
  *
- * Exists because an unhandled rejection inside a `<Name>Async` handler is
- * invisible: Gio.DBusExportedObject's own exception handling covers a *thrown*
- * exception, not a rejected Promise, so the caller would simply wait for a
- * reply that never comes. Every asynchronous method here must therefore
- * terminate its own invocation on both paths.
+ * `work` is a function rather than an already-started Promise so that a
+ * *synchronous* throw is caught here too. Several WindowManager methods
+ * validate their arguments before doing anything asynchronous - a window id
+ * that does not exist, a window that declares it cannot be maximized - and
+ * those throw before any Promise is constructed.
+ *
+ * The asynchronous half matters for the same reason it always did: an
+ * unhandled rejection inside a `<Name>Async` handler is invisible, because
+ * gjs's exception handling covers a thrown exception and not a rejected
+ * Promise, so the caller would wait forever for a reply. Both paths must
+ * terminate the invocation, and both go through failInvocation() so the error
+ * name survives.
  */
-function replyWhenSettled(invocation, promise, toVariant = null) {
-    promise.then(result => {
-        invocation.return_value(toVariant ? toVariant(result) : null);
-    }).catch(error => {
-        // translateError() hands back a GLib.Error for the failures with a
-        // named D-Bus error, and the original exception for anything else.
-        // The same split the synchronous methods get for free from
-        // Gio.DBusExportedObject's own exception handling.
-        const translated = translateError(error);
-        if (translated instanceof GLib.Error)
-            invocation.return_gerror(translated);
-        else
-            invocation.return_error_literal(Gio.DBusError, Gio.DBusError.FAILED, `wgaf: ${error.message}`);
-    });
+function replyWhenSettled(invocation, work, toVariant = null) {
+    let result;
+    try {
+        result = work();
+    } catch (error) {
+        failInvocation(invocation, error);
+        return;
+    }
+
+    Promise.resolve(result).then(value => {
+        invocation.return_value(toVariant ? toVariant(value) : null);
+    }).catch(error => failInvocation(invocation, error));
 }
 
 /**
@@ -273,36 +352,39 @@ export class WgafDBusInterface {
         return this._wm.listWindows().map(windowRecordToVariantDict);
     }
 
-    FocusWindow(id) {
-        try {
-            this._wm.focusWindow(id);
-        } catch (e) {
-            throw translateError(e);
-        }
+    /* Everything that can fail with a named error is a `<Name>Async` handler,
+     * including the four below whose work is synchronous.
+     *
+     * Not a style choice: `return_dbus_error()` is the only reply path that
+     * keeps a D-Bus error name intact, and reaching it needs the `invocation`
+     * object, which a plain synchronous method never sees. Throwing instead
+     * routes the error through gjs's `return_gerror()` and the daemon receives
+     * `org.gtk.GDBus.UnmappedGError...` - see failInvocation() for the
+     * measurements.
+     *
+     * As everywhere else here, the `Async` suffix is Gio.DBusExportedObject's
+     * dispatch convention and does NOT appear in the interface XML: these are
+     * `FocusWindow`, `MoveWindow`, `ResizeWindow` and `CloseWindow` on the bus.
+     */
+
+    FocusWindowAsync(params, invocation) {
+        const [id] = params;
+        replyWhenSettled(invocation, () => this._wm.focusWindow(id));
     }
 
-    MoveWindow(id, x, y) {
-        try {
-            this._wm.moveWindow(id, x, y);
-        } catch (e) {
-            throw translateError(e);
-        }
+    MoveWindowAsync(params, invocation) {
+        const [id, x, y] = params;
+        replyWhenSettled(invocation, () => this._wm.moveWindow(id, x, y));
     }
 
-    ResizeWindow(id, width, height) {
-        try {
-            this._wm.resizeWindow(id, width, height);
-        } catch (e) {
-            throw translateError(e);
-        }
+    ResizeWindowAsync(params, invocation) {
+        const [id, width, height] = params;
+        replyWhenSettled(invocation, () => this._wm.resizeWindow(id, width, height));
     }
 
-    CloseWindow(id) {
-        try {
-            this._wm.closeWindow(id);
-        } catch (e) {
-            throw translateError(e);
-        }
+    CloseWindowAsync(params, invocation) {
+        const [id] = params;
+        replyWhenSettled(invocation, () => this._wm.closeWindow(id));
     }
 
     GetWorkspaces() {
@@ -317,42 +399,74 @@ export class WgafDBusInterface {
         return this._wm.getWorkAreas().map(workAreaToVariantDict);
     }
 
-    /* The four workspace mutations below are asynchronous for the same reason
-     * WarpPointerAsync is: each confirms its effect is readable before replying
-     * (see confirm.js), so none of them can be a plain synchronous method.
-     *
-     * As there, the `Async` suffix is Gio.DBusExportedObject's dispatch
-     * convention and does NOT appear in the interface XML - these are
-     * `SwitchWorkspace`, `AddWorkspace`, `RemoveWorkspace` and
-     * `ReorderWorkspace` on the bus.
+    /* The four workspace mutations below are asynchronous for a second reason
+     * on top of the one above: each confirms its effect is readable before
+     * replying (see confirm.js), so none of them could be a plain synchronous
+     * method even if the error path allowed it.
      */
 
     SwitchWorkspaceAsync(params, invocation) {
         const [index] = params;
-        replyWhenSettled(invocation, this._wm.switchWorkspace(index));
+        replyWhenSettled(invocation, () => this._wm.switchWorkspace(index));
     }
 
     AddWorkspaceAsync(params, invocation) {
         replyWhenSettled(
             invocation,
-            this._wm.addWorkspace(),
+            () => this._wm.addWorkspace(),
             index => new GLib.Variant('(i)', [index])
         );
     }
 
     RemoveWorkspaceAsync(params, invocation) {
         const [index] = params;
-        replyWhenSettled(invocation, this._wm.removeWorkspace(index));
+        replyWhenSettled(invocation, () => this._wm.removeWorkspace(index));
     }
 
     ReorderWorkspaceAsync(params, invocation) {
         const [index, newIndex] = params;
-        replyWhenSettled(invocation, this._wm.reorderWorkspace(index, newIndex));
+        replyWhenSettled(invocation, () => this._wm.reorderWorkspace(index, newIndex));
     }
 
     MoveWindowToWorkspaceAsync(params, invocation) {
         const [id, index] = params;
-        replyWhenSettled(invocation, this._wm.moveWindowToWorkspace(id, index));
+        replyWhenSettled(invocation, () => this._wm.moveWindowToWorkspace(id, index));
+    }
+
+    /* The six window-state operations. Each confirms the state it changed
+     * before replying, and each can refuse up front when Mutter says the
+     * window will not do it - see the "Window state" section of windows.js.
+     */
+
+    SetWindowMinimizedAsync(params, invocation) {
+        const [id, minimized] = params;
+        replyWhenSettled(invocation, () => this._wm.setWindowMinimized(id, minimized));
+    }
+
+    SetWindowMaximizedAsync(params, invocation) {
+        const [id, maximized] = params;
+        replyWhenSettled(invocation, () => this._wm.setWindowMaximized(id, maximized));
+    }
+
+    SetWindowFullscreenAsync(params, invocation) {
+        const [id, fullscreen] = params;
+        replyWhenSettled(invocation, () => this._wm.setWindowFullscreen(id, fullscreen));
+    }
+
+    SetWindowAboveAsync(params, invocation) {
+        const [id, above] = params;
+        replyWhenSettled(invocation, () => this._wm.setWindowAbove(id, above));
+    }
+
+    SetWindowOnAllWorkspacesAsync(params, invocation) {
+        const [id, onAllWorkspaces] = params;
+        replyWhenSettled(
+            invocation, () => this._wm.setWindowOnAllWorkspaces(id, onAllWorkspaces));
+    }
+
+    RestackWindowAsync(params, invocation) {
+        const [id, stacking] = params;
+        replyWhenSettled(invocation, () => this._wm.restackWindow(id, stacking));
     }
 
     /* Asynchronous by necessity, not by preference.
@@ -369,15 +483,11 @@ export class WgafDBusInterface {
      */
     WarpPointerAsync(params, invocation) {
         const [x, y] = params;
-        this._pointer.warpPointer(x, y).then(position => {
-            invocation.return_value(new GLib.Variant('(ii)', [position.x, position.y]));
-        }).catch(error => {
-            invocation.return_error_literal(
-                Gio.DBusError,
-                Gio.DBusError.FAILED,
-                `wgaf: could not move the pointer: ${error.message}`
-            );
-        });
+        replyWhenSettled(
+            invocation,
+            () => this._pointer.warpPointer(x, y),
+            position => new GLib.Variant('(ii)', [position.x, position.y])
+        );
     }
 
     GetPointer() {

@@ -84,6 +84,48 @@ pub(crate) trait ShellExtension {
     /// before replying.
     fn move_window_to_workspace(&self, id: u32, index: i32) -> zbus::Result<()>;
 
+    /// Minimize the window with the given id, or restore it.
+    ///
+    /// Restoring does **not** focus the window; that is `FocusWindow`'s job.
+    /// A window that declares itself unminimizable is refused by name.
+    fn set_window_minimized(&self, id: u32, minimized: bool) -> zbus::Result<()>;
+
+    /// Maximize or unmaximize the window with the given id.
+    ///
+    /// Always both axes: Mutter 18's `maximize()` takes no direction and
+    /// overwrites any that was set. Measured — see `setWindowMaximized` in
+    /// `extension/windows.js`.
+    fn set_window_maximized(&self, id: u32, maximized: bool) -> zbus::Result<()>;
+
+    /// Make the window with the given id fullscreen, or return it to its
+    /// previous size.
+    ///
+    /// Not a synonym for maximizing: a fullscreen window covers the top bar and
+    /// any dock, where a maximized one stops at the work area.
+    fn set_window_fullscreen(&self, id: u32, fullscreen: bool) -> zbus::Result<()>;
+
+    /// Keep the window with the given id above other windows, or stop doing so.
+    ///
+    /// This moves the window between Mutter's stack layers, so it outranks
+    /// anything [`Self::restack_window`] can do.
+    fn set_window_above(&self, id: u32, above: bool) -> zbus::Result<()>;
+
+    /// Show the window with the given id on every workspace, or return it to
+    /// one.
+    ///
+    /// A window the compositor puts on every workspace for its own reasons
+    /// cannot be moved off them, and is refused by name rather than left to
+    /// fail as an unapplied operation.
+    fn set_window_on_all_workspaces(&self, id: u32, on_all_workspaces: bool) -> zbus::Result<()>;
+
+    /// Raise the window with the given id to the top of its stack layer, or
+    /// lower it to the bottom. `stacking` is `"raise"` or `"lower"`.
+    ///
+    /// **Within its layer.** A raised ordinary window is still below an
+    /// always-on-top one; changing that is [`Self::set_window_above`]'s job.
+    /// Raising does not focus, and focusing does raise.
+    fn restack_window(&self, id: u32, stacking: &str) -> zbus::Result<()>;
+
     /// Each monitor's usable area — the screen minus the top bar and docks —
     /// for the active workspace.
     ///
@@ -153,6 +195,10 @@ mod tests {
     ///
     /// Test-only, so the daemon build does not depend on the extension source.
     const EXTENSION_SOURCE: &str = include_str!("../../../extension/dbusInterface.js");
+
+    /// The extension's manifest, read at compile time for the version check
+    /// below. Same `include_str!` reasoning as [`EXTENSION_SOURCE`].
+    const EXTENSION_METADATA: &str = include_str!("../../../extension/metadata.json");
 
     /// One method or signal's argument types, as D-Bus signature strings.
     ///
@@ -333,6 +379,47 @@ mod tests {
         );
     }
 
+    /// The extension ships as part of this release and must say so.
+    ///
+    /// # This is a release-process check, not a compatibility one
+    ///
+    /// Whether an *installed* extension is new enough for a running daemon is
+    /// settled at runtime by the member-presence check
+    /// ([ADR-0002](../../../.vscode/Documentation/adr/adr-0002-extension-interface-versioning.md)),
+    /// which asks what the extension can actually do rather than what it calls
+    /// itself. Nothing here replaces that, and a version string deliberately
+    /// does not feed into it — two mechanisms answering the same question is
+    /// how they come to disagree.
+    ///
+    /// What this catches is narrower and duller: the extension being packaged
+    /// with a version that is not this one. `metadata.json`'s `version-name` is
+    /// what `gnome-extensions info` reports and what a user quotes in a bug
+    /// report, and it is edited by hand, so it rots silently.
+    ///
+    /// **It had already rotted.** It sat at `0.8.2` through the whole of 0.8.3
+    /// and was only noticed while cutting 0.8.4 — two releases telling anyone
+    /// who looked that they had an older extension than they did. This test is
+    /// the thing that would have said so on the first `cargo test`.
+    #[test]
+    fn the_extension_manifest_declares_this_release() {
+        let needle = "\"version-name\": \"";
+        let start = EXTENSION_METADATA
+            .find(needle)
+            .expect("no `\"version-name\": \"...\"` in extension/metadata.json")
+            + needle.len();
+        let rest = &EXTENSION_METADATA[start..];
+        let declared = &rest[..rest.find('"').expect("unterminated version-name")];
+
+        assert_eq!(
+            declared,
+            env!("CARGO_PKG_VERSION"),
+            "extension/metadata.json says version-name {declared:?} but this crate is {:?}. \
+             Bump both together when cutting a release — the manifest is hand-edited and is \
+             what `gnome-extensions info` shows the user.",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
     /// The names the extension actually exports must be the ones the daemon
     /// dials. Renaming either side alone leaves the daemon reporting
     /// "extension not available" against an extension that is running fine.
@@ -408,6 +495,7 @@ mod tests {
     #[test]
     fn proxy_methods_match_extension_interface_xml() {
         let (u, i) = (sig::<u32>(), sig::<i32>());
+        let (b, s) = (sig::<bool>(), sig::<String>());
         let expected: BTreeMap<String, Args> = [
             (
                 "ListWindows",
@@ -441,6 +529,30 @@ mod tests {
             (
                 "MoveWindowToWorkspace",
                 Args::new(vec![u.clone(), i.clone()], vec![]),
+            ),
+            (
+                "SetWindowMinimized",
+                Args::new(vec![u.clone(), b.clone()], vec![]),
+            ),
+            (
+                "SetWindowMaximized",
+                Args::new(vec![u.clone(), b.clone()], vec![]),
+            ),
+            (
+                "SetWindowFullscreen",
+                Args::new(vec![u.clone(), b.clone()], vec![]),
+            ),
+            (
+                "SetWindowAbove",
+                Args::new(vec![u.clone(), b.clone()], vec![]),
+            ),
+            (
+                "SetWindowOnAllWorkspaces",
+                Args::new(vec![u.clone(), b.clone()], vec![]),
+            ),
+            (
+                "RestackWindow",
+                Args::new(vec![u.clone(), s.clone()], vec![]),
             ),
             (
                 "GetWorkAreas",

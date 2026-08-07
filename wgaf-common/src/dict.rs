@@ -129,6 +129,10 @@ pub struct WindowRecordDict {
     height: i32,
     focused: bool,
     maximized: bool,
+    minimized: bool,
+    fullscreen: bool,
+    above: bool,
+    on_all_workspaces: bool,
 }
 
 impl From<WindowRecordDict> for WindowRecord {
@@ -144,6 +148,10 @@ impl From<WindowRecordDict> for WindowRecord {
             height: d.height,
             focused: d.focused,
             maximized: d.maximized,
+            minimized: d.minimized,
+            fullscreen: d.fullscreen,
+            above: d.above,
+            on_all_workspaces: d.on_all_workspaces,
         }
     }
 }
@@ -161,6 +169,10 @@ impl From<WindowRecord> for WindowRecordDict {
             height: r.height,
             focused: r.focused,
             maximized: r.maximized,
+            minimized: r.minimized,
+            fullscreen: r.fullscreen,
+            above: r.above,
+            on_all_workspaces: r.on_all_workspaces,
         }
     }
 }
@@ -441,7 +453,14 @@ mod tests {
             width: 800,
             height: 600,
             focused: true,
+            // Deliberately not all false: a round-trip test where every added
+            // field shares one value would pass just as happily if the
+            // conversion crossed two of them over.
             maximized: false,
+            minimized: true,
+            fullscreen: false,
+            above: true,
+            on_all_workspaces: false,
         }
         .into()
     }

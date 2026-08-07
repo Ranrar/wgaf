@@ -25,7 +25,14 @@ report = { path = "report" }
 # libadwaita: a fixed, predictable widget tree is worth more here than matching
 # any particular application style, and every extra layer is one more thing
 # that could change a test's expectations without wgaf changing at all.
-gtk4 = "0.11"
+#
+# The `v4_12` feature turns on bindings for GTK 4.12's additions, which are
+# hidden by default so that a crate built against an older GTK still compiles.
+# window-test needs one of them: `is_suspended`, the only thing GTK tells a
+# window about being out of the user's view, and so the only way a test can
+# confirm that minimizing worked without asking wgaf to grade its own homework.
+# Building this now requires GTK 4.12 or newer at build time.
+gtk4 = { version = "0.11", features = ["v4_12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }

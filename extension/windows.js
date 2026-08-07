@@ -58,6 +58,25 @@
  *   workspaces` GSetting, not anything on Meta.WorkspaceManager - hence the one
  *   Gio.Settings use in this otherwise pure-Meta file. It changes what
  *   AddWorkspace means and so is reported to callers rather than hidden.
+ * - `maximize()` and `unmaximize()` take NO arguments in Mutter 18, and they
+ *   always act on both axes. `set_maximize_flags()` looks like the way to ask
+ *   for one axis and is not: it sets state without relaying out, and
+ *   `maximize()` overwrites it. Measured - see setWindowMaximized(). Older
+ *   Mutter took the flags as an argument to `maximize()` itself, so an example
+ *   found elsewhere will not compile here, and a newer one that appears to do
+ *   per-axis should be tested before it is believed.
+ * - The window-state getters come in two shapes and both are used below. The
+ *   plain state is exposed as GObject *properties* (`win.minimized`,
+ *   `win.fullscreen`, `win.above`, `win.on_all_workspaces`,
+ *   `win.maximized_horizontally`, `win.maximized_vertically`), which is what
+ *   the record and every confirmation read. The *questions about* a window are
+ *   methods (`can_minimize()`, `can_maximize()`,
+ *   `is_always_on_all_workspaces()`), and those guard the operations.
+ * - Raising and lowering cannot be confirmed with `get_layer()`. A raise moves
+ *   a window within its layer and leaves the layer itself unchanged, so the
+ *   getter reads identically before and after. `Meta.Display`'s
+ *   `sort_windows_by_stacking(list)` - which returns the list bottom-to-top -
+ *   is the only route to the actual order, and is what `restackWindow` checks.
  */
 
 import Gio from 'gi://Gio';
@@ -109,6 +128,44 @@ export class OperationNotAppliedError extends Error {
         super(`${what}: expected ${expected}, got ${actual}`);
         this.name = 'OperationNotAppliedError';
     }
+}
+
+/** Thrown when a window will not do something it was asked to do, and says so
+ * before anything is attempted - a dialog that declares it cannot be
+ * maximized, or a window that is on every workspace for a reason unsticking
+ * cannot undo. Translated to a named D-Bus error
+ * (org.gnome.Shell.Extensions.Wgaf.Error.OperationNotSupported) in
+ * dbusInterface.js.
+ *
+ * Deliberately NOT OperationNotAppliedError, which means the opposite thing:
+ * that the request WAS issued and the compositor did not carry it out. Here
+ * nothing is issued at all, because Mutter has already answered the question.
+ * A caller can retry a not-applied operation and it may work; retrying this one
+ * never will.
+ */
+export class OperationNotSupportedError extends Error {
+    constructor(id, operation, reason) {
+        super(`window ${id} cannot ${operation}: ${reason}`);
+        this.name = 'OperationNotSupportedError';
+        this.id = id;
+    }
+}
+
+/** Which way a restack request moves a window.
+ *
+ * Kept as a pure function over strings so it can be unit-tested outside a
+ * Shell.
+ *
+ * The daemon validates this string before it is ever sent, so an unrecognised
+ * value here means a caller talking to the extension directly rather than
+ * through wgaf. It is still rejected by name rather than defaulted to
+ * something, because guessing which way someone meant to move a window is how
+ * a window ends up somewhere nobody asked for.
+ */
+export function parseStacking(stacking) {
+    if (stacking !== 'raise' && stacking !== 'lower')
+        throw new Error(`unknown stacking direction '${stacking}' - expected 'raise' or 'lower'`);
+    return stacking;
 }
 
 /** Turn Mutter's workspace-grid numbers into two usable ones.
@@ -527,6 +584,426 @@ export class WindowManager {
         win.delete(this._timestamp());
     }
 
+    // --- Window state -------------------------------------------------------
+    //
+    // Six operations that change what a window IS rather than where it is, and
+    // they share three rules.
+    //
+    // ASK FIRST WHERE MUTTER WILL ANSWER. `can_minimize()`, `can_maximize()`
+    // and `is_always_on_all_workspaces()` are cheap questions with real
+    // answers, and a window that says no would otherwise absorb the request
+    // and produce nothing. That is indistinguishable from wgaf being broken,
+    // so it is refused by name up front - see OperationNotSupportedError.
+    //
+    // CONFIRM, DON'T ASSUME. Every one of them re-reads the state it changed
+    // through confirmSettled() before replying, exactly as the workspace
+    // mutations above do. Same reasoning, and the same
+    // OperationNotAppliedError when the change never becomes readable.
+    //
+    // NO IMPLICIT SECOND OPERATION. Nothing here does a neighbouring
+    // operation's job on the caller's behalf: unminimizing does not focus,
+    // maximizing does not raise, and un-fullscreening does not restore a
+    // remembered size. Each of those is its own call with its own capability,
+    // the same split moveWindowToWorkspace() makes by not switching workspace.
+
+    /** SetWindowMinimized: minimize or restore a window.
+     *
+     * Restoring does NOT focus the window. `wgaf window focus` is a separate
+     * capability, and a script that wants both says so - see the section note
+     * above.
+     */
+    setWindowMinimized(id, minimized) {
+        const win = this._requireWindow(id);
+        if (minimized && !win.can_minimize()) {
+            throw new OperationNotSupportedError(
+                id, 'be minimized', 'the window declares itself unminimizable');
+        }
+
+        if (minimized)
+            win.minimize();
+        else
+            win.unminimize();
+
+        return this._confirmFlag(
+            () => win.minimized, minimized,
+            minimized ? 'window did not minimize' : 'window did not unminimize');
+    }
+
+    /** SetWindowMaximized: maximize or unmaximize a window.
+     *
+     * ---------------------------------------------------------------------------
+     * BOTH AXES, ALWAYS - AND THAT IS MUTTER'S LIMIT, NOT A SHORTCUT
+     * ---------------------------------------------------------------------------
+     * There is deliberately no per-axis argument, because Mutter 18 offers no
+     * way to honour one. Measured 2026-08-07, inside the Shell, against a real
+     * window:
+     *
+     *   baseline                              flags=0 h=false v=false  640x480
+     *   after set_maximize_flags(HORIZONTAL)  flags=1 h=true  v=false  640x480
+     *   after maximize()                      flags=3 h=true  v=true   2560x1408
+     *
+     * `set_maximize_flags()` is a **state setter, not a request**: it moves the
+     * flags and the per-axis fields and never triggers a relayout - the window
+     * is still 640x480 after it. `maximize()` then overwrites the flags to BOTH
+     * and lays out full-screen, whatever they had been set to. The two per-axis
+     * GObject properties are read-only (`Property
+     * MetaWindowWayland.maximized-horizontally is not writable`), so they are
+     * not a way round it either.
+     *
+     * The remaining option would be to set the flags and then place the window
+     * with move_resize_frame() by hand, which means reimplementing maximization
+     * and leaving Mutter believing it laid out a window it did not. Rejected -
+     * see the note in backlog.md if a real route ever appears.
+     */
+    setWindowMaximized(id, maximized) {
+        const win = this._requireWindow(id);
+
+        // Only asked on the way in. `can_maximize()` answers whether a window
+        // may be maximized at all; there is no equivalent question about
+        // unmaximizing, and a window that is already unmaximized confirms
+        // immediately anyway.
+        if (maximized && !win.can_maximize()) {
+            throw new OperationNotSupportedError(
+                id, 'be maximized', 'the window declares itself unmaximizable');
+        }
+
+        // Read before the mutation: maximize() sets the state flags
+        // synchronously, so afterwards there is nothing left to compare
+        // against. See _confirmGeometrySettled().
+        const alreadyThere = win.maximized_horizontally === maximized &&
+            win.maximized_vertically === maximized;
+        const before = win.get_frame_rect();
+
+        if (maximized)
+            win.maximize();
+        else
+            win.unmaximize();
+
+        // Both axes are read, rather than one standing in for the pair: a
+        // window left maximized on only one axis - which a user can produce
+        // with GNOME's own keybindings even though wgaf cannot - is not
+        // maximized, and reporting it as such would be the same untruth this
+        // method was carrying before.
+        //
+        // Waits for the resize as well as the flags - see
+        // _confirmGeometrySettled() for why the flags alone reply too early.
+        return this._confirmGeometrySettled(
+            win,
+            () => ({
+                horizontal: win.maximized_horizontally,
+                vertical: win.maximized_vertically,
+            }),
+            state => state.horizontal === maximized && state.vertical === maximized,
+            alreadyThere,
+            before,
+            maximized ? 'window did not maximize' : 'window did not unmaximize',
+            {
+                expected: maximized,
+                describe: state =>
+                    `horizontal = ${state.horizontal}, vertical = ${state.vertical}`,
+            }
+        );
+    }
+
+    /** SetWindowFullscreen: make a window fullscreen, or return it to its
+     * previous size.
+     *
+     * Distinct from maximizing, and not a synonym for it: a fullscreen window
+     * covers the top bar and any dock, where a maximized one stops at the work
+     * area. Scripts positioning other windows afterwards care about the
+     * difference.
+     */
+    setWindowFullscreen(id, fullscreen) {
+        const win = this._requireWindow(id);
+
+        // Captured ahead of the mutation, as in setWindowMaximized().
+        const alreadyThere = win.fullscreen === fullscreen;
+        const before = win.get_frame_rect();
+
+        if (fullscreen)
+            win.make_fullscreen();
+        else
+            win.unmake_fullscreen();
+
+        // Geometry-settled rather than a bare flag read, for the same reason
+        // maximizing is: `fullscreen` turns true when Mutter decides it, which
+        // is before the window has been resized to cover the screen.
+        return this._confirmGeometrySettled(
+            win,
+            () => win.fullscreen,
+            state => state === fullscreen,
+            alreadyThere,
+            before,
+            fullscreen ? 'window did not go fullscreen' : 'window did not leave fullscreen',
+            {expected: fullscreen, describe: state => `fullscreen = ${state}`}
+        );
+    }
+
+    /** SetWindowAbove: keep a window above other windows, or stop doing so.
+     *
+     * This moves the window between Mutter's stack layers, so it outranks
+     * anything restackWindow() can do - a raised ordinary window still sits
+     * below an always-on-top one.
+     */
+    setWindowAbove(id, above) {
+        const win = this._requireWindow(id);
+
+        if (above)
+            win.make_above();
+        else
+            win.unmake_above();
+
+        return this._confirmFlag(
+            () => win.above, above,
+            above ? 'window did not stay above' : 'window did not stop staying above');
+    }
+
+    /** SetWindowOnAllWorkspaces: show a window on every workspace, or return
+     * it to just one.
+     *
+     * UNSTICKING LEAVES THE WINDOW ON THE ACTIVE WORKSPACE
+     *
+     * Not on whichever one it was on before it was stuck - that is not
+     * remembered by anything. A window on every workspace is on the active one
+     * too, so when it stops being on all of them, the one it keeps is the one
+     * you are looking at. Measured 2026-08-07: stuck from workspace 0, viewed
+     * from workspace 1, unstuck there, and it stayed on workspace 1.
+     *
+     * Worth stating because it makes unsticking a *move* for any caller that
+     * switched workspace in between, and nothing about the call says so.
+     *
+     * Two getters answer nearby questions and they are not the same question.
+     * `on_all_workspaces` is whether the window IS on all of them;
+     * `is_always_on_all_workspaces()` is whether it is so for a reason that has
+     * nothing to do with being stuck - Mutter puts windows there itself under
+     * some multi-monitor configurations. Unsticking such a window changes
+     * nothing, which would come back as a confirmation timeout and read like a
+     * fault, so it is refused with the actual reason instead.
+     */
+    setWindowOnAllWorkspaces(id, onAllWorkspaces) {
+        const win = this._requireWindow(id);
+        if (!onAllWorkspaces && win.is_always_on_all_workspaces()) {
+            throw new OperationNotSupportedError(
+                id, 'be moved off all workspaces',
+                'the compositor puts it on every workspace regardless of whether it is stuck');
+        }
+
+        if (onAllWorkspaces)
+            win.stick();
+        else
+            win.unstick();
+
+        return this._confirmFlag(
+            () => win.on_all_workspaces, onAllWorkspaces,
+            onAllWorkspaces
+                ? 'window did not move to all workspaces'
+                : 'window did not move off all workspaces');
+    }
+
+    /** RestackWindow: raise a window to the top of its stack layer, or lower
+     * it to the bottom.
+     *
+     * WITHIN ITS LAYER, WHICH IS THE WHOLE ANSWER
+     *
+     * Mutter stacks windows in layers - desktop, bottom, normal, top, dock -
+     * and raising moves a window to the top of ITS OWN layer, never past one.
+     * So a raised ordinary window is still below an always-on-top window, and
+     * that is Mutter's model rather than a limitation here. `setWindowAbove()`
+     * is what changes layer.
+     *
+     * A raise does NOT focus, and focusing (`activate()`) does raise. They are
+     * separate on purpose: raising a window to read it while typing somewhere
+     * else is a thing a script may legitimately want.
+     */
+    restackWindow(id, stacking) {
+        const win = this._requireWindow(id);
+        const direction = parseStacking(stacking);
+
+        if (direction === 'raise')
+            win.raise();
+        else
+            win.lower();
+
+        return this._confirmState(
+            () => this._stackingPosition(win),
+            position => (direction === 'raise' ? position.above : position.below) === 0,
+            direction === 'raise' ? 'window was not raised' : 'window was not lowered',
+            {
+                expected: direction === 'raise' ? 'nothing above it' : 'nothing below it',
+                describe: position => `${position.below} below, ${position.above} above`,
+            }
+        );
+    }
+
+    /** How many comparable windows sit below and above `win` in the stacking
+     * order.
+     *
+     * WHAT "COMPARABLE" MEANS, AND WHY IT IS NARROWED
+     *
+     * Mutter's stacking order is global, and most of it is not something a
+     * raise could ever change. Two filters make the count answer the question a
+     * caller actually asked:
+     *
+     *  - **Same stack layer.** A raise cannot lift a window past a higher
+     *    layer, so counting an always-on-top window as "above" would report a
+     *    perfectly successful raise as having failed.
+     *  - **Same workspace.** A window the user cannot see is neither above nor
+     *    below anything from where they are sitting.
+     *
+     * Override-redirect windows are dropped for the reason listWindows() drops
+     * them: tooltips and menus are not part of the order a script is arranging.
+     *
+     * Zero above therefore means "as raised as this window can get", which is
+     * also true when it was already there - so a redundant raise confirms
+     * immediately instead of timing out.
+     */
+    _stackingPosition(win) {
+        const layer = win.get_layer();
+        const peers = this._display.list_all_windows().filter(
+            other =>
+                !other.is_override_redirect() &&
+                other.get_layer() === layer &&
+                this._sharesWorkspace(other, win));
+
+        const sorted = this._display.sort_windows_by_stacking(peers);
+        // Matched on the stable sequence rather than object identity: GJS does
+        // hand back the same wrapper for the same GObject, but the id is what
+        // the rest of this file treats as a window's identity and it costs
+        // nothing to stay consistent.
+        const id = win.get_stable_sequence();
+        const index = sorted.findIndex(other => other.get_stable_sequence() === id);
+        if (index < 0) {
+            // The window went away between the two reads. Reported as "not
+            // settled" rather than thrown, so the caller gets
+            // OperationNotApplied instead of an exception from inside a poll.
+            return {below: -1, above: -1};
+        }
+        return {below: index, above: sorted.length - 1 - index};
+    }
+
+    /** Whether two windows are visible together - on the same workspace, or
+     * one of them on all of them.
+     */
+    _sharesWorkspace(a, b) {
+        if (a.on_all_workspaces || b.on_all_workspaces)
+            return true;
+        const wsA = a.get_workspace();
+        const wsB = b.get_workspace();
+        return !!wsA && !!wsB && wsA.index() === wsB.index();
+    }
+
+    /** Poll a boolean window property until it reaches `expected`.
+     *
+     * The tail of the four operations that flip one flag. The two that compare
+     * something richer - a pair of axes, a position in the stacking order - go
+     * straight to _confirmState() with their own predicate.
+     */
+    _confirmFlag(read, expected, what) {
+        return this._confirmState(read, value => value === expected, what, {
+            expected,
+            describe: value => value,
+        });
+    }
+
+    /** Poll `read()` until `isSettled` holds AND the window has stopped
+     * resizing, and turn a change that never arrived into an
+     * OperationNotAppliedError.
+     *
+     * ---------------------------------------------------------------------------
+     * WHY THE STATE FLAG IS NOT ENOUGH
+     * ---------------------------------------------------------------------------
+     * Mutter sets `maximized_horizontally` / `fullscreen` when it *decides* the
+     * window has that state, which is before the client has been reconfigured
+     * and long before the new size is readable. The probe that settled the
+     * per-axis question showed this directly:
+     *
+     *   after set_maximize_flags(HORIZONTAL)  flags=1 h=true v=false  rect=640x480
+     *
+     * True state, unchanged rectangle. So a confirmation that only reads the
+     * flag replies while the window is still its old size, and the caller's
+     * next `wgaf window list` gets the old rectangle - which is exactly the
+     * `ResizeWindow` defect this whole design exists to avoid, arriving through
+     * a different door. Caught by
+     * `maximizing_changes_what_the_application_reports` on a real desktop, and
+     * only when the suite ran as a whole: alone, it was slow enough to pass.
+     *
+     * ---------------------------------------------------------------------------
+     * WHY "STABLE" ALONE IS ALSO NOT ENOUGH - THE FIRST FIX WAS WRONG
+     * ---------------------------------------------------------------------------
+     * The first attempt waited for two consecutive reads with the same frame
+     * rect, and shipped, and failed the same test the next run. Two identical
+     * reads cannot tell "has not started resizing yet" from "has finished
+     * resizing":
+     *
+     *   poll 1   flags false   640x480   (no previous yet)
+     *   poll 2   flags TRUE    640x480   same as poll 1 -> "stable" -> confirmed
+     *
+     * `maximize()` sets the flags synchronously, so by poll 2 the state matches
+     * and the rectangle has not moved - and the check passed with the old size.
+     * It only ever succeeded when the relayout happened to land inside one 2 ms
+     * tick, which is why it passed once and then failed.
+     *
+     * So the rectangle must be seen to MOVE, and then hold still. `before` is
+     * captured by the caller, ahead of the mutation, because by the time this
+     * function runs the state has already changed.
+     *
+     * `alreadyThere` - also captured ahead of the mutation - is what keeps a
+     * redundant call from waiting for a change that is never coming. Maximizing
+     * an already-maximized window is a no-op with nothing to observe, and
+     * timing it out would report a successful call as unapplied.
+     *
+     * The remaining gap, stated rather than hidden: a window whose maximized
+     * size happens to equal its restored size would time out. No real window
+     * does that - the work area is not 640x480 - but if one ever did, this
+     * would call a working operation unapplied.
+     */
+    _confirmGeometrySettled(win, read, isSettled, alreadyThere, before, what, wording) {
+        // Nothing to observe, and nothing to wait for.
+        if (alreadyThere)
+            return Promise.resolve();
+
+        const same = (a, b) =>
+            a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+        let previous = null;
+        return this._confirmState(
+            () => ({state: read(), rect: win.get_frame_rect()}),
+            value => {
+                const moved = !same(before, value.rect);
+                const stable = previous !== null && same(previous, value.rect);
+                previous = value.rect;
+                return isSettled(value.state) && moved && stable;
+            },
+            what,
+            {
+                expected: wording.expected,
+                describe: value =>
+                    `${wording.describe(value.state)}, ` +
+                    `${value.rect.width}x${value.rect.height}`,
+            },
+            // Generous next to confirm.js's default, and for a different
+            // reason: this waits on the *client* acknowledging a configure and
+            // committing a new buffer, not on compositor state alone. A
+            // toolkit relayout is not in the same order of magnitude as
+            // reading a property.
+            {timeoutMs: 500}
+        );
+    }
+
+    /** Poll `read()` until `isSettled` holds, and turn a change that never
+     * arrived into an OperationNotAppliedError.
+     *
+     * `expected` and `describe` exist only to word that error: the predicate
+     * knows what it wants but cannot say it, and the value read may be a shape
+     * rather than something worth printing raw.
+     */
+    _confirmState(read, isSettled, what, {expected, describe}, options = {}) {
+        return confirmSettled(read, isSettled, options).then(({value, confirmed}) => {
+            if (!confirmed)
+                throw new OperationNotAppliedError(what, expected, describe(value));
+        });
+    }
+
     /** A timestamp Mutter will accept from a D-Bus call.
      *
      * `global.get_current_time()` is the usual idiom, and it is the wrong one
@@ -580,6 +1057,21 @@ export class WindowManager {
             height: rect.height,
             focused: win.has_focus(),
             maximized: win.is_maximized(),
+            // The four states the window-state operations set. Reported here
+            // so each one can be read back as well as written - without them a
+            // script could minimize a window and have no way to ask whether it
+            // is minimized.
+            //
+            // `on_all_workspaces` is the effective answer, so it is true both
+            // for a window that was stuck and for one Mutter puts everywhere by
+            // itself. Which of the two it is only matters when trying to
+            // UNstick it, and setWindowOnAllWorkspaces() asks
+            // is_always_on_all_workspaces() at that point rather than making
+            // every caller carry a second field for the rare case.
+            minimized: win.minimized,
+            fullscreen: win.fullscreen,
+            above: win.above,
+            on_all_workspaces: win.on_all_workspaces,
         };
     }
 

@@ -524,6 +524,68 @@ enum WindowCommand {
         /// The workspace index, as reported by `wgaf workspace list`.
         index: i32,
     },
+
+    /// Minimize a window.
+    ///
+    /// Note that typing at a minimized window is refused — `wgaf type --window`
+    /// will tell you to restore it first, rather than sending the keystrokes
+    /// wherever focus happens to be.
+    Minimize(WindowId),
+
+    /// Restore a minimized window.
+    ///
+    /// This does not focus it. Run `wgaf window focus` afterwards if that is
+    /// what you want.
+    Unminimize(WindowId),
+
+    /// Maximize a window.
+    ///
+    /// Fills the work area — the screen minus the top bar and any dock. Use
+    /// `wgaf window fullscreen` to cover those too.
+    ///
+    /// Always both directions. GNOME can maximize a window sideways only, from
+    /// its own keyboard shortcuts, but it offers no way for another program to
+    /// ask for that.
+    Maximize(WindowId),
+
+    /// Unmaximize a window, returning it to its previous size.
+    Unmaximize(WindowId),
+
+    /// Make a window fullscreen.
+    ///
+    /// Covers the top bar and any dock, which maximizing does not.
+    Fullscreen(WindowId),
+
+    /// Take a window out of fullscreen.
+    Unfullscreen(WindowId),
+
+    /// Keep a window above all others.
+    ///
+    /// Outranks `wgaf window raise` entirely — a raised ordinary window still
+    /// sits below one that is kept above.
+    Above(WindowId),
+
+    /// Stop keeping a window above all others.
+    Unabove(WindowId),
+
+    /// Show a window on every workspace.
+    Stick(WindowId),
+
+    /// Show a window on only its own workspace again.
+    ///
+    /// Some windows are on every workspace for reasons of the compositor's own
+    /// — those are refused, with the reason, rather than silently doing
+    /// nothing.
+    Unstick(WindowId),
+
+    /// Raise a window to the top of the stack.
+    ///
+    /// Within its layer: this cannot lift a window past one that is kept above.
+    /// Raising does not move keyboard focus, though focusing does raise.
+    Raise(WindowId),
+
+    /// Lower a window to the bottom of the stack.
+    Lower(WindowId),
 }
 
 #[derive(Args)]
@@ -693,6 +755,46 @@ async fn run(cli: Cli) -> CliResult<Outcome> {
                 id: WindowId { id },
                 index,
             } => commands::window::move_to_workspace(bus_name, id, index, json).await?,
+
+            // Each pair is one daemon method taking a boolean, so the two verbs
+            // differ only in what they pass — the CLI is where "unminimize" is
+            // a word and the wire is where it is `false`.
+            WindowCommand::Minimize(WindowId { id }) => {
+                commands::window::set_minimized(bus_name, id, true, json).await?
+            }
+            WindowCommand::Unminimize(WindowId { id }) => {
+                commands::window::set_minimized(bus_name, id, false, json).await?
+            }
+            WindowCommand::Maximize(WindowId { id }) => {
+                commands::window::set_maximized(bus_name, id, true, json).await?
+            }
+            WindowCommand::Unmaximize(WindowId { id }) => {
+                commands::window::set_maximized(bus_name, id, false, json).await?
+            }
+            WindowCommand::Fullscreen(WindowId { id }) => {
+                commands::window::set_fullscreen(bus_name, id, true, json).await?
+            }
+            WindowCommand::Unfullscreen(WindowId { id }) => {
+                commands::window::set_fullscreen(bus_name, id, false, json).await?
+            }
+            WindowCommand::Above(WindowId { id }) => {
+                commands::window::set_above(bus_name, id, true, json).await?
+            }
+            WindowCommand::Unabove(WindowId { id }) => {
+                commands::window::set_above(bus_name, id, false, json).await?
+            }
+            WindowCommand::Stick(WindowId { id }) => {
+                commands::window::set_on_all_workspaces(bus_name, id, true, json).await?
+            }
+            WindowCommand::Unstick(WindowId { id }) => {
+                commands::window::set_on_all_workspaces(bus_name, id, false, json).await?
+            }
+            WindowCommand::Raise(WindowId { id }) => {
+                commands::window::restack(bus_name, id, wgaf_common::Stacking::Raise, json).await?
+            }
+            WindowCommand::Lower(WindowId { id }) => {
+                commands::window::restack(bus_name, id, wgaf_common::Stacking::Lower, json).await?
+            }
         },
         Command::Workspace { command } => match command {
             WorkspaceCommand::List => commands::workspace::list(bus_name, json).await?,
@@ -987,6 +1089,65 @@ mod tests {
     #[test]
     fn rejects_missing_window_id() {
         assert!(Cli::try_parse_from(["wgaf", "window", "focus"]).is_err());
+    }
+
+    /// All twelve window-state verbs parse, and each needs an id.
+    ///
+    /// Pinned as a set rather than one test per verb because the risk they share
+    /// is a naming one: these are six pairs, and a pair where only one half
+    /// exists is a gap a user meets rather than a compiler does.
+    #[test]
+    fn parses_every_window_state_verb_and_requires_an_id() {
+        for verb in [
+            "minimize",
+            "unminimize",
+            "maximize",
+            "unmaximize",
+            "fullscreen",
+            "unfullscreen",
+            "above",
+            "unabove",
+            "stick",
+            "unstick",
+            "raise",
+            "lower",
+        ] {
+            Cli::try_parse_from(["wgaf", "window", verb, "42"])
+                .unwrap_or_else(|e| panic!("`wgaf window {verb} 42` should parse: {e}"));
+            assert!(
+                Cli::try_parse_from(["wgaf", "window", verb]).is_err(),
+                "`wgaf window {verb}` must require an id"
+            );
+        }
+    }
+
+    /// `maximize` takes no direction flag, and passing one is a parse error
+    /// rather than a silently ignored argument.
+    ///
+    /// `--direction horizontal|vertical|both` existed briefly and was removed:
+    /// Mutter 18's `maximize()` always acts on both axes and overwrites the
+    /// flags that appear to select one — measured inside the Shell, see
+    /// `setWindowMaximized` in `extension/windows.js`.
+    ///
+    /// **The flag must not come back without a route that works.** An argument
+    /// accepted and then ignored is the exact failure this project keeps
+    /// naming, and it is what shipped for a few hours before a manual run
+    /// caught it. This test is what makes bringing it back a deliberate act.
+    #[test]
+    fn maximize_takes_no_direction_flag() {
+        for verb in ["maximize", "unmaximize"] {
+            Cli::try_parse_from(["wgaf", "window", verb, "42"])
+                .unwrap_or_else(|e| panic!("`wgaf window {verb} 42` should parse: {e}"));
+
+            for direction in ["both", "horizontal", "vertical"] {
+                assert!(
+                    Cli::try_parse_from(["wgaf", "window", verb, "42", "--direction", direction])
+                        .is_err(),
+                    "`wgaf window {verb} --direction {direction}` must be rejected while \
+                     Mutter offers no way to honour it"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1325,7 +1486,10 @@ mod tests {
 
         for (which, text) in [
             ("about", command.get_about().map(ToString::to_string)),
-            ("long_about", command.get_long_about().map(ToString::to_string)),
+            (
+                "long_about",
+                command.get_long_about().map(ToString::to_string),
+            ),
         ] {
             let Some(text) = text else { continue };
 

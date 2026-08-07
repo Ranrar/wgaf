@@ -114,19 +114,27 @@ to opt into `verification_level` themselves.
 
 ## `permissions.toml` — per-capability policy
 
-Nineteen capabilities exist, one per gated command. Read-only commands
+Twenty-six capabilities exist, one per gated command. Read-only commands
 (`window list`, `workspace list`, `monitor list`, `a11y find`, etc.) can't be
 gated at all:
 
 | Interface | Capabilities |
 |---|---|
 | `org.wgaf.Windows1` — windows | `FocusWindow`, `MoveWindow`, `ResizeWindow`, `CloseWindow`, `MoveWindowToWorkspace`, `WatchWindows` |
+| `org.wgaf.Windows1` — window state | `SetWindowMinimized`, `SetWindowMaximized`, `SetWindowFullscreen`, `SetWindowAbove`, `SetWindowOnAllWorkspaces`, `RestackWindow` |
 | `org.wgaf.Windows1` — workspaces | `SwitchWorkspace`, `AddWorkspace`, `RemoveWorkspace`, `ReorderWorkspace` |
 | `org.wgaf.Input1` | `TypeText`, `KeyPress`, `KeyRelease`, `MouseMove`, `MouseMoveAbsolute`, `MouseClick`, `MouseScroll` |
 | `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement` |
 
 Each name is the D-Bus method it gates, and the command it belongs to is the
 obvious one — `SwitchWorkspace` is `wgaf workspace switch`, and so on.
+
+The six window-state capabilities are the exception to that, because their
+commands come in pairs and the capability is named after the method rather than
+either verb. One capability covers both directions: `SetWindowMinimized` gates
+`wgaf window minimize` *and* `wgaf window unminimize`. Splitting them would only
+let you write a rule that hides windows without being able to bring them back.
+`RestackWindow` is the pair `wgaf window raise` / `wgaf window lower`.
 
 `WatchWindows` is the odd one: it gates *observing* rather than acting, since
 `wgaf window watch` opens a feed of every window title that appears for as long

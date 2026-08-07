@@ -311,12 +311,12 @@ export default class WgafExtension extends Extension {
 
         this._daemonProxy = null;
 
-        // FIXED: every signal connected in enable() must be torn down here.
+        // Every signal connected in enable() must be torn down here.
         // WindowManager.destroy() disconnects both the global.display
         // signals (window-created, notify::focus-window) and every
         // per-window `unmanaging` handler it accumulated - without this,
-        // re-enabling the extension (or a Shell restart under Xorg/nested
-        // testing) would leak handlers onto stale Meta.Window objects.
+        // disabling and re-enabling the extension would leak handlers onto
+        // stale Meta.Window objects.
         if (this._windowManager) {
             this._windowManager.destroy();
             this._windowManager = null;

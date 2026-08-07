@@ -110,6 +110,20 @@ struct WindowState {
     maximized: bool,
     fullscreen: bool,
     visible: bool,
+    /// Whether the toolkit considers this window not visible to the user —
+    /// what verifies `wgaf window minimize`.
+    ///
+    /// GTK's own account of the state, not a reading of one flag: `suspended`
+    /// covers minimized, fully obscured, and on another workspace. That is
+    /// wider than "minimized", and it is still the right oracle here, because
+    /// it is the only thing a Wayland client is told at all. A client is never
+    /// informed that it was minimized specifically — there is no such property
+    /// in GTK4 and no such event in the protocol.
+    ///
+    /// Being wider matters for how a test uses it: it is a sound check that a
+    /// minimize *happened* only when nothing else in the run moves the window
+    /// out of view. Do not reach for it after a workspace switch.
+    suspended: bool,
 }
 
 /// The whole report: every window, every time.
@@ -158,6 +172,7 @@ impl RoledWindow {
             maximized: self.window.is_maximized(),
             fullscreen: self.window.is_fullscreen(),
             visible: self.window.is_visible(),
+            suspended: self.window.is_suspended(),
         }
     }
 }
@@ -306,6 +321,10 @@ fn watch(window: &Window, windows: &Rc<Vec<RoledWindow>>, reporter: &Rc<RefCell<
     on_change!(connect_maximized_notify);
     on_change!(connect_fullscreened_notify);
     on_change!(connect_visible_notify);
+    // Minimizing changes nothing else a client can see — not `visible`, not
+    // the size — so without this a minimize would produce no report at all and
+    // a test would wait out its timeout against a correct wgaf.
+    on_change!(connect_suspended_notify);
 
     // Report the closure itself, so a test can distinguish "the window closed"
     // from "the application died". The default handler still runs afterwards.

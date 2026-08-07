@@ -174,8 +174,13 @@ Lists all windows. Human-readable output is one line per window:
    7  ws=0     240,76     800x600   org.gtk.Demo4   Assistant  [focused, maximized]
 ```
 
+The bracketed list at the end names whichever of `focused`, `minimized`,
+`maximized`, `fullscreen`, `above` and `all workspaces` currently apply. A
+window with none of them shows nothing there.
+
 `--json` prints the full array of window records (`id`, `title`, `app_id`,
-`workspace`, `x`, `y`, `width`, `height`, `focused`, `maximized`).
+`workspace`, `x`, `y`, `width`, `height`, `focused`, `maximized`, `minimized`,
+`fullscreen`, `above`, `on_all_workspaces`).
 
 Transient surfaces — tooltips, open menus, combo-box dropdowns — are
 deliberately left out, since they aren't things you'd sensibly focus, move,
@@ -294,6 +299,94 @@ not stop them.
 ```sh
 wgaf window move-to-workspace 42 1     # send it away
 wgaf workspace switch 1                # and follow it
+```
+
+### Window state
+
+Six pairs of commands change what a window *is*, rather than where it is:
+
+| Command | Opposite | What it changes |
+|---|---|---|
+| `wgaf window minimize <id>` | `wgaf window unminimize <id>` | Minimized to the dock |
+| `wgaf window maximize <id>` | `wgaf window unmaximize <id>` | Fills the work area |
+| `wgaf window fullscreen <id>` | `wgaf window unfullscreen <id>` | Covers the whole screen |
+| `wgaf window above <id>` | `wgaf window unabove <id>` | Kept above other windows |
+| `wgaf window stick <id>` | `wgaf window unstick <id>` | Shown on every workspace (see below) |
+| `wgaf window raise <id>` | `wgaf window lower <id>` | Position in the stack |
+
+Each reads its state back before returning, so the next command you run sees the
+change. Each also has its own permission, named after the daemon method rather
+than the CLI verb — `SetWindowMinimized`, `SetWindowMaximized`,
+`SetWindowFullscreen`, `SetWindowAbove`, `SetWindowOnAllWorkspaces`,
+`RestackWindow`. One permission covers both directions of a pair, so denying
+`SetWindowMinimized` stops wgaf minimizing *and* restoring.
+
+**None of them does a second thing on your behalf.** Restoring a window does not
+focus it, maximizing does not raise it, and un-fullscreening does not put it
+back where it was before. Run the command for the other thing if you want it.
+
+#### Maximizing is always both directions
+
+There is no way to maximize a window sideways only. GNOME can do it from its own
+keyboard shortcuts, but it offers no way for another program to ask for it —
+the request is accepted and then applied to both directions regardless. Rather
+than take an option it cannot honour, `wgaf window maximize` does not offer one.
+
+If you need a window filling the width but not the height, read the usable area
+from `wgaf monitor list --json` and set the size yourself:
+
+```sh
+wgaf window resize 42 2560 480
+wgaf window move 42 0 0
+```
+
+#### Minimized windows and typing
+
+`wgaf type --window <id>` refuses a minimized window rather than typing at it.
+A minimized window cannot hold the keyboard, so the text would land in whatever
+window does. Restore it first:
+
+```sh
+wgaf window unminimize 42 && wgaf type --window 42 "hello"
+```
+
+#### `unstick` leaves the window where you are
+
+A window shown on every workspace is on the one you are looking at too, and that
+is the one it keeps when you unstick it. Nothing remembers where it was before.
+
+So this sequence **moves** the window, which is easy to miss:
+
+```sh
+wgaf window stick 42        # on workspace 0, where the window lives
+wgaf workspace switch 1
+wgaf window unstick 42      # the window is now on workspace 1, not 0
+```
+
+Run `wgaf window move-to-workspace` afterwards if you wanted it left behind.
+
+#### Fullscreen is not maximized
+
+A maximized window stops at the work area — the screen minus the top bar and any
+dock. A fullscreen window covers those too. If you are placing other windows
+around one, the difference is the height of the top bar.
+
+#### Raising versus keeping above
+
+`raise` moves a window to the top of its layer. It cannot lift it past a window
+that is kept above with `wgaf window above`, which is a layer of its own — so a
+raised ordinary window still sits underneath one. Raising also does not move the
+keyboard; `wgaf window focus` does both.
+
+#### When a window says no
+
+Some windows refuse. A dialog may declare itself unmaximizable, and a window the
+compositor keeps on every workspace cannot be unstuck. Those are reported with
+the reason rather than doing nothing quietly:
+
+```
+error: the window does not support that: window 105 cannot be maximized:
+       the window declares itself unmaximizable
 ```
 
 ---
@@ -750,6 +843,12 @@ than a raw D-Bus error dump, for example:
   the desktop did not change. Nothing broke and nothing refused, so this is
   worth retrying — see exit code `4` below. Also how "the last workspace cannot
   be removed" is reported.
+- `the window does not support that` — the window itself refused, before
+  anything was attempted: a dialog that cannot be maximized, or one the
+  compositor keeps on every workspace so `unstick` has nothing to undo. Unlike
+  the line above, retrying will never help.
+- `invalid argument` — a named value that isn't one of the accepted ones. The
+  message lists what those are.
 - `GNOME Shell Extension bridge unavailable` — the extension isn't
   installed/enabled, or the daemon can't reach it. If the message says the
   interface "has no `<Name>` method", the extension is older than the daemon:
@@ -777,6 +876,10 @@ than a raw D-Bus error dump, for example:
   happened partway through a long `wgaf type`, the message says how many
   characters had already gone through. See
   ["Targeting a specific window"](#targeting-a-specific-window) above.
+- `the window is minimized` — `--window` named a minimized window. Nothing was
+  typed and the window was left as it was, because a minimized window cannot
+  hold the keyboard and the text would have gone somewhere else. Run
+  `wgaf window unminimize <id>` and try again.
 - `AT-SPI accessibility bus unavailable` — the accessibility bus couldn't be
   reached. The message says which of the possible causes applies — the
   accessibility service isn't available at all, or it's still advertising a bus
@@ -804,7 +907,7 @@ Any other failure falls back to the underlying D-Bus error.
 | `1` | Error — something failed unexpectedly. Printed with an `error:` prefix. |
 | `2` | Not from wgaf: clap's own exit code for a malformed command line (an unknown flag, a missing argument). The daemon never sees the request. |
 | `3` | Denied — refused by `permissions.toml` policy, the kill switch (`wgaf stop` or Escape), or a configured limit (`text too long`, `input rate limit exceeded`). |
-| `4` | Unverified — the command was allowed and attempted and the desktop is not what you assumed. A `--window` target's focus could not be confirmed (`focus could not be verified`), or a workspace command's change never took effect (`the operation was not applied`). Worth retrying. |
+| `4` | Unverified — the command was allowed and attempted and the desktop is not what you assumed. A `--window` target's focus could not be confirmed (`focus could not be verified`) or was minimized (`the window is minimized`), or a workspace or window-state command's change never took effect (`the operation was not applied`). Worth retrying, once you have dealt with the reason. |
 
 Only exit code `1` prints the `error:` prefix. `3` and `4` print the daemon's
 own message with no prefix — it already reads as a complete sentence, not a

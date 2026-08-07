@@ -33,6 +33,23 @@ ReorderWorkspace = "Allow"
 # letting it rearrange your windows behind you.
 MoveWindowToWorkspace = "Allow"
 
+# Window state
+# One entry per state rather than one for all six, so that the ones which take
+# over the screen can be denied on their own. Each covers both directions: a
+# rule that let automation minimize a window but not restore it would only
+# produce windows you cannot get back.
+SetWindowMinimized = "Allow"
+SetWindowMaximized = "Allow"
+SetWindowFullscreen = "Allow"
+# Keeping a window above every other one. It covers whatever you are looking at
+# and stays there, which is a larger thing to agree to than a window changing
+# size — deny this alone if that is the part you mind.
+SetWindowAbove = "Allow"
+SetWindowOnAllWorkspaces = "Allow"
+# Raising a window to the top, or lowering it to the bottom. Not the same as
+# FocusWindow: this changes what you can see, not where your keystrokes go.
+RestackWindow = "Allow"
+
 # Input synthesis
 TypeText = "Allow"
 KeyPress = "Allow"

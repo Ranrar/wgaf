@@ -84,6 +84,37 @@ pub const WINDOWS_ERROR_WORKSPACE_NOT_FOUND: &str = "org.wgaf.Windows1.Error.Wor
 /// through).
 pub const WINDOWS_ERROR_OPERATION_NOT_APPLIED: &str = "org.wgaf.Windows1.Error.OperationNotApplied";
 
+/// D-Bus error name returned by `org.wgaf.Windows1`'s window-state methods when
+/// the window itself will not do what was asked, and said so before anything
+/// was attempted.
+///
+/// The daemon's own stable name for the extension's
+/// [`EXTENSION_ERROR_OPERATION_NOT_SUPPORTED`]. Raised when Mutter answers the
+/// question up front — a dialog that declares it cannot be maximized, a window
+/// the compositor puts on every workspace regardless of whether it is stuck.
+///
+/// **Deliberately distinct from [`WINDOWS_ERROR_OPERATION_NOT_APPLIED`], which
+/// is very nearly its opposite.** That one means the request *was* issued and
+/// the desktop did not move, which may work on a retry. This one means nothing
+/// was issued at all, and retrying never will.
+pub const WINDOWS_ERROR_OPERATION_NOT_SUPPORTED: &str =
+    "org.wgaf.Windows1.Error.OperationNotSupported";
+
+/// D-Bus error name returned by `org.wgaf.Windows1` methods that take a named
+/// choice — `SetWindowMaximized`'s `directions`, `RestackWindow`'s `stacking` —
+/// when the string names none of the accepted values.
+///
+/// The only error on this interface that is about the *call* rather than about
+/// the desktop, and the daemon raises it before consulting the permission
+/// policy or dialling the extension: a caller who typed the value wrong should
+/// be told that, not that they were denied a call that was never valid. The
+/// description names both the rejected value and the accepted ones.
+///
+/// **Nothing is guessed.** Widening a misspelled `horizontal` to `both` would
+/// silently touch an axis the caller never mentioned, which is the kind of
+/// plausible-looking wrong result this project keeps rediscovering.
+pub const WINDOWS_ERROR_INVALID_ARGUMENT: &str = "org.wgaf.Windows1.Error.InvalidArgument";
+
 /// D-Bus error name returned by `org.wgaf.Windows1.GetMonitors` when the
 /// monitor layout could not be read from Mutter.
 ///
@@ -231,6 +262,26 @@ pub const INPUT_ERROR_WINDOW_NOT_FOUND: &str = "org.wgaf.Input1.Error.WindowNotF
 /// `permissions.toml` rule fired) or a generic failure (nothing is broken).
 pub const INPUT_ERROR_VERIFICATION_FAILED: &str = "org.wgaf.Input1.Error.VerificationFailed";
 
+/// D-Bus error name returned by `org.wgaf.Input1`'s targeted methods when the
+/// named window is minimized.
+///
+/// **Nothing is synthesized, and the window is left minimized.** A minimized
+/// window cannot hold keyboard focus, so input aimed at one lands in whatever
+/// window does — the hazard the `--window` guard exists to prevent, arriving by
+/// a different route.
+///
+/// Restoring the window is deliberately *not* done here. Unminimizing is
+/// `org.wgaf.Windows1.SetWindowMinimized`'s job and carries its own capability;
+/// a targeted `TypeText` quietly un-hiding a window the user chose to hide
+/// would be one capability doing another's work. The two-step is explicit:
+/// `wgaf window unminimize <id>` then `wgaf type --window <id> …`.
+///
+/// Classified with [`INPUT_ERROR_VERIFICATION_FAILED`] rather than as a fault:
+/// nothing malfunctioned and no policy refused — the window was not in a state
+/// the caller assumed. Its own name so a script can tell "minimized" from
+/// "focus-stealing prevention declined", which need different remedies.
+pub const INPUT_ERROR_WINDOW_MINIMIZED: &str = "org.wgaf.Input1.Error.WindowMinimized";
+
 // ---------------------------------------------------------------------------
 // GNOME Shell Extension's D-Bus API (client-side naming) — the daemon is a
 // `zbus` client of this interface. Canonical definition lives in
@@ -274,6 +325,18 @@ pub const EXTENSION_ERROR_WORKSPACE_NOT_FOUND: &str =
 /// last remaining workspace.
 pub const EXTENSION_ERROR_OPERATION_NOT_APPLIED: &str =
     "org.gnome.Shell.Extensions.Wgaf.Error.OperationNotApplied";
+
+/// D-Bus error name the extension returns when a window will not do something,
+/// and Mutter says so before anything is attempted.
+///
+/// The extension asks `can_minimize()` / `can_maximize()` /
+/// `is_always_on_all_workspaces()` first, so this is the window's own answer
+/// rather than a guess. Distinct from
+/// [`EXTENSION_ERROR_OPERATION_NOT_APPLIED`] in the direction that matters to a
+/// caller deciding whether to retry: that one may succeed next time, this one
+/// never will.
+pub const EXTENSION_ERROR_OPERATION_NOT_SUPPORTED: &str =
+    "org.gnome.Shell.Extensions.Wgaf.Error.OperationNotSupported";
 
 // ---------------------------------------------------------------------------
 // Daemon's own public accessibility-automation D-Bus API
@@ -479,6 +542,64 @@ pub struct WindowRecord {
     pub height: i32,
     pub focused: bool,
     pub maximized: bool,
+    /// Minimized to the dock or overview. **Input aimed at a minimized window
+    /// reaches nothing**, which is why the daemon reads this before typing —
+    /// see `WindowManager::ensure_focused`.
+    pub minimized: bool,
+    /// Fullscreen, which is not the same as [`Self::maximized`]: a fullscreen
+    /// window covers the top bar and any dock, a maximized one stops at the
+    /// work area.
+    pub fullscreen: bool,
+    /// Kept above other windows. Outranks stacking order — a raised ordinary
+    /// window still sits below one of these.
+    pub above: bool,
+    /// Visible on every workspace. True both for a window that was stuck there
+    /// and for one the compositor puts everywhere by itself; the two only
+    /// differ when trying to undo it, and
+    /// `org.wgaf.Windows1.SetWindowOnAllWorkspaces` reports that case.
+    pub on_all_workspaces: bool,
+}
+
+/// Which way a restack request moves a window within its stack layer.
+///
+/// Lives here rather than in either binary so the CLI's accepted values and the
+/// strings the daemon puts on the wire cannot drift apart — they are the same
+/// list, read from [`Self::as_str`] on one side and [`std::str::FromStr`] on
+/// the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Stacking {
+    Raise,
+    Lower,
+}
+
+impl Stacking {
+    /// The wire form, and the CLI verb it belongs to.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Raise => "raise",
+            Self::Lower => "lower",
+        }
+    }
+}
+
+impl std::str::FromStr for Stacking {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "raise" => Ok(Self::Raise),
+            "lower" => Ok(Self::Lower),
+            other => Err(format!(
+                "unknown stacking direction `{other}` — expected `raise` or `lower`"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Stacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A single workspace, as reported by the GNOME Shell Extension's
@@ -737,6 +858,10 @@ mod tests {
             height: 600,
             focused: true,
             maximized: false,
+            minimized: true,
+            fullscreen: false,
+            above: true,
+            on_all_workspaces: false,
         }
     }
 
