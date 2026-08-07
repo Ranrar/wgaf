@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-08-07
+
+### Added
+
+- **`wgaf --version`.** It had never been wired up, so the only way to ask which wgaf you had was `wgaf status`, which needs the daemon running — no help at all when the thing you are trying to work out is why it is not. `-V` works too.
+
+  It reports the version of the *command*, which is not always the version of the daemon answering it: a daemon that has been running since before your last rebuild is older than the CLI talking to it. `wgaf status` reports the daemon's own version, and is the one to quote when the two might disagree.
+
+  It stays plain text under `--json`, unlike every other command. `name x.y.z` is what every command-line tool prints and what scripts expect, and that is worth more here than internal consistency.
+
+- **A banner and colour in `wgaf --help`.** The help now opens with the wgaf logo and a short description of what the tool does and what it goes through to do it, and the help itself is coloured the way `cargo`'s is — green section headings, cyan for the things you type. clap made its own default plain in 4.4, so the colour is a deliberate choice rather than something that arrived with a dependency bump.
+
+  **None of it reaches a pipe or a file.** Styling is removed on the way out when the destination is not a terminal, so redirected help is byte-for-byte what it was before. `NO_COLOR` turns it off even on a terminal.
+
+  The banner is on `--help` only. `-h` stays a dense one-screen reference, because someone typing it for the tenth time today wants the command list at the top of the screen rather than twenty lines of art.
+
+  Command *output* is unchanged. `wgaf status` and everything else print exactly the text they always did, in exactly the same colours — which is to say none.
+
+### Changed
+
+- **`wgaf -h` is readable again.** Every command's description was one long paragraph, so the command list was a wall — `a11y` alone ran to six lines. Descriptions are now a single line each, with the detail still there under `wgaf help <command>`. Nothing was deleted, only moved to where it does not crowd out the list.
+
+- **`wgaf type --help` no longer claims ASCII/US-QWERTY only.** Typing has followed your desktop's keyboard layout since 0.7.0; the CLI's own help was never updated, which is the copy most people actually read.
+
 ## [0.8.2] - 2026-08-06
 
 ### Added

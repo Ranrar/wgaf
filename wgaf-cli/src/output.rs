@@ -342,4 +342,23 @@ mod tests {
         let value = ok_json("done", serde_json::json!("not an object"));
         assert_eq!(value, serde_json::json!({ "ok": true, "message": "done" }));
     }
+
+    /// `wgaf status`'s markers are plain, greppable ASCII, and stay that way.
+    ///
+    /// The rule this guards is on [`marker`] itself: this output gets pasted
+    /// into bug reports and piped through `grep`, so `[ ok ]` and `[fail]` must
+    /// survive both intact. Unicode ticks would not, and neither would styling
+    /// baked into the string.
+    #[test]
+    fn the_status_markers_are_plain_greppable_ascii() {
+        assert_eq!(marker(true), "[ ok ]");
+        assert_eq!(marker(false), "[fail]");
+        for m in [marker(true), marker(false)] {
+            assert!(m.is_ascii(), "{m:?} must be ASCII to survive a paste");
+            assert!(
+                !m.contains('\u{1b}'),
+                "{m:?} must carry no escape sequences — see this function's docs"
+            );
+        }
+    }
 }

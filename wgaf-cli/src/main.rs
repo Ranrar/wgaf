@@ -2,12 +2,124 @@ mod commands;
 mod error;
 mod output;
 
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use error::{CliResult, Verdict};
 
-/// wgaf — Wayland GNOME automation framework CLI.
+/// Colours for `--help` and for clap's own error messages.
+///
+/// clap 4.4 onward ships a deliberately plain default — bold and underline, no
+/// colour — so this is opt-in. The palette is cargo's, near enough: green for
+/// section headings, cyan for the things you type. Following the tool every
+/// Rust developer already has open costs nothing and means `wgaf --help` does
+/// not feel like a different kind of program.
+///
+/// **Nothing here needs a "should I use colour?" check.** clap writes help
+/// through `anstream`, which strips styling when the destination is not a
+/// terminal and honours `NO_COLOR`, `CLICOLOR_FORCE` and friends. Piping
+/// `wgaf --help` into a file or a pager gets clean text, which is what makes
+/// this safe to turn on at all.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::Cyan.on_default())
+    .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
+    .valid(AnsiColor::Green.on_default().effects(Effects::BOLD))
+    .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD));
+
+/// The banner shown by `wgaf --help`.
+///
+/// # Why `--help` and not `-h`
+///
+/// It is set as the *long* banner, so `-h` stays a dense reference you can scan
+/// in a second and `--help` is the one that introduces the tool. Someone typing
+/// `-h` for the tenth time today wants the command list at the top of the
+/// screen, not four lines of art above it.
+///
+/// # No colour codes in here
+///
+/// The block characters carry it on their own, and embedding ANSI would put
+/// escape sequences into the generated man page, which renders this same text.
+/// Colour is applied to the help *structure* by [`HELP_STYLES`], where anstream
+/// can strip it when the output is not a terminal.
+const LOGO: &str = concat!(
+    "\n",
+    " _____                                                          _____ \n",
+    "( ___ )                                                        ( ___ )\n",
+    " |   |~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|   | \n",
+    " |   |                                                          |   | \n",
+    " |   |       wayland GNOME automation framework    ██████       |   | \n",
+    " |   |                                            ███░░███      |   | \n",
+    " |   |       █████ ███ █████  ███████  ██████    ░███ ░░░       |   | \n",
+    " |   |      ░░███ ░███░░███  ███░░███ ░░░░░███  ███████         |   | \n",
+    " |   |       ░███ ░███ ░███ ░███ ░███  ███████ ░░░███░          |   | \n",
+    " |   |       ░░███████████  ░███ ░███ ███░░███   ░███           |   | \n",
+    " |   |        ░░████░████   ░░███████░░████████  █████          |   | \n",
+    " |   |         ░░░░ ░░░░     ░░░░░███ ░░░░░░░░  ░░░░░           |   | \n",
+    " |   |                       ███ ░███                           |   | \n",
+    " |   |                      ░░██████                            |   | \n",
+    " |   |                       ░░░░░░                             |   | \n",
+    " |   |                                                          |   | \n",
+    " |   | https://github.com/Ranrar/wgaf                           |   | \n",
+    " |___|~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|___| \n",
+    "(_____)                                                        (_____)\n",
+    "\n",
+    // Kept to the box's own 70 columns so the text sits inside the frame
+    // rather than overhanging it. Check the width if you reword these.
+    "Automate GNOME on Wayland through its own interfaces, not around them.\n",
+    "\n",
+    "Windows and workspaces through GNOME Shell, keyboard and mouse through\n",
+    "the kernel, buttons and text fields by name through accessibility.\n",
+);
+
+// A doc comment on this struct becomes the tool's `--help` banner, so keep
+// anything that is not for a user reading `wgaf --help` down here in a plain
+// comment. clap takes the first paragraph as the short description and the
+// whole thing as the long one, which is how a maintenance note ends up printed
+// above the command list.
+//
+// `version` takes the crate version, so `wgaf --version` reports the version of
+// *this command* — not necessarily of the daemon answering it, since a
+// long-running daemon can be older than a freshly built CLI. `wgaf status`
+// reports the daemon's own, and is the one to quote when the two disagree.
+
+// The one-line doc comment below is the whole of what a user should see here,
+// and it stays even though LOGO now carries the longer description, because it
+// has three jobs beyond `--help`:
+//
+//   - `wgaf -h`. The banner is on `--help` only, so without this the terse
+//     help opens straight into `Usage:` and never says what the tool is.
+//   - The man page's NAME line. `clap_mangen` builds `wgaf - <about>` from it,
+//     and that line is what `whatis` and `man -k` index. With no about it
+//     renders as a bare `wgaf` and the tool stops being findable by
+//     description.
+//   - Shell completions, which show it beside the command name.
+//
+// Deliberately shorter than the logo's wording rather than identical to it:
+// `--help` prints the banner and then this, so a verbatim repeat would read as
+// a mistake.
+
 #[derive(Parser)]
-#[command(name = "wgaf")]
+#[command(
+    name = "wgaf",
+    version,
+    styles = HELP_STYLES,
+    before_long_help = LOGO,
+    // Keep the description's own line breaks instead of re-flowing it into one
+    // paragraph. Without this clap joins consecutive doc-comment lines with
+    // spaces and wraps to the terminal width, so a deliberate three-line
+    // description arrives as one long sentence at whatever width the reader's
+    // window happens to be.
+    verbatim_doc_comment,
+    // `-h` stays terse and `--help` gives the detail, which clap does on its
+    // own for every command whose doc comment has a second paragraph. Do NOT
+    // reach for `args_conflicts_with_subcommands` to sharpen the usage line:
+    // it makes `--json` conflict with every subcommand, which breaks
+    // `wgaf --json window list` — a documented, tested form.
+    after_help = "Run `wgaf help <command>` for detail on any command, or see the \
+                  full reference at docs/cli-reference.md.",
+)]
 struct Cli {
     /// Emit machine-readable JSON instead of human-readable output.
     #[arg(long, global = true)]
@@ -28,8 +140,10 @@ enum Command {
     /// Check that the daemon is running and responding.
     Ping,
 
-    /// Report whether every subsystem is set up correctly, and what
-    /// permission policy the daemon is enforcing.
+    /// Check that everything is set up correctly.
+    ///
+    /// Reports whether every subsystem is working, and what permission policy
+    /// the daemon is enforcing.
     ///
     /// Unlike `ping` (which only proves the daemon answers), this checks the
     /// GNOME Shell Extension bridge, `/dev/uinput` access, and the AT-SPI
@@ -59,22 +173,26 @@ enum Command {
     /// again once input is allowed.
     Release,
 
-    /// Window management commands (list/focus/move/resize/close), backed by
-    /// the daemon's `org.wgaf.Windows1` D-Bus interface.
+    /// List, focus, move, resize and close windows.
+    ///
+    /// Also sends a window to another workspace. Backed by the daemon's
+    /// `org.wgaf.Windows1` D-Bus interface, and needs the GNOME Shell
+    /// extension.
     Window {
         #[command(subcommand)]
         command: WindowCommand,
     },
 
-    /// Workspace commands (list/switch/add/remove/reorder), backed by the
-    /// daemon's `org.wgaf.Windows1` D-Bus interface.
+    /// List workspaces, and switch, add, remove or reorder them.
+    ///
+    /// Backed by the daemon's `org.wgaf.Windows1` D-Bus interface, and needs
+    /// the GNOME Shell extension.
     Workspace {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
 
-    /// Monitor commands, backed by the daemon's `org.wgaf.Windows1` D-Bus
-    /// interface.
+    /// List the monitors making up your desktop.
     ///
     /// Unlike every other command here, this one does not need the wgaf GNOME
     /// Shell extension: the layout is read from Mutter's own display
@@ -84,8 +202,14 @@ enum Command {
         command: MonitorCommand,
     },
 
-    /// Type a string of text (ASCII/US-QWERTY only), backed by the
-    /// daemon's `org.wgaf.Input1` D-Bus interface.
+    /// Type a string of text.
+    ///
+    /// Uses whatever keyboard layout your desktop is set to, so accented and
+    /// AltGr characters work. A character the layout cannot produce is
+    /// reported rather than silently dropped.
+    ///
+    /// Goes to whatever currently has keyboard focus unless you pass
+    /// `--window`.
     Type {
         /// The text to type.
         text: String,
@@ -100,17 +224,21 @@ enum Command {
         window: Option<u32>,
     },
 
-    /// Low-level single-key press/release, by evdev key name (`a`, `enter`,
-    /// `leftshift`, `up`, `f5`, `altgr`, ...). No ASCII/shift awareness — see
-    /// `wgaf type` for that; combine `key press leftshift` + `key press a` +
-    /// releases for a capital `A`.
+    /// Press and release individual keys, and key combinations.
+    ///
+    /// Keys are named the way the kernel names them (`a`, `enter`,
+    /// `leftshift`, `up`, `f5`, `altgr`, ...), and are physical keys rather
+    /// than characters — so a combination means the same on every layout.
+    ///
+    /// There is no shift awareness here: `wgaf type` is what turns text into
+    /// keystrokes. For a capital `A` by hand you would press `leftshift`, press
+    /// `a`, then release both — or just use `wgaf key combo`.
     Key {
         #[command(subcommand)]
         command: KeyCommand,
     },
 
-    /// Mouse automation commands (move, click, scroll), backed by the
-    /// daemon's `org.wgaf.Input1` D-Bus interface.
+    /// Move, click and scroll the mouse.
     ///
     /// Prefer `wgaf a11y` where an element can be found by name or role:
     /// clicking a named button keeps working when a window moves or a theme
@@ -120,18 +248,20 @@ enum Command {
         command: MouseCommand,
     },
 
-    /// Accessibility automation (AT-SPI): enumerate accessible
-    /// applications, find/inspect elements by role/name/description, and
-    /// invoke actions (click/focus/set text) on them — backed by the
-    /// daemon's `org.wgaf.Accessibility1` D-Bus interface. Preferred over
-    /// coordinate-based automation whenever an element can be found this
-    /// way.
+    /// Find and operate UI elements by name, role or description.
+    ///
+    /// Lists accessible applications, reads their element trees, and clicks or
+    /// fills what it finds — through the same accessibility system a screen
+    /// reader uses.
+    ///
+    /// Preferred over coordinate-based automation whenever an element can be
+    /// found this way: a named button keeps working when the window moves.
     A11y {
         #[command(subcommand)]
         command: A11yCommand,
     },
 
-    /// Print a shell completion script for the given shell to stdout.
+    /// Print a shell completion script.
     ///
     /// Redirect the output to wherever your shell loads completions from,
     /// e.g. `wgaf completions bash > /etc/bash_completion.d/wgaf` or `wgaf
@@ -322,8 +452,10 @@ enum A11yCommand {
         element: wgaf_common::ElementRef,
     },
 
-    /// Replace an element's text content (requires the element to
-    /// implement AT-SPI's `EditableText` interface — most text fields do).
+    /// Replace an element's text content.
+    ///
+    /// Requires the element to implement AT-SPI's `EditableText` interface —
+    /// most text fields do, and read-only ones report that they do not.
     SetText {
         /// Element reference, in `bus_name#object_path` form.
         element: wgaf_common::ElementRef,
@@ -405,9 +537,10 @@ enum WorkspaceCommand {
     /// List all workspaces, with their window counts and which one is active.
     List,
 
-    /// Show how the workspaces are arranged: how many there are, which is
-    /// active, the grid GNOME lays them out in, and whether GNOME is managing
-    /// their number itself.
+    /// Show how the workspaces are arranged.
+    ///
+    /// How many there are, which is active, the grid GNOME lays them out in,
+    /// and whether GNOME is managing their number itself.
     ///
     /// That last one is worth knowing before using `add` or `remove`: with
     /// dynamic workspaces — GNOME's default — the Shell keeps one empty
@@ -1174,6 +1307,129 @@ mod tests {
             Command::Completions { shell } => assert_eq!(shell, clap_complete::Shell::Bash),
             _ => panic!("expected Completions"),
         }
+    }
+
+    /// The top-level description is one line written for a user.
+    ///
+    /// A `///` comment on `Cli` is not documentation — clap prints it in
+    /// `wgaf --help`, above the command list. That is easy to forget while
+    /// editing, and the result is a maintenance note shown to everyone who runs
+    /// the tool: it has happened, with a three-bullet explanation of why the
+    /// `about` exists appearing between the banner and `Usage:`.
+    ///
+    /// Notes for maintainers belong in the plain `//` block above the struct,
+    /// which the compiler keeps and clap never sees.
+    #[test]
+    fn the_top_level_description_is_one_line_written_for_a_user() {
+        let command = Cli::command();
+
+        for (which, text) in [
+            ("about", command.get_about().map(ToString::to_string)),
+            ("long_about", command.get_long_about().map(ToString::to_string)),
+        ] {
+            let Some(text) = text else { continue };
+
+            assert!(
+                !text.trim_end().contains('\n'),
+                "`{which}` is {} lines. Everything here is printed by \
+                 `wgaf --help` — move the explanation to the `//` comment above \
+                 `struct Cli`:\n{text}",
+                text.trim_end().lines().count()
+            );
+            // Markdown only renders in rustdoc. Its presence means the text was
+            // written as documentation rather than as help output.
+            for marker in ["**", "[`"] {
+                assert!(
+                    !text.contains(marker),
+                    "`{which}` contains `{marker}`, which only makes sense in \
+                     rustdoc — this string is printed verbatim to a terminal:\n{text}"
+                );
+            }
+        }
+    }
+
+    /// The global flags work on **either side** of the subcommand.
+    ///
+    /// `docs/cli-reference.md` promises this in as many words, and it is the
+    /// form that reads naturally when the flag applies to the whole run
+    /// (`wgaf --json window list`) rather than to the command
+    /// (`wgaf window list --json`).
+    ///
+    /// Written after breaking it: `args_conflicts_with_subcommands` tidies the
+    /// usage line and makes every global flag conflict with every subcommand,
+    /// so `wgaf --json monitor list` became "the subcommand 'monitor' cannot be
+    /// used with '--json'". Nothing in the suite noticed, because every test
+    /// here happened to put its flags after the subcommand.
+    #[test]
+    fn global_flags_work_on_either_side_of_the_subcommand() {
+        for args in [
+            vec!["wgaf", "--json", "window", "list"],
+            vec!["wgaf", "window", "list", "--json"],
+            vec!["wgaf", "--bus-name", "org.example.Test", "monitor", "list"],
+            vec!["wgaf", "monitor", "list", "--bus-name", "org.example.Test"],
+            vec!["wgaf", "--json", "workspace", "switch", "1"],
+            vec!["wgaf", "workspace", "switch", "1", "--json"],
+        ] {
+            let rendered = args.join(" ");
+            let cli = Cli::try_parse_from(&args)
+                .unwrap_or_else(|e| panic!("`{rendered}` must parse: {e}"));
+            assert!(
+                cli.json || cli.bus_name.is_some(),
+                "`{rendered}` lost its flag"
+            );
+        }
+    }
+
+    /// `--version` and `-V` both report the crate version.
+    ///
+    /// Every other invocation of `wgaf` requires a subcommand, so this is the
+    /// one flag that has to work on its own — a `--version` that errored with
+    /// "no subcommand given" would be worse than not having one.
+    #[test]
+    fn version_is_reported_without_a_subcommand() {
+        for flag in ["--version", "-V"] {
+            let Err(err) = Cli::try_parse_from(["wgaf", flag]) else {
+                panic!("`{flag}` must print the version, not parse as a command");
+            };
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayVersion,
+                "`{flag}` must print the version, not fail"
+            );
+            assert!(
+                err.to_string().contains(env!("CARGO_PKG_VERSION")),
+                "`{flag}` must report the crate version, got: {err}"
+            );
+        }
+    }
+
+    /// **`--version` deliberately ignores `--json`.**
+    ///
+    /// clap handles the flag and exits before any of this crate's code runs, so
+    /// the output is plain text whatever else was passed. That is left alone
+    /// rather than reimplemented: `--version` printing `name x.y.z` is a
+    /// convention every other command-line tool shares, and a script parsing it
+    /// expects that shape.
+    ///
+    /// A script that wants a version as JSON wants the *daemon's*, which is
+    /// what it is actually talking to — `wgaf status --json` reports it as
+    /// `daemon_version`, and the two can legitimately differ when a
+    /// long-running daemon is older than a freshly built CLI.
+    ///
+    /// Pinned as a test so the behaviour is a decision on the record rather
+    /// than something noticed later and "fixed" into an inconsistency.
+    #[test]
+    fn version_ignores_json_because_that_is_the_convention() {
+        let Err(err) = Cli::try_parse_from(["wgaf", "--json", "--version"]) else {
+            panic!("--version must still short-circuit when --json is present");
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+
+        let rendered = err.to_string();
+        assert!(
+            !rendered.trim_start().starts_with('{'),
+            "--version stays plain text under --json, got: {rendered}"
+        );
     }
 
     #[test]

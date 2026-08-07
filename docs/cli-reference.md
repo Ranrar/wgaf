@@ -12,10 +12,19 @@ running (`wgaf-daemon &`, or as a systemd user service via `make install`).
 |---|---|
 | `--json` | Emit machine-readable JSON instead of human-readable text. Valid on either side of the subcommand — both `wgaf --json window list` and `wgaf window list --json` work. |
 | `--bus-name <NAME>` | Which daemon to talk to, by D-Bus well-known name. Defaults to `org.wgaf.Daemon`. You only need this if the daemon was started with a customised `bus_name` in its `config.toml` — see [Configuration](configuration.md). Also valid on either side of the subcommand. |
+| `--version`, `-V` | Print this command's version and exit. |
+| `--help`, `-h` | Print help. Works on any subcommand: `wgaf workspace switch --help`. |
 
 Commands that don't return data (`window focus`, `type`, `mouse click`, ...)
 still respect `--json`: they print `{"ok": true, "message": "..."}` instead of
 a plain sentence. `wgaf ping --json` prints `{"ok": true, "response": "pong"}`.
+
+**`--version` is the exception and stays plain text under `--json`**, because
+`name x.y.z` is the shape every command-line tool prints and scripts expect. It
+also reports the version of *this command*, which need not be the version of the
+daemon answering it — a daemon that has been running for a week can be older
+than a CLI you just rebuilt. When that distinction matters, `wgaf status --json`
+reports the daemon's own version as `daemon_version`.
 
 Shell completions: `wgaf completions <bash|zsh|fish|elvish|powershell>` prints
 a completion script to stdout — see the main README for how to install it for
