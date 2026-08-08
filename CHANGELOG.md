@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-08-08
+
+### Added
+
+- **Packages for the major GNOME distributions, built by `scripts/package.sh`** — `.deb` for Debian and Ubuntu, `.rpm` for Fedora, RHEL and openSUSE, a `PKGBUILD` for Arch, and a portable `.tar.gz` for everything else. A package installs system-wide and does the one part of setup that genuinely needs root: the udev rule that lets wgaf type and click. What is left for you afterwards is enabling the GNOME Shell extension and joining the `input` group, both of which need a logout anyway — the package says so when it installs rather than doing half of it.
+
+- **Rewritten installation guide.** [`docs/installation.md`](docs/installation.md) now opens with a **system requirements** table — GNOME Shell 50, Wayland, systemd, `libxkbcommon`, AT-SPI, `/dev/uinput` — that says what each one is for and what stops working without it, rather than listing them and leaving you to find out.
+
+- **Issue templates.** Reporting a problem now asks the questions that answer it: whether you have logged out since installing (which explains most reports), your GNOME version, and `wgaf status`. There is a template for reporting how wgaf went on a distribution, since the tested-on table has one verified row and stays that way until somebody says otherwise.
+
+### Changed
+
+- **`make -C extension install` says what it is about to do, and refuses to go backwards.** It now reports whether this is a first install, an update (`0.8.3 -> 0.8.4`), or a reinstall of the same version — and **refuses to install an older extension over a newer one**, which otherwise leaves a session where wgaf reports methods as missing and you do not find out until after logging out. `ALLOW_DOWNGRADE=1` if you really mean it.
+
+### Fixed
+
+- **`make install` told you to restart GNOME in ways that do not exist on Wayland.** It suggested logging out "(X11)" or pressing `Alt+F2 r` "(Xorg only)" — backwards, since logging out is the *Wayland* answer, and irrelevant, since wgaf does not target X11. It also told you to run `make enable`, which only exists inside `extension/` and fails from the repository root. Both now say what to actually do.
+
+- **`make test-desktop` did not run the workspace test suite.** `tests/workspaces.rs` shipped in 0.8.4 and nothing ran it, so workspace switching, adding, removing and moving windows between them had a desktop suite that never executed.
+
 ## [0.8.4] - 2026-08-07
 
 **This release needs the GNOME Shell extension reinstalled**, and Wayland only

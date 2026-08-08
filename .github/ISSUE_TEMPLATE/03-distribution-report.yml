@@ -1,0 +1,102 @@
+name: I tried it on a distribution
+description: Tell us how wgaf went on yours — working or not
+labels: ["distribution-report"]
+title: "Tested on: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## This is the most useful report you can send
+
+        Only **Ubuntu 26.04 LTS** has been verified end to end — it is the
+        machine wgaf is developed on. Every other row of the
+        [Tested on](https://github.com/Ranrar/wgaf/blob/master/docs/installation.md#tested-on)
+        table is worked out from what a distribution ships, not from anyone
+        installing it.
+
+        **A report that it worked is as valuable as one that it did not.** The
+        table has one verified row; it stays that way until somebody says
+        otherwise.
+
+        Please log out and back in before testing, or the window commands will
+        report the extension as unavailable and the answer will be about that
+        rather than about your distribution.
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+      placeholder: Fedora 44
+    validations:
+      required: true
+
+  - type: input
+    id: gnome
+    attributes:
+      label: GNOME Shell version
+      description: The output of `gnome-shell --version`
+      placeholder: GNOME Shell 50.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: Which package did you use?
+      options:
+        - .deb
+        - .rpm
+        - Arch (PKGBUILD)
+        - Tarball (.tar.gz)
+        - From source (make install)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What worked?
+      description: |
+        Tick what you actually tried. The two halves of wgaf fail
+        independently — the window half needs the GNOME Shell extension, the
+        rest does not — so partial results are still worth reporting.
+      options:
+        - label: "It installed without errors"
+        - label: "Windows — `wgaf window list`, `focus`, `minimize`"
+        - label: "Workspaces — `wgaf workspace list`, `switch`"
+        - label: "Monitors — `wgaf monitor list`"
+        - label: "Typing — `wgaf type \"hello\"`"
+        - label: "Mouse — `wgaf mouse move`, `click`"
+        - label: "Accessibility — `wgaf a11y list-apps`"
+        - label: "The emergency stop — Escape halts automation"
+
+  - type: textarea
+    id: status
+    attributes:
+      label: "`wgaf status` output"
+      description: This says which subsystems came up and which did not.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: problems
+    attributes:
+      label: What did not work?
+      description: |
+        Commands and their errors. If everything worked, say so — that is the
+        report.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: differences
+    attributes:
+      label: Anything your distribution needed that the docs do not mention?
+      description: |
+        An extra package, a different command, a path somewhere else, a
+        permission that had to be granted. This is what makes the install
+        guide right for the next person.
+    validations:
+      required: false

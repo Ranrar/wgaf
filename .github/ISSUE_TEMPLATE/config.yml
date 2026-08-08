@@ -1,0 +1,29 @@
+# Blank issues stay enabled on purpose: the templates cover what comes up
+# often, and something that fits none of them should not have to be forced
+# into one.
+blank_issues_enabled: true
+
+contact_links:
+  - name: Security vulnerability — do not open an issue
+    url: https://github.com/Ranrar/wgaf/blob/master/SECURITY.md
+    about: >-
+      A way round the permission model, or to capture input or data
+      unintentionally, goes to kim@skovrasmussen.com privately instead.
+
+  - name: Nothing works after installing
+    url: https://github.com/Ranrar/wgaf/blob/master/docs/installation.md#first-time-setup
+    about: >-
+      Log out and back in first. GNOME Shell on Wayland loads an extension only
+      at login, and this is the answer to most reports.
+
+  - name: Window commands say the extension is unavailable
+    url: https://github.com/Ranrar/wgaf/blob/master/docs/installation.md#tested-on
+    about: >-
+      Check `gnome-shell --version`. The extension needs GNOME Shell 50; on
+      anything earlier the window half is unavailable and the rest still works.
+
+  - name: How do I do X?
+    url: https://github.com/Ranrar/wgaf/blob/master/docs/user-guide.md
+    about: >-
+      The user guide covers each capability with examples, and the CLI
+      reference lists every command's flags and error messages.

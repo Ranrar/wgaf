@@ -185,24 +185,52 @@ is issuing the commands.
 
 ## Get started
 
-You need GNOME Shell on Wayland (tested against GNOME Shell 50), a recent Rust
-toolchain, and the `libxkbcommon` development package (`libxkbcommon-dev` on
-Debian and Ubuntu, `libxkbcommon-devel` on Fedora).
+**You need GNOME Shell 50 on Wayland, and systemd if you want the daemon to run
+as a service.** GNOME 50 is the strict one: window and workspace management goes
+through a GNOME Shell extension that will not load on anything earlier, while
+typing, clicking and the accessibility commands work on any version.
+
+```sh
+gnome-shell --version           # want: 50.x
+echo "$XDG_SESSION_TYPE"        # want: wayland
+```
+
+Install from a package for your distribution:
+
+```sh
+sudo apt install ./wgaf_*_amd64.deb                       # Debian, Ubuntu
+sudo dnf install ./wgaf-*.x86_64.rpm                      # Fedora, RHEL
+sudo zypper install --allow-unsigned-rpm ./wgaf-*.x86_64.rpm   # openSUSE
+makepkg -si                                               # Arch (PKGBUILD + .tar.gz)
+```
+
+Or build it yourself, which additionally needs Rust and the `libxkbcommon`
+development headers:
 
 ```sh
 git clone https://github.com/Ranrar/wgaf.git
 cd wgaf
 make install
-systemctl --user enable --now wgaf-daemon.service
-wgaf ping        # should print: pong
 ```
 
-Two one-time steps `make install` can't do for you: **log out and back in
-once** so GNOME Shell loads the extension, and **grant access to
-`/dev/uinput`** so wgaf can synthesize keyboard and mouse input. Both are in
-the [installation guide](docs/installation.md#first-time-setup), which also
-covers shell completions, man pages, uninstalling, and what to check when
-something isn't working.
+Then three one-time steps no installer can do for you — enable the extension,
+join the `input` group, and **log out and back in** so GNOME picks both up:
+
+```sh
+gnome-extensions enable wgaf@wgaf.dev
+sudo usermod -aG input $USER
+# log out and back in, then:
+wgaf status
+```
+
+**[Full installation guide](docs/installation.md)** — system requirements,
+every distribution's commands, which ones have actually been tested, upgrading,
+uninstalling, and what to check when something isn't working.
+
+> Only **Ubuntu 26.04 LTS** has been verified end to end. The other packages
+> are built and inspected but not installed on the distributions they target —
+> see [tested on](docs/installation.md#tested-on) for what each one is expected
+> to do.
 
 ## Quick examples
 
@@ -364,7 +392,7 @@ around `--json` are today's answer and will keep working.
 
 | | |
 |---|---|
-| [Installation](docs/installation.md) | Install, first-time setup, completions, uninstall, and what to check when something isn't working |
+| [Installation](docs/installation.md) | System requirements, packages for each distribution, what has been tested, first-time setup, upgrading, uninstall, and what to check when something isn't working |
 | [Configuration](docs/configuration.md) | Every setting, the permission policy, and the input safety limits |
 | [User guide](docs/user-guide.md) | How to actually use each capability |
 | [CLI reference](docs/cli-reference.md) | Every command's exact flags and error messages |

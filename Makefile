@@ -100,9 +100,10 @@ install: cargo-install systemd-install config-install
 	@echo "  3. sudo usermod -aG input \$$USER"
 	@echo "  4. Log out and back in for the new group membership to take effect."
 	@echo
-	@echo "GNOME Shell Extension installed and enabled, but GNOME Shell may need a"
-	@echo "session restart to actually load it (Wayland has no in-session Shell"
-	@echo "restart) — see extension/Makefile's own 'make install' output."
+	@echo "--- GNOME Shell Extension ---"
+	@echo "Installed and enabled, but not yet loaded: GNOME Shell on Wayland reads"
+	@echo "an extension's code only at login. Log out and back in before using the"
+	@echo "window, workspace or monitor commands."
 
 cargo-install: build
 	cargo install --path wgaf-daemon --force
@@ -193,7 +194,7 @@ test-extension:
 # some window other than the terminal you started it from.
 test-desktop: test-apps
 	cargo test -p wgaf-daemon --test keyboard_coverage --test keyboard_layout \
-		--test window_management --test pointer --test combined \
+		--test window_management --test workspaces --test pointer --test combined \
 		--test accessibility --test input --test permissions \
 		-- --ignored --test-threads=1
 	cargo test -p wgaf-daemon --test kill_switch -- --ignored --test-threads=1 \

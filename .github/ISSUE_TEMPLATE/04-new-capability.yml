@@ -1,0 +1,76 @@
+name: Suggest a capability
+description: Something you want to automate that wgaf cannot do yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## What gets built, and what does not
+
+        **wgaf never works around the compositor's security model.** Everything
+        it does goes through an interface GNOME, Wayland or the kernel actually
+        provides. Some things are therefore not missing features but deliberate
+        absences: reading another application's keystrokes, taking input from a
+        window that is not focused, or driving an application the compositor
+        will not tell us about.
+
+        If what you want needs one of those, it is worth saying anyway — there
+        is often a supported route to the same outcome, and that is a better
+        conversation than a closed issue.
+
+        **Say what you are trying to do, not just which command to add.** The
+        task matters more than the API: a request with a real job behind it can
+        be designed properly, and one without a user tends to get built wrong.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to automate?
+      description: |
+        The actual task, in whatever detail it takes. "I want to lay out four
+        terminals across two monitors when I start work" tells us more than
+        "add a tiling command".
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What do you do today?
+      description: |
+        The commands you already run, and where they fall short. If you have a
+        script that nearly works, paste it — the gap is usually visible in it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What would it look like? (optional)
+      description: |
+        A command line you would want to type, if you have one in mind. Rough
+        is fine; it is a starting point rather than a specification.
+      placeholder: |
+        wgaf window tile 42 --left-half
+    validations:
+      required: false
+
+  - type: input
+    id: gnome
+    attributes:
+      label: GNOME Shell version
+      description: |
+        Some things are possible on one version and not another — GNOME's own
+        interfaces change between releases.
+      placeholder: GNOME Shell 50.1
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before filing
+      options:
+        - label: I have checked the [CLI reference](https://github.com/Ranrar/wgaf/blob/master/docs/cli-reference.md) for a command that already does this
+          required: true

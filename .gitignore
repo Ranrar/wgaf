@@ -5,3 +5,5 @@
 /tests/apps/target
 /extension/*.shell-extension.zip
 /extension/schemas/gschemas.compiled
+# Built packages. They belong on a GitHub release, not in the repository.
+/dist

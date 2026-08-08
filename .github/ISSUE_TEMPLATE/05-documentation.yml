@@ -1,0 +1,43 @@
+name: The documentation is wrong or unclear
+description: A command does not behave as documented, or the docs left you stuck
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation that is wrong is a defect like any other — following it
+        and getting a different result costs more than no documentation would
+        have. Reports of "this did not say the thing I needed" are just as
+        welcome as ones about a wrong example.
+
+  - type: input
+    id: where
+    attributes:
+      label: Where?
+      description: |
+        The page and, if you can, the section — a link to the line on GitHub is
+        ideal.
+      placeholder: docs/cli-reference.md, the `wgaf window stick` entry
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong, or what were you trying to find out?
+      description: |
+        If an example does not work, paste what you ran and what happened —
+        that tells us whether the documentation is wrong or the command is.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: wgaf version
+      description: |
+        The output of `wgaf --version`. Documentation and behaviour drift apart
+        between releases, and this says which way round the fix goes.
+      placeholder: wgaf 0.8.4
+    validations:
+      required: false

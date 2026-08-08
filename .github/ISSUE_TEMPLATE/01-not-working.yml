@@ -1,0 +1,130 @@
+name: Something isn't working
+description: A command fails, does the wrong thing, or does nothing
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Try this first — it fixes most reports
+
+        **Log out and back in.**
+
+        GNOME Shell on Wayland loads an extension's code only at login, and it
+        cannot be reloaded mid-session. Until you have logged out since
+        installing or updating wgaf, the daemon is talking to whatever
+        extension was loaded when you logged in — usually an older one, or
+        none at all.
+
+        The symptoms look nothing like "you need to log out": window commands
+        report the extension as unavailable, or fail with a method reported as
+        missing, or typing goes nowhere.
+
+        Group membership works the same way. If you have just run
+        `sudo usermod -aG input $USER`, it does not apply until you log out.
+
+  - type: checkboxes
+    id: logged-out
+    attributes:
+      label: Before filing
+      options:
+        - label: I have logged out and back in since I last installed or updated wgaf
+          required: true
+        - label: I have run `wgaf status` and pasted the output below
+          required: true
+
+  - type: textarea
+    id: status
+    attributes:
+      label: "`wgaf status` output"
+      description: |
+        This is the single most useful thing in the report — it checks the
+        extension, input access and the accessibility bus in one go, and says
+        what is wrong with each.
+      render: text
+      placeholder: |
+        $ wgaf status
+    validations:
+      required: true
+
+  - type: textarea
+    id: system
+    attributes:
+      label: Your system
+      description: |
+        Paste the output of this, which collects everything at once:
+
+        ```sh
+        wgaf --version; gnome-shell --version; echo "session: $XDG_SESSION_TYPE"
+        grep PRETTY_NAME /etc/os-release
+        ```
+      render: text
+      placeholder: |
+        wgaf 0.8.4
+        GNOME Shell 50.1
+        session: wayland
+        PRETTY_NAME="Ubuntu 26.04 LTS"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install wgaf?
+      options:
+        - Package (.deb)
+        - Package (.rpm)
+        - Arch package (PKGBUILD)
+        - Tarball (.tar.gz)
+        - From source (make install)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What did you run, and what happened?
+      description: |
+        The exact command and its full output, including the error. If it is
+        part of a script, the few lines around it help.
+      render: shell
+      placeholder: |
+        $ wgaf window minimize 42
+        error: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      description: |
+        Say what you were trying to achieve, not only what the command should
+        have printed — sometimes there is a better way round.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Does it happen every time?
+      description: |
+        If it is intermittent, say roughly how often — that is a real clue and
+        changes where to look. If a particular application is involved, name
+        it; toolkits differ.
+    validations:
+      required: false
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Daemon log (optional)
+      description: |
+        Useful when the daemon is misbehaving rather than the command:
+
+        ```sh
+        journalctl --user -u wgaf-daemon.service -n 50 --no-pager
+        ```
+      render: text
+    validations:
+      required: false

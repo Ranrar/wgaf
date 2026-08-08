@@ -1,0 +1,107 @@
+name: Installing or updating went wrong
+description: A package will not install, the build fails, or wgaf is installed but not there
+labels: ["install"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Two things that explain most of these
+
+        **1. Have you logged out and back in?**
+
+        After installing or updating, GNOME still has the old extension in
+        memory — or none. Wayland has no way to reload one mid-session. Until
+        you log out, `wgaf status` will report the extension as unavailable
+        even though the files are in the right place.
+
+        **2. Does your GNOME meet the requirement?**
+
+        ```sh
+        gnome-shell --version
+        ```
+
+        The extension supports **GNOME Shell 50 only**. On anything earlier
+        GNOME refuses to load it, and the window, workspace and monitor
+        commands are unavailable — while typing, clicking and accessibility
+        keep working. That is expected behaviour rather than a broken install,
+        and [Tested on](https://github.com/Ranrar/wgaf/blob/master/docs/installation.md#tested-on)
+        lists what to expect per distribution.
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before filing
+      options:
+        - label: I have logged out and back in since installing or updating
+          required: true
+        - label: I have checked `gnome-shell --version` against the requirement above
+          required: true
+
+  - type: dropdown
+    id: method
+    attributes:
+      label: How were you installing it?
+      options:
+        - Package (.deb) — Debian, Ubuntu, Mint, Pop!_OS
+        - Package (.rpm) — Fedora, RHEL, CentOS
+        - Package (.rpm) — openSUSE
+        - Arch package (PKGBUILD / makepkg)
+        - Tarball (.tar.gz)
+        - From source (make install)
+        - Building the packages (scripts/package.sh)
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+      placeholder: Ubuntu 26.04 LTS
+    validations:
+      required: true
+
+  - type: input
+    id: gnome
+    attributes:
+      label: GNOME Shell version
+      description: The output of `gnome-shell --version`
+      placeholder: GNOME Shell 50.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: The command and its full output
+      description: |
+        Everything from the command to the last line, including the error.
+        If a build failed, the first error matters more than the last —
+        please include the start of it rather than only the tail.
+      render: shell
+      placeholder: |
+        $ sudo apt install ./wgaf_0.8.4_amd64.deb
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: status
+    attributes:
+      label: "`wgaf status` output, if it installed at all"
+      description: |
+        Leave this empty if the install did not finish. If `wgaf` is not
+        found, say so here — that is a useful answer in itself.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        Was this a fresh install or an update? Had wgaf worked before? Is
+        anything unusual about the machine — no systemd, a non-standard GNOME
+        build, a container?
+    validations:
+      required: false
