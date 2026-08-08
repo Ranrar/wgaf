@@ -38,8 +38,61 @@ if [ -z "${_COMMON_LOADED:-}" ]; then
     # from, so there is one tarball rather than two identical ones under different
     # names.
     TARBALL_NAME="wgaf-$VERSION-$(uname -m).tar.gz"
+
+    # Builds the tarball once, and gives the same bytes to whoever asks next.
+    #
+    # **Both callers must get an identical file**, and that is the whole reason
+    # this is a function rather than a line in each. package-arch.sh needs the
+    # tarball so it can record its sha256 in the PKGBUILD; package-tar.sh
+    # publishes it. When the two produced different tarballs — as they did,
+    # because the install note used to be added in between — the published
+    # PKGBUILD's checksum named a file nobody had, and `makepkg` stopped with a
+    # validity check failure on a release that looked correct from here.
+    #
+    # The note is therefore written into the staged tree *before* any tarball
+    # is created, so there is only ever one tarball to have a checksum of.
     ensure_tarball() {
-        [ -f "$DIST/$TARBALL_NAME" ] || tar -C "$STAGE" -czf "$DIST/$TARBALL_NAME" .
+        [ -f "$DIST/$TARBALL_NAME" ] && return 0
+        write_tarball_note
+        tar -C "$STAGE" -czf "$DIST/$TARBALL_NAME" .
+    }
+
+    # What someone unpacking the tarball has to do that a package would have
+    # done for them. Lands in /usr/share/doc/wgaf/ inside the tarball itself,
+    # so it is there after unpacking rather than only on a web page.
+    write_tarball_note() {
+        cat > "$STAGE/usr/share/doc/wgaf/INSTALL.tarball" <<EOF
+wgaf $VERSION — portable install
+
+Unpack over the filesystem root, as root:
+
+    sudo tar -C / --no-same-owner -xzf $TARBALL_NAME
+
+Look before you do, if you like:
+
+    tar -tzf $TARBALL_NAME
+
+Then set up your configuration. The packages do this for you; a tarball has no
+install step to do it in, so it is yours to run — and note the mode, which the
+daemon insists on because permissions.toml decides what automation may do:
+
+    mkdir -p ~/.config/wgaf && chmod 700 ~/.config/wgaf
+    cp -n /usr/share/doc/wgaf/config.toml ~/.config/wgaf/
+    cp -n /usr/share/doc/wgaf/permissions.toml ~/.config/wgaf/
+    chmod 600 ~/.config/wgaf/config.toml ~/.config/wgaf/permissions.toml
+
+\`cp -n\` so that unpacking a newer tarball never overwrites settings you have
+edited. wgaf runs without these files, treating every capability as allowed.
+$POST_INSTALL_NOTE
+
+To remove it again, delete what the listing showed:
+
+    sudo rm -rf /usr/bin/wgaf /usr/bin/wgaf-daemon \\
+        /usr/share/gnome-shell/extensions/$UUID \\
+        /usr/lib/systemd/user/wgaf-daemon.service \\
+        /usr/lib/udev/rules.d/99-wgaf-uinput.rules \\
+        /usr/share/doc/wgaf
+EOF
     }
 
     # Refuses to build a package out of a tree that was never assembled.

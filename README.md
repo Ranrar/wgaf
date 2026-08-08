@@ -201,7 +201,7 @@ Install from a package for your distribution:
 sudo apt install ./wgaf_*_amd64.deb                       # Debian, Ubuntu
 sudo dnf install ./wgaf-*.x86_64.rpm                      # Fedora, RHEL
 sudo zypper install --allow-unsigned-rpm ./wgaf-*.x86_64.rpm   # openSUSE
-makepkg -si                                               # Arch (PKGBUILD + .tar.gz)
+tar -xzf wgaf-*-arch.tar.gz && cd wgaf-*-arch && makepkg -si   # Arch
 ```
 
 Or build it yourself, which additionally needs Rust and the `libxkbcommon`

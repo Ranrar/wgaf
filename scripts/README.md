@@ -21,7 +21,7 @@ and what has actually been tested.
 | `package.sh` | Builds wgaf, assembles the file tree, then calls the four below | `cargo`, `unzip`, `glib-compile-schemas` |
 | `package-deb.sh` | Debian, Ubuntu, Mint, Pop!_OS | `dpkg-deb`, `fakeroot` |
 | `package-rpm.sh` | Fedora, RHEL, openSUSE | `rpmbuild` (Debian: `sudo apt install rpm`) |
-| `package-arch.sh` | Arch, Manjaro, EndeavourOS | `makepkg` to build; otherwise writes a `PKGBUILD` |
+| `package-arch.sh` | Arch, Manjaro, EndeavourOS | `makepkg` for a `.pkg.tar.zst`; otherwise bundles the `PKGBUILD` for someone on Arch to build |
 | `package-tar.sh` | Everything else | nothing |
 | `_package-common.sh` | Sourced by the others — paths, output helpers, and the post-install fragment they all embed | — |
 

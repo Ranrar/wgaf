@@ -44,7 +44,7 @@ extension. **Input** is typing, clicking and accessibility, which does not.
 | Fedora 43 | `.rpm` | 49 ❌ | ✅ | ✅ | ❌ | ✅ | No |
 | RHEL 10, CentOS 10 | `.rpm` | 47 ❌ | ✅ | ✅ | ❌ | ✅ | No |
 | openSUSE Tumbleweed | `.rpm` | 48–50 ⚠️ | ✅ | ✅ | ⚠️ | ✅ | No |
-| Arch, Manjaro, EndeavourOS | `PKGBUILD` | 49–50 ⚠️ | ✅ | ✅ | ⚠️ | ✅ | No |
+| Arch, Manjaro, EndeavourOS | `-arch.tar.gz` | 49–50 ⚠️ | ✅ | ✅ | ⚠️ | ✅ | No |
 | NixOS | `.tar.gz` | varies ⚠️ | ✅ | ✅ | ⚠️ | ✅ | No |
 | Gentoo | `.tar.gz` | varies ⚠️ | ✅ | ⚠️ | ⚠️ | ✅ | No |
 
@@ -104,12 +104,15 @@ from Fedora.
 
 ### Arch, Manjaro, EndeavourOS
 
-Download **both** the `PKGBUILD` and the `.tar.gz` into the same directory —
-the PKGBUILD builds from that tarball and checks its hash.
-
 ```sh
+tar -xzf wgaf-*-arch.tar.gz
+cd wgaf-*-arch
 makepkg -si
 ```
+
+The archive holds the `PKGBUILD` and its install scriptlet — a few kilobytes.
+`makepkg` downloads the binaries from the same release and checks them against
+the hash in the `PKGBUILD`, so there is nothing else to fetch by hand.
 
 Do not run `makepkg` as root; it asks for a password when it needs one.
 
