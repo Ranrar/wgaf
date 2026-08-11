@@ -259,20 +259,22 @@ Applied in one step, exactly as `wgaf window move` describes: the window jumps
 from the old size to the new one, and the application is told once rather than
 being asked to relayout repeatedly.
 
-**The command returns before the new size can be read back.** For a moment
-afterwards — around 30 ms on a typical desktop — `wgaf window list` still
-reports the *old* rectangle. This matters if you compute a coordinate from it:
+**The command returns once the new size is readable**, so a `wgaf window list`
+straight afterwards reports the new rectangle and a coordinate computed from it
+is the one you meant:
 
 ```sh
-# Wrong: the list may still describe the old size, so this clicks the old centre
 wgaf window resize "$id" 720 560
-wgaf mouse move-to "$new_centre_x" "$new_centre_y"
+wgaf mouse move-to "$new_centre_x" "$new_centre_y"    # aims at the new centre
 ```
 
-Nothing errors — the pointer goes exactly where you sent it, which just is not
-where you meant. If you need the new geometry, poll `wgaf window list` until it
-reports the size you asked for before using it. The same caution applies to
-`wgaf window move`.
+**A size the window will not take is reported, not hidden.** Some windows have a
+minimum size, and a request below it leaves them larger than you asked. That
+comes back as exit code 4 (`unverified`) with the size the window actually has,
+rather than as a success that quietly did something else.
+
+`wgaf window move` still returns before the move is readable — poll
+`wgaf window list` if you need the new position.
 
 ### `wgaf window close <id>`
 
@@ -556,6 +558,12 @@ the same as without `--window`.
 
 Omitting `--window` behaves exactly as before it existed.
 
+`wgaf mouse click` and `wgaf mouse scroll` take `--window` too, and it means
+something different: a click goes where the *pointer* is, not where keyboard
+focus is, so there the flag checks the pointer is over that window and refuses
+otherwise. It never moves the pointer for you. See
+[`wgaf mouse click`](#wgaf-mouse-click-button---window-id).
+
 ### Keyboard layouts
 
 `wgaf type` uses the keyboard layout your desktop is set to, so text arrives as
@@ -744,14 +752,38 @@ $ wgaf mouse position
 1500 700
 ```
 
-### `wgaf mouse click <button>`
+### `wgaf mouse click <button> [--window <id>]`
 
 Clicks (press then release) a mouse button: `left`, `right`, or `middle`.
 
-### `wgaf mouse scroll <dx> <dy>`
+The click goes wherever the pointer already is — clicking is not aimed, it
+happens where the mouse is.
+
+`--window <id>` **refuses the click unless the pointer is over that window.**
+Nothing is clicked otherwise, and the command exits 4 (`unverified`) saying what
+the pointer is over instead. Use it after `wgaf mouse move-to` so a script that
+loses the race — because you moved the mouse, or a window opened over the
+target — fails loudly rather than clicking something else:
+
+```sh
+wgaf mouse move-to "$x" "$y"
+wgaf mouse click left --window "$id"
+```
+
+**It never moves the pointer for you.** Unlike `wgaf type --window`, which
+corrects focus, this only ever refuses: moving the pointer is
+`wgaf mouse move-to`'s job, it needs that capability, and it is your mouse.
+
+Only enforced when `verification_level` in `config.toml` is not `none`.
+
+### `wgaf mouse scroll <dx> <dy> [--window <id>]`
 
 Scrolls the wheel. `dx` is horizontal (positive = right), `dy` is vertical
 (positive = up). Either may be negative.
+
+Scrolls whatever the pointer is over, with the same `--window` guard as
+`wgaf mouse click`. It is worth more here: a scroll delivered to the wrong
+window produces no error and no visible sign — just a list that did not move.
 
 ---
 

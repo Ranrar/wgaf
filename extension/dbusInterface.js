@@ -144,6 +144,10 @@ export const DBUS_INTERFACE_XML = `
       <arg type="i" direction="out" name="x"/>
       <arg type="i" direction="out" name="y"/>
     </method>
+    <method name="GetWindowAtPointer">
+      <arg type="b" direction="out" name="found"/>
+      <arg type="u" direction="out" name="id"/>
+    </method>
     <signal name="WindowCreated">
       <arg type="a{sv}" name="window"/>
     </signal>
@@ -493,5 +497,17 @@ export class WgafDBusInterface {
     GetPointer() {
         const {x, y} = this._pointer.getPointer();
         return [x, y];
+    }
+
+    /* Synchronous, and it must stay that way.
+     *
+     * There is nothing to wait for - the answer is a read of live compositor
+     * state - and waiting would actively make it worse: the value describes one
+     * instant, and the user's hand is on the mouse. See
+     * WindowManager.getWindowAtPointer().
+     */
+    GetWindowAtPointer() {
+        const {found, id} = this._wm.getWindowAtPointer();
+        return [found, id];
     }
 }

@@ -212,6 +212,46 @@ export function resolveGrid(rows, columns, nWorkspaces) {
     return {rows: 1, columns: total};
 }
 
+/** Which of `stacked` contains the point `(x, y)`, topmost first.
+ *
+ * `stacked` is [{id, rect}, ...] in Mutter's stacking order, BOTTOM FIRST -
+ * the order `Meta.Display.sort_windows_by_stacking()` returns, which is also
+ * the order _stackingPosition() reads. So the answer is the LAST entry that
+ * contains the point, not the first. Returns null when the point is over no
+ * window at all, which is an ordinary answer: the desktop background, the top
+ * bar, and a gap between windows are all real places for a pointer to be.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS IS AND IS NOT
+ * ---------------------------------------------------------------------------
+ * This is a RECTANGLE test against frame rects, not Clutter picking. It
+ * answers "which window's frame would a click at this point belong to",
+ * which is the question a targeting guard needs, and it is exact for the
+ * ordinary rectangular case that guard exists to protect.
+ *
+ * Two places it is not the compositor's own answer, stated rather than
+ * discovered later: a window with a non-rectangular or partly transparent
+ * frame is treated as its full rectangle, and override-redirect surfaces
+ * (menus, tooltips, drop-downs) are excluded by the caller - so a click that
+ * would land on an open menu is attributed to the window behind it. Both
+ * failure directions are toward "the pointer is over the target", so the
+ * guard can be permissive in a corner case; it is never wrong in the
+ * direction of refusing a click that would have worked.
+ *
+ * Boundaries are half-open on the right and bottom, matching how a rectangle
+ * of width w starting at x covers columns x..x+w-1. Two windows edge to edge
+ * therefore never both claim the shared boundary pixel.
+ */
+export function topmostAt(stacked, x, y) {
+    for (let i = stacked.length - 1; i >= 0; i--) {
+        const {id, rect} = stacked[i];
+        if (x >= rect.x && x < rect.x + rect.width &&
+            y >= rect.y && y < rect.y + rect.height)
+            return id;
+    }
+    return null;
+}
+
 export class WindowManager {
     constructor() {
         this._display = global.display;
@@ -573,10 +613,53 @@ export class WindowManager {
         win.move_frame(true, x, y);
     }
 
+    /** ResizeWindow: resize a window to `width` x `height`, keeping its
+     * top-left corner where it is.
+     *
+     * The reply means the new size is READABLE, not merely requested.
+     * `move_resize_frame()` returns as soon as Mutter has accepted the request,
+     * and for roughly 30 ms afterwards `get_frame_rect()` - and therefore
+     * `wgaf window list` - still reports the old rectangle. A script that
+     * resizes and then reads back to compute a centre point aims at the old
+     * one, which is how this became a filed defect rather than a curiosity.
+     *
+     * A REQUEST MUTTER CLAMPS IS REPORTED, NOT HIDDEN. The settle condition is
+     * the requested size specifically, so a window with a minimum size larger
+     * than the request - or one that refuses the resize outright - never
+     * satisfies it and raises OperationNotAppliedError naming the size it
+     * actually has. That is an ADR-0007 "unverified" outcome rather than a
+     * failure: nothing malfunctioned, the window is simply not the size that
+     * was asked for, and a caller that assumed otherwise needs to know. The
+     * alternative - waiting for the geometry to stop moving and replying
+     * successfully at whatever size it settled on - would report a clamped
+     * resize as a successful one, which is the same untruth in a new place.
+     */
     resizeWindow(id, width, height) {
         const win = this._requireWindow(id);
-        const rect = win.get_frame_rect();
-        win.move_resize_frame(true, rect.x, rect.y, width, height);
+        const before = win.get_frame_rect();
+
+        // Read ahead of the mutation, as every _confirmGeometrySettled() caller
+        // must: a resize to the size a window already has changes nothing
+        // observable, and waiting for a change that is not coming would report
+        // it as unapplied.
+        const alreadyThere = before.width === width && before.height === height;
+
+        win.move_resize_frame(true, before.x, before.y, width, height);
+
+        return this._confirmGeometrySettled(
+            win,
+            () => win.get_frame_rect(),
+            rect => rect.width === width && rect.height === height,
+            alreadyThere,
+            before,
+            'window did not resize',
+            {
+                expected: `${width}x${height}`,
+                // Empty: _confirmGeometrySettled() already prints the frame
+                // rect, and here that is the whole story.
+                describe: () => '',
+            }
+        );
     }
 
     closeWindow(id) {
@@ -835,6 +918,59 @@ export class WindowManager {
         );
     }
 
+    /** GetWindowAtPointer: which window the pointer is over right now.
+     *
+     * Returns `{found, id}` - `found: false` when the pointer is over no
+     * window, with `id` meaningless in that case. A boolean rather than a
+     * sentinel id, because every id this file hands out is a real
+     * `get_stable_sequence()` and inventing a reserved one would put a
+     * "0 means nothing" rule into every consumer.
+     *
+     * ---------------------------------------------------------------------------
+     * THE POINTER IS READ HERE, NOT PASSED IN
+     * ---------------------------------------------------------------------------
+     * Deliberately, and it is the whole value of the method. A caller that read
+     * the pointer separately and then asked what was under that coordinate
+     * would have a gap between the two reads - and the pointer is the *user's*
+     * pointer, which they can move at any moment. Reading position and
+     * occupancy in one call inside the compositor makes the answer describe one
+     * instant. The daemon's mouse-targeting guard depends on that; a stale
+     * answer there means a click going somewhere nobody chose.
+     *
+     * ---------------------------------------------------------------------------
+     * WHICH WINDOWS COUNT
+     * ---------------------------------------------------------------------------
+     * The same filters _stackingPosition() applies, for the same reasons, plus
+     * visibility - a window the user cannot see cannot be under the pointer:
+     *
+     *  - **Not override-redirect.** Menus and tooltips, dropped as listWindows()
+     *    drops them. See topmostAt()'s note on what that costs.
+     *  - **Showing on its workspace**, and **on the workspace being viewed**.
+     *    A minimized window still has a frame rect and would otherwise claim
+     *    points it is nowhere near.
+     */
+    getWindowAtPointer() {
+        const [x, y] = global.get_pointer();
+        const activeIndex = this._workspaceManager.get_active_workspace_index();
+
+        const visible = this._display.list_all_windows().filter(win => {
+            if (win.is_override_redirect() || win.minimized || !win.showing_on_its_workspace())
+                return false;
+            if (win.on_all_workspaces)
+                return true;
+            const ws = win.get_workspace();
+            return !!ws && ws.index() === activeIndex;
+        });
+
+        const stacked = this._display.sort_windows_by_stacking(visible).map(win => ({
+            id: win.get_stable_sequence(),
+            rect: win.get_frame_rect(),
+        }));
+
+        const id = topmostAt(stacked, x, y);
+        return {found: id !== null, id: id === null ? 0 : id};
+    }
+
     /** How many comparable windows sit below and above `win` in the stacking
      * order.
      *
@@ -977,9 +1113,14 @@ export class WindowManager {
             what,
             {
                 expected: wording.expected,
-                describe: value =>
-                    `${wording.describe(value.state)}, ` +
-                    `${value.rect.width}x${value.rect.height}`,
+                describe: value => {
+                    const state = wording.describe(value.state);
+                    const geometry = `${value.rect.width}x${value.rect.height}`;
+                    // resizeWindow()'s state IS the geometry, so it describes
+                    // itself as nothing rather than printing the same
+                    // rectangle twice in one error message.
+                    return state === '' ? geometry : `${state}, ${geometry}`;
+                },
             },
             // Generous next to confirm.js's default, and for a different
             // reason: this waits on the *client* acknowledging a configure and

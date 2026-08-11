@@ -58,7 +58,10 @@ use zbus::Connection;
 const INPUT_TEST_TITLE: &str = "wgaf input-test";
 
 /// Opens `input-test`, waits for it to hold the keyboard, and returns it with
-/// the window id to aim at.
+/// the window record to aim at.
+///
+/// The whole record rather than just the id, because the pointer tests need
+/// the rectangle to aim into — and asking here keeps it to one lookup.
 ///
 /// # Why the typing tests below have a window at all now
 ///
@@ -78,7 +81,7 @@ const INPUT_TEST_TITLE: &str = "wgaf input-test";
 /// it was only ever a way to stop delivery; with a real target, delivery is the
 /// point, and suppressing it would give up the assertion the window makes
 /// possible.
-async fn app_to_type_into(connection: &Connection, bus_name: &str) -> (TestApp, u32) {
+async fn app_to_type_into(connection: &Connection, bus_name: &str) -> (TestApp, WindowRecord) {
     let app = TestApp::spawn("input-test").await;
     app.wait_for("the input-test window to take keyboard focus", |report| {
         report.bool("window_focused")
@@ -88,14 +91,19 @@ async fn app_to_type_into(connection: &Connection, bus_name: &str) -> (TestApp, 
     let records: Vec<WindowRecordDict> = harness::windows(connection, bus_name, "ListWindows", &())
         .await
         .expect("ListWindows failed — is the wgaf GNOME Shell extension installed and current?");
-    let id = records
+    let record = records
         .into_iter()
         .map(WindowRecord::from)
         .find(|w| w.title == INPUT_TEST_TITLE)
-        .unwrap_or_else(|| panic!("`{INPUT_TEST_TITLE}` is not in `wgaf window list`"))
-        .id;
+        .unwrap_or_else(|| panic!("`{INPUT_TEST_TITLE}` is not in `wgaf window list`"));
 
-    (app, id)
+    (app, record)
+}
+
+/// The centre of a window, in the global coordinate space
+/// `MouseMoveAbsolute` takes.
+fn centre_of(window: &WindowRecord) -> (i32, i32) {
+    (window.x + window.width / 2, window.y + window.height / 2)
 }
 
 /// Kills the spawned daemon even if an assertion panics mid-test, and keeps
@@ -347,7 +355,8 @@ async fn input_methods_succeed_against_a_real_uinput_device() {
 
     // Everything that types is aimed at a window this test opened, so a run
     // where focus is somewhere else is refused rather than sprayed into it.
-    let (app, window) = app_to_type_into(&connection, &daemon_bus_name).await;
+    let (app, target) = app_to_type_into(&connection, &daemon_bus_name).await;
+    let window = target.id;
 
     call_input::<(), _>(
         &connection,
@@ -384,15 +393,125 @@ async fn input_methods_succeed_against_a_real_uinput_device() {
         typed.str("typed")
     );
 
-    // The pointer methods keep no target: a click goes wherever the pointer
-    // is, and wgaf has no equivalent of `--window` for it (backlog §2). They
-    // stay last so that a failure above stops before anything is clicked.
-    call_input::<(), _>(&connection, &daemon_bus_name, "MouseClick", &("left",))
-        .await
-        .expect("MouseClick should succeed");
-    call_input::<(), _>(&connection, &daemon_bus_name, "MouseScroll", &(0i32, 1i32))
-        .await
-        .expect("MouseScroll should succeed");
+    // The pointer half, aimed the same way the keyboard half is: the pointer
+    // is placed inside this test's own window and the click is targeted at it,
+    // so a run where something else is under the pointer is refused rather
+    // than clicked. Kept last so a failure above stops before anything is
+    // clicked at all.
+    let (centre_x, centre_y) = centre_of(&target);
+    call_input::<(i32, i32), _>(
+        &connection,
+        &daemon_bus_name,
+        "MouseMoveAbsolute",
+        &(centre_x, centre_y),
+    )
+    .await
+    .expect("MouseMoveAbsolute should place the pointer inside the input-test window");
+
+    // The application's own account that the pointer arrived, rather than
+    // wgaf's — the same independent-oracle rule the typing assertion follows.
+    app.wait_for("the pointer to be over the input-test window", |report| {
+        report.bool("pointer_in_window")
+    })
+    .await;
+
+    let clicks_before = app.read().expect("report").u64("click_count");
+    call_input::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MouseClickAt",
+        &("left", window),
+    )
+    .await
+    .expect("MouseClickAt should succeed with the pointer over the target");
+    let clicked = app
+        .wait_for("the click to reach the window", |report| {
+            report.u64("click_count") > clicks_before
+        })
+        .await;
+    assert!(
+        clicked.u64("click_count") > clicks_before,
+        "the targeted click never arrived"
+    );
+
+    call_input::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MouseScrollAt",
+        &(0i32, 1i32, window),
+    )
+    .await
+    .expect("MouseScrollAt should succeed with the pointer over the target");
+}
+
+/// The refusal half of the pointer guard, against real Mutter.
+///
+/// The stub tests in `dbus/input_api.rs` cover what the daemon does with each
+/// answer the extension can give; this covers the answer itself being right —
+/// that `GetWindowAtPointer` really does stop naming a window once the pointer
+/// leaves it. Nothing off a live compositor can check that.
+#[ignore = "takes over the desktop: opens an input-test window and moves the real pointer. \
+            Needs a real /dev/uinput and the wgaf GNOME Shell extension — run via \
+            `make test-desktop`."]
+#[tokio::test]
+async fn a_targeted_click_is_refused_when_the_pointer_leaves_the_window() {
+    let pid = std::process::id();
+    let daemon_bus_name = format!("org.wgaf.Test.Input.PointerGuard{pid}");
+    let device_name = format!("wgaf test device pointer guard {pid}");
+
+    let _daemon = spawn_daemon_that_delivers(
+        &daemon_bus_name,
+        &device_name,
+        &format!("pointerguard{pid}"),
+        "",
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+    let (app, target) = app_to_type_into(&connection, &daemon_bus_name).await;
+
+    // Park the pointer above the window's top edge. Whatever is up there —
+    // the top bar, another window, nothing at all — it is not this window,
+    // which is the only property under test.
+    let (centre_x, _) = centre_of(&target);
+    let above_y = (target.y - 40).max(0);
+    call_input::<(i32, i32), _>(
+        &connection,
+        &daemon_bus_name,
+        "MouseMoveAbsolute",
+        &(centre_x, above_y),
+    )
+    .await
+    .expect("MouseMoveAbsolute should place the pointer above the input-test window");
+
+    // The application confirming the pointer has left is what makes the
+    // refusal below meaningful rather than merely observed.
+    app.wait_for("the pointer to leave the input-test window", |report| {
+        !report.bool("pointer_in_window")
+    })
+    .await;
+
+    let clicks_before = app.read().expect("report").u64("click_count");
+    let err = call_input::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "MouseClickAt",
+        &("left", target.id),
+    )
+    .await
+    .expect_err("a click targeted at a window the pointer has left must be refused");
+    assert_eq!(
+        harness::dbus_error_name(&err),
+        Some(wgaf_common::INPUT_ERROR_VERIFICATION_FAILED),
+        "expected a verification failure, got {err:?}"
+    );
+
+    // And nothing was clicked. The refusal is only worth having if it is a
+    // refusal to synthesize, not a complaint after the fact.
+    let after = app.read().expect("report");
+    assert_eq!(
+        after.u64("click_count"),
+        clicks_before,
+        "a refused targeted click must synthesize nothing"
+    );
 }
 
 #[ignore = "takes over the desktop: moves the real pointer to force the device into existence. \
@@ -557,7 +676,8 @@ async fn a_rate_of_zero_disables_the_limiter() {
     // **The payload that escaped.** 4096 characters used to go to whatever had
     // focus; on 2026-08-07 that was a shell prompt. It is aimed at a window
     // this test owns now, so the worst a lost race can do is fail the test.
-    let (_app, window) = app_to_type_into(&connection, &daemon_bus_name).await;
+    let (_app, target) = app_to_type_into(&connection, &daemon_bus_name).await;
+    let window = target.id;
 
     // The same call the previous test refuses at a rate of 1. This one needs
     // a real device, since with the limiter disabled it proceeds to synthesis.

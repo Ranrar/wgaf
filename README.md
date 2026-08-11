@@ -113,7 +113,7 @@ Checked items work today.
 
 ### Installing & platforms
 - [x] GNOME on Wayland
-- [ ] `.deb` and `.rpm` packages
+- [x] `.deb` and `.rpm` packages
 
 ## Use cases
 
@@ -268,6 +268,7 @@ wgaf type "Hello from wgaf"
 wgaf type "Hello" --window 7   # target a window instead of whatever has focus
 wgaf mouse move-to 1500 700
 wgaf mouse click left
+wgaf mouse click left --window 7   # click nothing unless the pointer is over it
 ```
 
 Drive a UI by element name rather than coordinates. Find the element first,
@@ -327,17 +328,19 @@ command can produce.
 
 ## Known issues
 
-- Typed text and clicks go to whatever has keyboard focus at the moment they
-  are sent. `wgaf type` and `wgaf key` can take `--window <id>`, which checks
-  that window is focused first — but it is opt-in per command, and clicks have
-  no equivalent, so it's still best not to use the desktop while a script is
-  running. If one does get away from you, press Escape or run `wgaf stop`.
+- Typed text goes to whatever has keyboard focus, and clicks go wherever the
+  pointer is, at the moment they are sent. `wgaf type`, `wgaf key`,
+  `wgaf mouse click` and `wgaf mouse scroll` all take `--window <id>`, which
+  checks the right window is about to receive it — but it is opt-in per
+  command, so it's still best not to use the desktop while a script is running.
+  If one does get away from you, press Escape or run `wgaf stop`.
 - The keyboard layout is read once when the daemon starts. If you change your
   layout afterwards, restart the daemon so `wgaf type` picks up the new one:
   `systemctl --user restart wgaf-daemon.service`.
-- After `wgaf window move` or `wgaf window resize`, the new position and size
-  take a moment to show up in `wgaf window list`. If you're calculating
-  coordinates from it, read it again until it reports what you asked for.
+- After `wgaf window move`, the new position takes a moment to show up in
+  `wgaf window list`. If you're calculating coordinates from it, read it again
+  until it reports what you asked for. `wgaf window resize` no longer needs
+  this — it waits.
 - `wgaf ping --json` names its result `response`; every other command uses
   `message`.
 - Window and workspace commands need the GNOME Shell extension, and it only

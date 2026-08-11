@@ -38,7 +38,7 @@
 //! sits alongside [`PermissionGate::check`] for a different situation: a
 //! caller (currently only `dbus::input_api::InputApi::verify_target`) that
 //! has already decided allowed/denied/verification-failed by some other
-//! means — a focus precondition, not a policy lookup — and just needs that
+//! means — a focus or pointer precondition, not a policy lookup — and just needs that
 //! decision recorded under the same caller-identity fields `check` itself
 //! logs. It never consults [`policy::PolicyMap`] and cannot deny anything on
 //! its own; see `audit`'s `log_verification_outcome` for the full rationale.
@@ -74,7 +74,7 @@ use std::sync::Mutex;
 use thiserror::Error;
 use zbus::message::Header;
 
-pub use audit::{CallerInfo, Outcome, VerifiedTarget};
+pub use audit::{CallerInfo, Outcome, Precondition, VerifiedTarget};
 pub use policy::{Capability, PolicyMap, PolicyValue};
 
 /// Errors returned by [`PermissionGate::check`]. Each of

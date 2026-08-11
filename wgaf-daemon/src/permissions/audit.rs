@@ -174,8 +174,35 @@ pub(crate) fn log_outcome(capability: Capability, caller: &CallerInfo, outcome: 
 pub struct VerifiedTarget<'a> {
     pub target: &'a str,
     pub app_id: &'a str,
-    pub focused: bool,
+    /// Which precondition was checked, and whether it held.
+    ///
+    /// **Two different questions, and the line has to say which one it
+    /// answered.** Keyboard input needs the target to hold keyboard focus;
+    /// a click needs the pointer to be over it — a window can hold focus
+    /// while the pointer sits over a different one entirely, so a reader
+    /// who cannot tell the two lines apart cannot reconstruct why an action
+    /// was refused.
+    pub precondition: Precondition,
+    pub met: bool,
     pub outcome: Outcome,
+}
+
+/// Which precondition a targeted action checked before synthesizing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precondition {
+    /// The target holds keyboard focus — `TypeTextAt` and the key methods.
+    Focus,
+    /// The pointer is over the target — `MouseClickAt`, `MouseScrollAt`.
+    Pointer,
+}
+
+impl Precondition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+            Self::Pointer => "pointer",
+        }
+    }
 }
 
 /// Logs the outcome of a *targeted* action's own precondition check —
@@ -206,7 +233,8 @@ pub(crate) fn log_verification_outcome(
         process = caller.process_name.as_deref().unwrap_or("<unknown>"),
         target = verified.target,
         app_id = verified.app_id,
-        focused = verified.focused,
+        precondition = verified.precondition.as_str(),
+        met = verified.met,
         outcome = verified.outcome.as_str(),
         "target verification outcome"
     );

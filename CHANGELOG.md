@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-08-11
+
+**This release needs the GNOME Shell extension reinstalled**, and Wayland only
+loads an extension's code at login:
+
+```sh
+make -C extension install
+# then log out and back in
+```
+
+Until you do, `wgaf mouse click --window` fails with a message saying the
+installed extension is older than the daemon. Everything that worked before
+keeps working.
+
+### Added
+
+- **`wgaf mouse click --window <id>` and `wgaf mouse scroll --window <id>`: refuse to click unless the pointer is over the window you meant.** Placing the pointer and clicking it are two separate commands, and it is *your* pointer in between — if you move the mouse, or a window opens over the target, the click still happens and lands on whatever is now underneath. Nothing errors, which is what makes it hard to notice: a scroll delivered to the wrong window produces no message at all, just a list that did not move.
+
+  Naming the window closes that gap. wgaf checks what the pointer is actually over, inside the compositor and at the moment of the click, and clicks nothing if it is not your window — exit code 4, saying what the pointer is over instead. The keyboard has had this since `wgaf type --window`; the pointer did not, which left a hole in a safety feature rather than a missing convenience.
+
+  **It never moves the pointer for you.** `wgaf type --window` corrects focus, because focusing is something wgaf is allowed to do and you can see it happen. Moving the pointer is `wgaf mouse move-to`'s job and needs that permission, and pulling the mouse out from under your hand to make a script succeed is not a correction. So this only ever refuses.
+
+  No new permissions: a targeted click is still `MouseClick`, a targeted scroll still `MouseScroll`. Only enforced when `verification_level` is not `none`, like every other `--window`.
+
+### Changed
+
+- **`wgaf window resize` now returns once the new size can actually be read back.** It used to reply as soon as GNOME accepted the request, so for about 30 ms afterwards `wgaf window list` still described the *old* rectangle — and a script that resized a window and then computed a click position from its size aimed at where the window used to be. Nothing errored; the click simply landed in the wrong place. Resizing was the last window command still doing this; every other one has confirmed since 0.8.4.
+
+  **A size the window will not take is now reported rather than claimed.** Windows have minimum sizes, and a request below one leaves the window larger than you asked for. That comes back as exit code 4 with the size the window really has — the same "attempted, did not take" outcome the other window commands give — instead of a success that quietly did something else.
+
 ## [0.8.5] - 2026-08-08
 
 ### Added

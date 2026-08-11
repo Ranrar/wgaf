@@ -43,7 +43,11 @@ win_x="$(wgaf --json window list |
     jq -r '.[] | select(.title == "wgaf input-test") | .x')"
 win_y="$(wgaf --json window list |
     jq -r '.[] | select(.title == "wgaf input-test") | .y')"
-pass "the window is at ($win_x, $win_y)"
+# The id as well, so the clicks and scrolls below can name the window they
+# meant and be refused if the pointer is somewhere else by the time they run.
+win_id="$(wgaf --json window list |
+    jq -r '.[] | select(.title == "wgaf input-test") | .id')"
+pass "the window is at ($win_x, $win_y), id $win_id"
 
 # --- moving the pointer ----------------------------------------------------------
 
@@ -86,8 +90,21 @@ target_y="$(jq -n --argjson w "$win_y" --argjson b "$btn_y" --argjson s "$btn_h"
 
 before="$(report '.button_activations')"
 wgaf mouse move-to "$target_x" "$target_y"
-wgaf mouse click left
-say "clicked at ($target_x, $target_y), the middle of the button"
+
+# `--window` is what makes the two commands above and below one safe step
+# rather than two hopeful ones. Moving the pointer and clicking are separate
+# commands, and it is your pointer in between — if you move the mouse now, the
+# click would land on whatever you moved it to. Naming the window means wgaf
+# checks what is under the pointer at the moment of the click and clicks
+# nothing if it is not this window.
+if wgaf mouse click left --window "$win_id"; then
+    say "clicked at ($target_x, $target_y), the middle of the button"
+else
+    fail "the click was refused — the pointer was not over the window any more.
+        That is the guard working: nothing was clicked. Leave the mouse alone
+        while this runs."
+    finish
+fi
 
 if wait_for_report_value '.button_activations' "$((before + 1))"; then
     pass "the application reports the button was activated"
@@ -119,10 +136,10 @@ say "moved the pointer over the list"
 # Confirm it is still there before scrolling, rather than assuming.
 #
 # Nothing keeps a pointer where wgaf put it: your own mouse moves the same
-# pointer, and there is no way to aim a scroll at a particular window the way
-# `--window` aims typing. Without this check a scroll sent after the pointer
-# had moved would land somewhere else entirely and this example would report
-# that the list "did not move", which is true and completely misleading.
+# pointer. The scrolls below name the window, so a lost pointer is refused
+# rather than sent somewhere else — this check is here as well because it
+# reports the problem in terms of the application, which is easier to act on
+# than a refused command.
 if ! wait_for_report_value '.pointer_in_window' "true"; then
     fail "the pointer is no longer over the window, so a scroll would go
         elsewhere — leave the mouse alone while this runs."
@@ -137,7 +154,13 @@ scroll_repeatedly() {
     local direction="$1" times="$2" seq_before
     for _ in $(seq 1 "$times"); do
         seq_before="$(report_seq)"
-        wgaf mouse scroll 0 "$direction"
+        # Named, for the reason the click above is: a scroll that misses is
+        # completely silent — no error, no visible sign, just a list that did
+        # not move and an example blaming the wrong thing.
+        wgaf mouse scroll 0 "$direction" --window "$win_id" || {
+            fail "the scroll was refused — the pointer left the window."
+            finish
+        }
         # The application reports again once the view has actually moved, so
         # this waits for that rather than guessing how long scrolling takes.
         wait_for_report_change "$seq_before" || true

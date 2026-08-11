@@ -13,7 +13,9 @@ use zbus::message::Header;
 use wgaf_common::WindowRecord;
 
 use crate::input::{InputBackend, InputError};
-use crate::permissions::{Capability, Outcome, PermissionError, PermissionGate, VerifiedTarget};
+use crate::permissions::{
+    Capability, Outcome, PermissionError, PermissionGate, Precondition, VerifiedTarget,
+};
 use crate::verification::VerificationLevel;
 use crate::windows::{DEFAULT_FOCUS_CONFIRM_TIMEOUT, FocusOutcome, WindowManager, WindowsError};
 
@@ -432,7 +434,8 @@ impl InputApi {
                     VerifiedTarget {
                         target: &window_target(window),
                         app_id: &record.app_id,
-                        focused: true,
+                        precondition: Precondition::Focus,
+                        met: true,
                         outcome: Outcome::Allowed,
                     },
                 )
@@ -453,7 +456,8 @@ impl InputApi {
                     VerifiedTarget {
                         target: &window_target(window),
                         app_id: &record.app_id,
-                        focused: false,
+                        precondition: Precondition::Focus,
+                        met: false,
                         outcome: Outcome::Denied,
                     },
                 )
@@ -475,7 +479,8 @@ impl InputApi {
                 VerifiedTarget {
                     target: &window_target(window),
                     app_id: &record.app_id,
-                    focused,
+                    precondition: Precondition::Focus,
+                    met: focused,
                     outcome,
                 },
             )
@@ -489,6 +494,98 @@ impl InputApi {
                 record.app_id
             ))),
         }
+    }
+
+    /// The pointer counterpart of [`Self::verify_target`]: confirms the
+    /// pointer is over `window` before a click or scroll is synthesized.
+    ///
+    /// # Why this is a different check and not the same one reused
+    ///
+    /// Keyboard delivery has one global piece of state — which window holds
+    /// focus — and that is what [`Self::verify_target`] reads. A click has no
+    /// equivalent: it goes to whatever surface is under the pointer at that
+    /// instant, *independent of keyboard focus*. A window can hold focus while
+    /// the pointer sits over a different one entirely, so checking focus here
+    /// would approve a click landing somewhere else, which is worse than not
+    /// checking at all — it would look like a guard.
+    ///
+    /// # It refuses; it never moves the pointer
+    ///
+    /// [`Self::verify_target`] *corrects* focus when it can, because focusing
+    /// a window is itself a capability it can check ([`Capability::FocusWindow`])
+    /// and a focus change is something the user can see and undo. Warping the
+    /// pointer here would instead perform `MouseMoveAbsolute`'s work without
+    /// `MouseMoveAbsolute` having been granted — the same split that stops
+    /// `MoveWindowToWorkspace` switching workspace and stops a targeted
+    /// `TypeText` un-minimizing a window. A caller who wants the pointer moved
+    /// says so, with `wgaf mouse move-to`, and pays for it with that
+    /// capability.
+    ///
+    /// It is also the user's physical pointer. Moving it out from under
+    /// someone's hand to make an automation call succeed is not a correction.
+    ///
+    /// # The window is resolved for its name, not for its geometry
+    ///
+    /// The occupancy answer comes from the extension in one call
+    /// ([`WindowManager::window_at_pointer`]), which reads the pointer and the
+    /// stacking order at one instant inside the compositor. This method's own
+    /// `list_windows` is only for `WindowNotFound` and for the `app_id` the
+    /// audit line carries — deciding occupancy here, by comparing a separately
+    /// fetched pointer position against a separately fetched rectangle, would
+    /// reintroduce exactly the check-then-act gap the guard exists to close.
+    async fn verify_pointer_target(
+        &self,
+        capability: Capability,
+        window: u32,
+        connection: &zbus::Connection,
+        header: &Header<'_>,
+    ) -> Result<WindowRecord, InputApiError> {
+        let windows = self.windows.list_windows().await?;
+        let record = windows
+            .into_iter()
+            .find(|w| w.id == window)
+            .ok_or(WindowsError::WindowNotFound(window))?;
+
+        let under_pointer = self.windows.window_at_pointer().await?;
+        let met = under_pointer == Some(window);
+
+        self.permissions
+            .log_verification_outcome(
+                capability,
+                connection,
+                header,
+                VerifiedTarget {
+                    target: &window_target(window),
+                    app_id: &record.app_id,
+                    precondition: Precondition::Pointer,
+                    met,
+                    outcome: if met {
+                        Outcome::Allowed
+                    } else {
+                        Outcome::VerificationFailed
+                    },
+                },
+            )
+            .await;
+
+        if met {
+            return Ok(record);
+        }
+
+        // Naming what the pointer IS over, not just what it is not over: the
+        // usual cause is the user having moved the mouse, and the second most
+        // usual is aiming at a window that another one covers. Both are
+        // diagnosable from the id, and neither is from a bare refusal.
+        let over = match under_pointer {
+            Some(other) => format!("window {other}"),
+            None => "no window".to_string(),
+        };
+        Err(InputApiError::VerificationFailed(format!(
+            "the pointer is over {over}, not window {window} (`{}`) — nothing was synthesized. \
+             Move the pointer with `wgaf mouse move-to` first, or drop `--window` to click \
+             wherever it already is",
+            record.app_id
+        )))
     }
 }
 
@@ -795,6 +892,48 @@ impl InputApi {
         Ok(self.backend.mouse_click(button).await?)
     }
 
+    /// Like [`Self::mouse_click`], but first confirms the pointer is over
+    /// `window`, and clicks nothing if it is not.
+    ///
+    /// # What this guards, and what it does not
+    ///
+    /// It closes the check-then-act gap between placing the pointer and
+    /// clicking: `wgaf mouse move-to` followed by `wgaf mouse click` is two
+    /// processes and two round trips, and the pointer is the *user's* pointer
+    /// — they can move it in between, and during `examples/mouse.sh` the
+    /// maintainer did exactly that and the scroll step passed anyway, having
+    /// scrolled something else entirely.
+    ///
+    /// It does not make the click land somewhere the pointer is not. Nothing
+    /// can: Wayland gives no client a way to direct a click at a surface, and
+    /// this project respects that rather than routing around it. The guard's
+    /// whole power is **refusing** — see [`Self::verify_pointer_target`].
+    ///
+    /// # `verification_level = "none"`
+    ///
+    /// Behaves exactly like [`Self::mouse_click`]: `window` is accepted and
+    /// never consulted, matching [`Self::type_text_at`] so one setting governs
+    /// every targeted method rather than the pointer ones opting out
+    /// separately.
+    async fn mouse_click_at(
+        &self,
+        button: &str,
+        window: u32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::MouseClick, connection, &header)
+            .await?;
+        // `!= None` rather than `== Basic`, for the reason `type_text_at`
+        // states at length: it fails toward performing the check.
+        if self.verification_level != VerificationLevel::None {
+            self.verify_pointer_target(Capability::MouseClick, window, connection, &header)
+                .await?;
+        }
+        Ok(self.backend.mouse_click(button).await?)
+    }
+
     /// Scrolls: `dx` horizontal (`REL_HWHEEL`, positive = right), `dy`
     /// vertical (`REL_WHEEL`, positive = up).
     async fn mouse_scroll(
@@ -807,6 +946,31 @@ impl InputApi {
         self.permissions
             .check(Capability::MouseScroll, connection, &header)
             .await?;
+        Ok(self.backend.mouse_scroll(dx, dy).await?)
+    }
+
+    /// Like [`Self::mouse_scroll`], but first confirms the pointer is over
+    /// `window`, and scrolls nothing if it is not.
+    ///
+    /// Same guard and same limits as [`Self::mouse_click_at`]. Scrolling is
+    /// the case that motivated it: a scroll delivered to the wrong window is
+    /// silent — no error, no visible misfire, just a list that did not move
+    /// and a script that reports the wrong cause.
+    async fn mouse_scroll_at(
+        &self,
+        dx: i32,
+        dy: i32,
+        window: u32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), InputApiError> {
+        self.permissions
+            .check(Capability::MouseScroll, connection, &header)
+            .await?;
+        if self.verification_level != VerificationLevel::None {
+            self.verify_pointer_target(Capability::MouseScroll, window, connection, &header)
+                .await?;
+        }
         Ok(self.backend.mouse_scroll(dx, dy).await?)
     }
 }
@@ -984,6 +1148,19 @@ mod tests {
         /// focus-stealing prevention silently declining the request:
         /// `FocusWindow` succeeds and nothing else happens.
         focus_succeeds_and_emits_for: Option<u32>,
+        /// What `GetWindowAtPointer` answers: `Some(id)`, or `None` for a
+        /// pointer over no window at all.
+        ///
+        /// A knob rather than geometry, because `verify_pointer_target`
+        /// deliberately does not do the hit test — the extension does, in one
+        /// call, so that position and occupancy describe one instant. What is
+        /// worth testing here is what the daemon does with each possible
+        /// answer, and this expresses all three: the target, another window,
+        /// nothing.
+        window_at_pointer: Option<u32>,
+        /// Set if `WarpPointer` is ever called, so a test can assert the
+        /// pointer guard refuses without moving anything.
+        warped: Arc<AtomicBool>,
     }
 
     #[zbus::interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
@@ -1060,10 +1237,17 @@ mod tests {
             vec![]
         }
         fn warp_pointer(&self, x: i32, y: i32) -> (i32, i32) {
+            self.warped.store(true, Ordering::SeqCst);
             (x, y)
         }
         fn get_pointer(&self) -> (i32, i32) {
             (0, 0)
+        }
+        fn get_window_at_pointer(&self) -> (bool, u32) {
+            match self.window_at_pointer {
+                Some(id) => (true, id),
+                None => (false, 0),
+            }
         }
 
         #[zbus(signal)]
@@ -1087,7 +1271,25 @@ mod tests {
         focused: bool,
         focus_succeeds_and_emits_for: Option<u32>,
     ) -> WindowManager {
+        // The pointer is over nothing, which is the only honest default for a
+        // stub with no geometry: the focus tests never ask, and a test that
+        // does ask says what it wants.
+        manager_against_stub_with_pointer(tag, focused, focus_succeeds_and_emits_for, None)
+            .await
+            .0
+    }
+
+    /// As [`manager_against_stub`], plus the stub's `window_at_pointer`
+    /// answer, and returning the flag that records whether `WarpPointer` was
+    /// ever called.
+    async fn manager_against_stub_with_pointer(
+        tag: &str,
+        focused: bool,
+        focus_succeeds_and_emits_for: Option<u32>,
+        window_at_pointer: Option<u32>,
+    ) -> (WindowManager, Arc<AtomicBool>) {
         let bus_name = format!("org.wgaf.Test.VerifyTarget{tag}{}", std::process::id());
+        let warped = Arc::new(AtomicBool::new(false));
         let stub_connection = zbus::connection::Builder::session()
             .expect("session bus builder")
             .name(bus_name.as_str())
@@ -1097,6 +1299,8 @@ mod tests {
                 StubExtension {
                     focused: AtomicBool::new(focused),
                     focus_succeeds_and_emits_for,
+                    window_at_pointer,
+                    warped: Arc::clone(&warped),
                 },
             )
             .expect("serve stub extension")
@@ -1118,6 +1322,7 @@ mod tests {
             "org.gnome.Mutter.DisplayConfig",
         )
         .await
+        .map(|manager| (manager, warped))
         .expect("connect to the stub extension")
     }
 
@@ -1279,6 +1484,149 @@ mod tests {
         assert!(
             matches!(err, InputApiError::WindowNotFound(_)),
             "got {err:?}"
+        );
+    }
+
+    /* The pointer guard (`verify_pointer_target`), behind `MouseClickAt` and
+     * `MouseScrollAt`.
+     *
+     * Three answers the extension can give, and all three are covered: the
+     * pointer is over the target, over a different window, or over nothing.
+     * The middle one is the case that matters most and the one a naive guard
+     * gets wrong — "some window is under the pointer" is not "the right
+     * window is under the pointer". */
+
+    #[tokio::test]
+    async fn a_pointer_over_the_target_passes_the_guard() {
+        let (manager, _) =
+            manager_against_stub_with_pointer("PointerOver", false, None, Some(STUB_WINDOW_ID))
+                .await;
+        let api = make_api(manager, "[capabilities]\n", VerificationLevel::Basic);
+        let connection = zbus::Connection::session().await.expect("session bus");
+        let msg = synthetic_message();
+
+        let record = api
+            .verify_pointer_target(
+                Capability::MouseClick,
+                STUB_WINDOW_ID,
+                &connection,
+                &msg.header(),
+            )
+            .await
+            .expect("the pointer is over the target, so the click may proceed");
+        assert_eq!(record.id, STUB_WINDOW_ID);
+    }
+
+    /// Focus is deliberately not consulted: the stub's window IS focused here
+    /// and the pointer is elsewhere, so a guard that checked focus by mistake
+    /// would pass this and approve a click landing in another window.
+    #[tokio::test]
+    async fn a_pointer_over_a_different_window_is_refused_even_when_the_target_is_focused() {
+        let other = STUB_WINDOW_ID + 41;
+        let (manager, _) =
+            manager_against_stub_with_pointer("PointerElsewhere", true, None, Some(other)).await;
+        let api = make_api(manager, "[capabilities]\n", VerificationLevel::Basic);
+        let connection = zbus::Connection::session().await.expect("session bus");
+        let msg = synthetic_message();
+
+        let err = api
+            .verify_pointer_target(
+                Capability::MouseClick,
+                STUB_WINDOW_ID,
+                &connection,
+                &msg.header(),
+            )
+            .await
+            .expect_err("a click must not be approved for a window the pointer is not over");
+        match err {
+            InputApiError::VerificationFailed(message) => assert!(
+                message.contains(&other.to_string()),
+                "the refusal must name what the pointer IS over, so the cause is \
+                 diagnosable; got: {message}"
+            ),
+            other => panic!("expected VerificationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pointer_over_no_window_is_refused_and_says_so() {
+        let (manager, _) =
+            manager_against_stub_with_pointer("PointerNowhere", true, None, None).await;
+        let api = make_api(manager, "[capabilities]\n", VerificationLevel::Basic);
+        let connection = zbus::Connection::session().await.expect("session bus");
+        let msg = synthetic_message();
+
+        let err = api
+            .verify_pointer_target(
+                Capability::MouseScroll,
+                STUB_WINDOW_ID,
+                &connection,
+                &msg.header(),
+            )
+            .await
+            .expect_err("the desktop background is not the target window");
+        match err {
+            InputApiError::VerificationFailed(message) => assert!(
+                message.contains("no window"),
+                "an empty point must be distinguishable from the wrong window; got: {message}"
+            ),
+            other => panic!("expected VerificationFailed, got {other:?}"),
+        }
+    }
+
+    /// The guard resolves the id before asking about the pointer, so a bad id
+    /// is `WindowNotFound` rather than a confusing "the pointer is not over
+    /// window 1000".
+    #[tokio::test]
+    async fn an_unknown_window_id_is_window_not_found_on_the_pointer_path_too() {
+        let (manager, _) =
+            manager_against_stub_with_pointer("PointerNotFound", true, None, Some(STUB_WINDOW_ID))
+                .await;
+        let api = make_api(manager, "[capabilities]\n", VerificationLevel::Basic);
+        let connection = zbus::Connection::session().await.expect("session bus");
+        let msg = synthetic_message();
+
+        let err = api
+            .verify_pointer_target(
+                Capability::MouseClick,
+                STUB_WINDOW_ID + 999,
+                &connection,
+                &msg.header(),
+            )
+            .await
+            .expect_err("an id absent from ListWindows cannot be a pointer target");
+        assert!(
+            matches!(err, InputApiError::WindowNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// The guard never corrects, and this is the test that pins it.
+    ///
+    /// Warping the pointer would perform `MouseMoveAbsolute`'s work without
+    /// that capability, and would move the user's physical pointer to make an
+    /// automation call succeed. A future "helpful" change would break this.
+    #[tokio::test]
+    async fn a_refused_pointer_target_does_not_move_the_pointer() {
+        let (manager, warped) =
+            manager_against_stub_with_pointer("PointerNoWarp", true, None, None).await;
+        let api = make_api(manager, "[capabilities]\n", VerificationLevel::Basic);
+        let connection = zbus::Connection::session().await.expect("session bus");
+        let msg = synthetic_message();
+
+        api.verify_pointer_target(
+            Capability::MouseClick,
+            STUB_WINDOW_ID,
+            &connection,
+            &msg.header(),
+        )
+        .await
+        .expect_err("the pointer is over nothing, so this must be refused");
+
+        assert!(
+            !warped.load(Ordering::SeqCst),
+            "a refused targeted click must leave the pointer exactly where the user put it — \
+             warping it would perform MouseMoveAbsolute's work without that capability"
         );
     }
 

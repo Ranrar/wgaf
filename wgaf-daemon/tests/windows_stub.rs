@@ -108,6 +108,11 @@ struct StubWindowState {
     on_all_workspaces: bool,
 }
 
+/// The smallest size the stub's canned window will accept, standing in for the
+/// minimum size a real toolkit enforces. Anything under it is refused rather
+/// than silently clamped.
+const MIN_STUB_WINDOW_SIZE: i32 = 100;
+
 fn canned_workspace() -> WorkspaceRecord {
     WorkspaceRecord {
         index: 0,
@@ -205,6 +210,34 @@ impl StubExtension {
         *self.pointer.lock().expect("stub pointer lock")
     }
 
+    /// Real occupancy, computed from the stub's own pointer and the canned
+    /// window's rectangle — not a canned answer.
+    ///
+    /// It has to be real for the pointer guard's tests to mean anything: a
+    /// stub that always said "yes, the target" would pass a test asserting a
+    /// targeted click succeeds while proving nothing about the check, and a
+    /// stub that always said "no" would pass the refusal test for the wrong
+    /// reason. Here `WarpPointer` moves the pointer and this answers
+    /// accordingly, so a test drives the guard both ways through the same
+    /// mechanism a real session would.
+    ///
+    /// Half-open edges, matching `topmostAt()` in `extension/windows.js`.
+    /// A minimized window is under nothing, which is the one visibility rule
+    /// the canned single-window fixture can express.
+    fn get_window_at_pointer(&self) -> (bool, u32) {
+        let state = self.window.lock().expect("stub window lock");
+        if state.minimized {
+            return (false, 0);
+        }
+        let window = canned_window_in(&state);
+        let (x, y) = *self.pointer.lock().expect("stub pointer lock");
+        let inside = x >= window.x
+            && x < window.x + window.width
+            && y >= window.y
+            && y < window.y + window.height;
+        (inside, if inside { window.id } else { 0 })
+    }
+
     fn list_windows(&self) -> Vec<WindowRecordDict> {
         vec![canned_window_in(&self.window.lock().expect("stub window lock")).into()]
     }
@@ -286,8 +319,23 @@ impl StubExtension {
         self.check_known(id)
     }
 
-    fn resize_window(&self, id: u32, _width: i32, _height: i32) -> Result<(), StubExtensionError> {
-        self.check_known(id)
+    /// Refuses a size no real window would take, the way the real extension
+    /// does: `ResizeWindow` confirms the requested size is readable and raises
+    /// `OperationNotApplied` when the compositor clamps the request.
+    ///
+    /// Modelled here because the *translation* of that error is what broke —
+    /// `resize_window` was on the narrow `translate_window_error`, so the name
+    /// fell through to a generic failure and a clamped resize was
+    /// indistinguishable from a broken daemon. Found on a real desktop
+    /// 2026-08-11; this is the CI-runnable version of that run.
+    fn resize_window(&self, id: u32, width: i32, height: i32) -> Result<(), StubExtensionError> {
+        self.check_known(id)?;
+        if width < MIN_STUB_WINDOW_SIZE || height < MIN_STUB_WINDOW_SIZE {
+            return Err(StubExtensionError::OperationNotApplied(format!(
+                "window did not resize: expected {width}x{height}, got 800x600"
+            )));
+        }
+        Ok(())
     }
 
     fn close_window(&self, id: u32) -> Result<(), StubExtensionError> {
@@ -1136,6 +1184,63 @@ async fn an_unknown_workspace_index_reports_workspace_not_found() {
 
         assert_named_error(err, wgaf_common::WINDOWS_ERROR_WORKSPACE_NOT_FOUND);
     }
+}
+
+/// A resize the window will not take comes back as `OperationNotApplied`, by
+/// name, with the extension's own explanation intact.
+///
+/// # This is here because it was broken in production and nothing noticed
+///
+/// `ResizeWindow` began confirming its own effect, which made it the first
+/// non-state operation able to raise this error — and it was still on the
+/// narrow `translate_window_error`, which knows only `WindowNotFound`. So the
+/// extension's name fell through and a clamped resize arrived as
+/// `org.freedesktop.zbus.Error`: a caller could not tell "the window refused
+/// that size" from "the daemon fell over". Found by a live desktop run
+/// (2026-08-11) rather than by anything in CI, which is the gap this closes.
+///
+/// The name is what is asserted, not just the failure. A generic error is what
+/// the bug produced, so a test that only checked `is_err()` would have passed
+/// throughout.
+#[tokio::test]
+async fn a_resize_the_window_refuses_keeps_its_error_name() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.ResizeClamp{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.ResizeClamp{pid}");
+
+    start_stub_extension(&extension_bus_name).await;
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("resizeclamp{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let err = call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "ResizeWindow",
+        &(canned_window().id, 1i32, 1i32),
+    )
+    .await
+    .expect_err("a size the window will not take must not be reported as success");
+
+    let description = assert_named_error(err, wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED);
+    assert!(
+        description.contains("did not resize"),
+        "the extension's own explanation must survive translation, got: {description}"
+    );
+
+    // A size it will take still succeeds — the refusal above is about the
+    // request, not about resizing being broken.
+    call_windows::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "ResizeWindow",
+        &(canned_window().id, 640i32, 480i32),
+    )
+    .await
+    .expect("an ordinary resize must still succeed");
 }
 
 /// Removing the last remaining workspace is refused by name, and the refusal

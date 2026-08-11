@@ -96,21 +96,33 @@ from your applications while a run is in progress — see the
 
 ## Action verification
 
-`--window <id>` on `wgaf type`/`wgaf key press`/`wgaf key release`/
-`wgaf key combo` (see the [CLI reference](cli-reference.md#targeting-a-specific-window))
-asks the daemon to confirm the named window is focused — correcting it first
-if it isn't — before sending anything. `verification_level` controls how much
-of that actually happens:
+`--window <id>` asks the daemon to check the window is really the one about to
+receive the input, before sending anything. What it checks depends on what is
+being sent, because keyboard and pointer input are delivered differently:
+
+| Commands | What is checked |
+|---|---|
+| `wgaf type`, `wgaf key press`/`release`/`combo` | That the window holds keyboard focus — **correcting it first** if it doesn't, since focusing is something wgaf can do and you can see. |
+| `wgaf mouse click`, `wgaf mouse scroll` | That the pointer is over the window. This one only ever **refuses**: moving the pointer is `wgaf mouse move-to`'s job, needs that permission, and it is your mouse. |
+
+They are separate questions, not one check reused — a window can hold keyboard
+focus while the pointer sits over a different one entirely.
+
+`verification_level` controls how much of it actually happens:
 
 | Value | Meaning |
 |---|---|
 | `"none"` | `--window` is accepted but never checked. Exactly the behaviour from before this setting existed. |
-| `"basic"` | The default. A named target that can't be confirmed focused fails the call rather than being typed into anyway. |
+| `"basic"` | The default. A named target that can't be confirmed fails the call rather than being typed or clicked into anyway. |
 | `"strict"` | Reserved for an AT-SPI-based post-check that doesn't exist yet. Naming it is rejected at daemon startup, not silently run as `"basic"` — the daemon won't claim to perform a check it doesn't actually have. |
 
 `basic` being the default is a deliberate choice: a `--window` target is
 guarded unless you turn checking off, rather than only for scripts that know
 to opt into `verification_level` themselves.
+
+Targeting adds no permissions of its own — a targeted click is still
+`MouseClick`, targeted typing still `TypeText`. See the
+[CLI reference](cli-reference.md#targeting-a-specific-window).
 
 ## `permissions.toml` — per-capability policy
 

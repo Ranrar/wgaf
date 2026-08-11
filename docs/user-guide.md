@@ -253,6 +253,18 @@ monitors of different sizes leave gaps: with a short monitor beside a tall one,
 a position can be inside the overall rectangle and still on no screen. The
 error lists your monitors so you can see where the gap is.
 
+Placing the pointer and clicking it are two separate commands, and it is your
+pointer in between — if you move the mouse, the click still happens, on
+whatever is under it now. Name the window to make that a refusal instead:
+
+```sh
+wgaf mouse move-to 1500 700
+wgaf mouse click left --window 42     # clicks nothing unless the pointer is over window 42
+```
+
+This matters most for scrolling, where a miss is completely silent: the wheel
+turns somewhere else and all you see is a list that did not move.
+
 Clicking a specific thing this way means knowing its coordinates, which change
 whenever a window moves. Prefer the next section where you can.
 

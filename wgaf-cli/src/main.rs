@@ -366,12 +366,28 @@ enum MouseCommand {
     Position,
 
     /// Click (press then release) a mouse button.
+    ///
+    /// The click goes wherever the pointer already is. Pass `--window` to
+    /// refuse the click unless the pointer is over that window.
     Click {
         /// Mouse button to click: `left`, `right`, or `middle`.
         button: String,
+
+        /// Click only if the pointer is over this window, and refuse
+        /// otherwise.
+        ///
+        /// Unlike `wgaf type --window`, this never moves anything to make
+        /// the click possible — moving the pointer is `wgaf mouse move-to`,
+        /// and it is your pointer. Only enforced when `verification_level`
+        /// in `config.toml` is not `none`.
+        #[arg(long)]
+        window: Option<u32>,
     },
 
     /// Scroll the mouse wheel.
+    ///
+    /// Scrolls whatever the pointer is over. Pass `--window` to refuse
+    /// unless that is the window you meant.
     Scroll {
         /// Horizontal scroll amount, positive = right. May be negative.
         #[arg(allow_hyphen_values = true)]
@@ -379,6 +395,14 @@ enum MouseCommand {
         /// Vertical scroll amount, positive = up. May be negative.
         #[arg(allow_hyphen_values = true)]
         dy: i32,
+
+        /// Scroll only if the pointer is over this window, and refuse
+        /// otherwise.
+        ///
+        /// Worth more here than on `click`: a scroll sent to the wrong
+        /// window does nothing visible and reports no error.
+        #[arg(long)]
+        window: Option<u32>,
     },
 }
 
@@ -836,11 +860,11 @@ async fn run(cli: Cli) -> CliResult<Outcome> {
                 commands::input::mouse_move_to(bus_name, x, y, json).await?
             }
             MouseCommand::Position => commands::input::mouse_position(bus_name, json).await?,
-            MouseCommand::Click { button } => {
-                commands::input::mouse_click(bus_name, &button, json).await?
+            MouseCommand::Click { button, window } => {
+                commands::input::mouse_click(bus_name, &button, window, json).await?
             }
-            MouseCommand::Scroll { dx, dy } => {
-                commands::input::mouse_scroll(bus_name, dx, dy, json).await?
+            MouseCommand::Scroll { dx, dy, window } => {
+                commands::input::mouse_scroll(bus_name, dx, dy, window, json).await?
             }
         },
         Command::A11y { command } => match command {
@@ -1265,8 +1289,11 @@ mod tests {
         let cli = Cli::try_parse_from(["wgaf", "mouse", "click", "left"]).expect("parse");
         match cli.command {
             Command::Mouse {
-                command: MouseCommand::Click { button },
-            } => assert_eq!(button, "left"),
+                command: MouseCommand::Click { button, window },
+            } => {
+                assert_eq!(button, "left");
+                assert_eq!(window, None);
+            }
             _ => panic!("expected Mouse(Click)"),
         }
     }
@@ -1276,10 +1303,45 @@ mod tests {
         let cli = Cli::try_parse_from(["wgaf", "mouse", "scroll", "0", "-5"]).expect("parse");
         match cli.command {
             Command::Mouse {
-                command: MouseCommand::Scroll { dx, dy },
+                command: MouseCommand::Scroll { dx, dy, window },
             } => {
                 assert_eq!(dx, 0);
                 assert_eq!(dy, -5);
+                assert_eq!(window, None);
+            }
+            _ => panic!("expected Mouse(Scroll)"),
+        }
+    }
+
+    /// The pointer guard has to be reachable from the CLI to be worth
+    /// anything, and it is opt-in — so both the presence and the absence of
+    /// the flag are pinned, here and in the two tests above.
+    #[test]
+    fn parses_mouse_click_with_window() {
+        let cli = Cli::try_parse_from(["wgaf", "mouse", "click", "left", "--window", "7"])
+            .expect("parse");
+        match cli.command {
+            Command::Mouse {
+                command: MouseCommand::Click { button, window },
+            } => {
+                assert_eq!(button, "left");
+                assert_eq!(window, Some(7));
+            }
+            _ => panic!("expected Mouse(Click)"),
+        }
+    }
+
+    #[test]
+    fn parses_mouse_scroll_with_window() {
+        let cli = Cli::try_parse_from(["wgaf", "mouse", "scroll", "0", "-5", "--window", "7"])
+            .expect("parse");
+        match cli.command {
+            Command::Mouse {
+                command: MouseCommand::Scroll { dx, dy, window },
+            } => {
+                assert_eq!(dx, 0);
+                assert_eq!(dy, -5);
+                assert_eq!(window, Some(7));
             }
             _ => panic!("expected Mouse(Scroll)"),
         }

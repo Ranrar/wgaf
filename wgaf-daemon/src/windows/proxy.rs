@@ -154,6 +154,22 @@ pub(crate) trait ShellExtension {
     /// The pointer's current position in global logical pixels.
     fn get_pointer(&self) -> zbus::Result<(i32, i32)>;
 
+    /// Which window the pointer is over right now: `(found, id)`, with `id`
+    /// meaningless when `found` is false.
+    ///
+    /// **The extension reads the pointer itself rather than taking a
+    /// coordinate**, so position and occupancy describe one instant. A daemon
+    /// that called [`Self::get_pointer`] and then asked what was at that
+    /// coordinate would leave a gap the user's own hand can move through — and
+    /// the answer exists to decide whether a click may be synthesized.
+    ///
+    /// Windows that cannot be under the pointer are excluded: override-redirect
+    /// surfaces, minimized windows, and anything not on the workspace being
+    /// viewed. The test is against frame rectangles rather than Clutter
+    /// picking; see `topmostAt()` in `extension/windows.js` for what that costs
+    /// at the edges.
+    fn get_window_at_pointer(&self) -> zbus::Result<(bool, u32)>;
+
     /// A window appeared, carrying the same record shape `ListWindows` returns.
     ///
     /// **The record is blank at this point, and the daemon keeps only the id.**
@@ -563,6 +579,10 @@ mod tests {
                 Args::new(vec![i.clone(), i.clone()], vec![i.clone(), i.clone()]),
             ),
             ("GetPointer", Args::new(vec![], vec![i.clone(), i.clone()])),
+            (
+                "GetWindowAtPointer",
+                Args::new(vec![], vec![b.clone(), u.clone()]),
+            ),
         ]
         .into_iter()
         .map(|(name, args)| (name.to_string(), args))

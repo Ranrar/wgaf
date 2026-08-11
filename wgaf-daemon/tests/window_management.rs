@@ -406,6 +406,22 @@ async fn resize_window_changes_the_size_the_application_reports() {
     .await
     .expect("ResizeWindow failed against the real extension");
 
+    // **Read back immediately, with no waiting at all.** This is the assertion
+    // the open S3 was about: `ResizeWindow` used to reply as soon as Mutter
+    // accepted the request, so for ~30 ms afterwards `ListWindows` still
+    // described the old rectangle and a script computing a centre point from
+    // it aimed at the wrong place. A `wait_for` here would pass either way and
+    // prove nothing.
+    let after = fixture.window(MAIN_TITLE).await;
+    assert_eq!(
+        (after.width, after.height),
+        (NEW_WIDTH, NEW_HEIGHT),
+        "ResizeWindow returned before the new size was readable — `wgaf window list` still \
+         reports {}x{}. The reply is supposed to mean the resize has landed.",
+        after.width,
+        after.height
+    );
+
     fixture
         .app
         .try_wait_for(SETTLE, |report| {
@@ -421,6 +437,54 @@ async fn resize_window_changes_the_size_the_application_reports() {
                     .unwrap_or_else(|| "<none>".into())
             )
         });
+}
+
+/// A resize the window will not take is reported, not reported as success.
+///
+/// The old behaviour returned immediately and unconditionally, so a clamped
+/// request was indistinguishable from an honoured one — the caller was told
+/// "resized" and got a window of some other size. Now the confirmation waits
+/// for the size that was asked for, and a size the window refuses comes back
+/// as `OperationNotApplied` (ADR-0007 `Unverified`, exit 4) naming what it
+/// actually is.
+///
+/// 1x1 rather than a size near the real minimum: GTK's minimum depends on the
+/// window's own content and this test has no business knowing it, but nothing
+/// with a title bar is one pixel wide.
+#[tokio::test]
+#[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
+            Run deliberately after `make test-apps`, with --test-threads=1."]
+async fn a_resize_the_window_refuses_is_reported_rather_than_claimed() {
+    let _lock = lock_window_test().await;
+    let fixture = Fixture::start("resizeclamped").await;
+
+    let main = fixture.window(MAIN_TITLE).await;
+    let err = harness::windows::<(), _>(
+        &fixture.connection,
+        &fixture.bus_name,
+        "ResizeWindow",
+        &(main.id, 1i32, 1i32),
+    )
+    .await
+    .expect_err("a 1x1 resize cannot be honoured and must not be reported as success");
+
+    match err {
+        zbus::Error::MethodError(name, _, _) => assert_eq!(
+            name.as_str(),
+            wgaf_common::WINDOWS_ERROR_OPERATION_NOT_APPLIED,
+            "a clamped resize should be OperationNotApplied"
+        ),
+        other => panic!("expected a named MethodError, got {other:?}"),
+    }
+
+    // The window is still usable — a refused resize is not a broken one.
+    let after = fixture.window(MAIN_TITLE).await;
+    assert!(
+        after.width > 1 && after.height > 1,
+        "the window was left at {}x{} after a refused resize",
+        after.width,
+        after.height
+    );
 }
 
 /// `CloseWindow` closes the window it names, and only that one.

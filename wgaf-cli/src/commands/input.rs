@@ -270,34 +270,90 @@ struct PointerPosition {
     y: i32,
 }
 
-pub async fn mouse_click(bus_name: &str, button: &str, json: bool) -> CliResult<()> {
+/// `window` asks the daemon to confirm the pointer is over that window before
+/// clicking, and to click nothing if it is not.
+///
+/// **A different question from [`type_text`]'s `window`**, despite the same
+/// flag name: that one is about keyboard focus and corrects it when it can,
+/// this one is about what the pointer is over and only ever refuses. See
+/// `MouseClickAt` in the daemon for why moving the pointer would be the wrong
+/// favour.
+pub async fn mouse_click(
+    bus_name: &str,
+    button: &str,
+    window: Option<u32>,
+    json: bool,
+) -> CliResult<()> {
     let connection = connect().await?;
-    connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::INPUT_OBJECT_PATH,
-            Some(wgaf_common::INPUT_INTERFACE_NAME),
-            "MouseClick",
-            &(button,),
-        )
-        .await
-        .map_err(map_err)?;
-    crate::output::print_ok(json, &format!("clicked {button} mouse button"));
+    let message = match window {
+        Some(window) => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "MouseClickAt",
+                    &(button, window),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("clicked {button} mouse button in window {window}")
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "MouseClick",
+                    &(button,),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("clicked {button} mouse button")
+        }
+    };
+    crate::output::print_ok(json, &message);
     Ok(())
 }
 
-pub async fn mouse_scroll(bus_name: &str, dx: i32, dy: i32, json: bool) -> CliResult<()> {
+/// See [`mouse_click`]'s doc comment for what `window` does.
+pub async fn mouse_scroll(
+    bus_name: &str,
+    dx: i32,
+    dy: i32,
+    window: Option<u32>,
+    json: bool,
+) -> CliResult<()> {
     let connection = connect().await?;
-    connection
-        .call_method(
-            Some(bus_name),
-            wgaf_common::INPUT_OBJECT_PATH,
-            Some(wgaf_common::INPUT_INTERFACE_NAME),
-            "MouseScroll",
-            &(dx, dy),
-        )
-        .await
-        .map_err(map_err)?;
-    crate::output::print_ok(json, &format!("scrolled by ({dx}, {dy})"));
+    let message = match window {
+        Some(window) => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "MouseScrollAt",
+                    &(dx, dy, window),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("scrolled by ({dx}, {dy}) in window {window}")
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(bus_name),
+                    wgaf_common::INPUT_OBJECT_PATH,
+                    Some(wgaf_common::INPUT_INTERFACE_NAME),
+                    "MouseScroll",
+                    &(dx, dy),
+                )
+                .await
+                .map_err(map_err)?;
+            format!("scrolled by ({dx}, {dy})")
+        }
+    };
+    crate::output::print_ok(json, &message);
     Ok(())
 }

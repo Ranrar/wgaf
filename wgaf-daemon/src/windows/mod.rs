@@ -53,6 +53,7 @@ const REQUIRED_EXTENSION_METHODS: &[&str] = &[
     "GetWorkAreas",
     "WarpPointer",
     "GetPointer",
+    "GetWindowAtPointer",
 ];
 
 /// Signals the extension must declare, checked alongside the methods above.
@@ -705,6 +706,16 @@ impl WindowManager {
             .map_err(|e| translate_window_error(e, id))
     }
 
+    /// Resizes the window, returning once the new size is readable.
+    ///
+    /// **`translate_window_state_error`, not `translate_window_error`.** Resize
+    /// confirms its own effect now, so it is the first non-state operation that
+    /// can produce `OperationNotApplied` — a size the window will not take. With
+    /// the narrower translation the extension's error name arrived and fell
+    /// through to a generic failure, which is what a live desktop run found
+    /// (2026-08-11) and what the unit test beside it now pins. `MoveWindow`
+    /// above stays on the narrow one because it does not confirm and cannot
+    /// raise that error; move it too if it ever does.
     pub async fn resize_window(
         &self,
         id: u32,
@@ -715,7 +726,7 @@ impl WindowManager {
         self.proxy
             .resize_window(id, width, height)
             .await
-            .map_err(|e| translate_window_error(e, id))
+            .map_err(|e| translate_window_state_error(e, id))
     }
 
     pub async fn close_window(&self, id: u32) -> Result<(), WindowsError> {
@@ -1074,6 +1085,22 @@ impl WindowManager {
 
         Ok(self.proxy.warp_pointer(x, y).await?)
     }
+
+    /// Which window the pointer is over right now, or `None` if it is over
+    /// none of them.
+    ///
+    /// `None` is an ordinary answer, not a failure: the desktop background,
+    /// the top bar and the gap between two windows are all real places for a
+    /// pointer to be. A caller deciding whether to synthesize a click treats it
+    /// as "not the target", which it is.
+    ///
+    /// See [`WindowsProxy::get_window_at_pointer`] for why the extension reads
+    /// the pointer itself instead of being handed a coordinate.
+    pub async fn window_at_pointer(&self) -> Result<Option<u32>, WindowsError> {
+        self.ensure_extension_available().await?;
+        let (found, id) = self.proxy.get_window_at_pointer().await?;
+        Ok(found.then_some(id))
+    }
 }
 
 /// Maps a D-Bus method-error reply carrying the extension's
@@ -1272,6 +1299,12 @@ mod tests {
         }
         fn get_pointer(&self) -> (i32, i32) {
             (0, 0)
+        }
+        /// Nothing under the pointer. This stub exists for `ensure_focused`
+        /// and never exercises the pointer guard; the stub that does is
+        /// `tests/windows_stub.rs`'s, which tracks a real position.
+        fn get_window_at_pointer(&self) -> (bool, u32) {
+            (false, 0)
         }
 
         #[zbus(signal)]

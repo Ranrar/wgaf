@@ -45,7 +45,8 @@ INSTALLED_VERSION := $(shell sed -n 's/.*"version-name": *"\([^"]*\)".*/\1/p' \
 # through it, and a broken check reports success for changes that never landed.
 #
 # Deliberately NOT in SRC_FILES above - tests are not shipped in the bundle.
-TESTS := tests/confirm-test.js tests/workspace-grid-test.js tests/window-state-test.js
+TESTS := tests/confirm-test.js tests/workspace-grid-test.js tests/window-state-test.js \
+	tests/pointer-target-test.js
 
 test:
 	@for t in $(TESTS); do \
