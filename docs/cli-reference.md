@@ -273,8 +273,8 @@ minimum size, and a request below it leaves them larger than you asked. That
 comes back as exit code 4 (`unverified`) with the size the window actually has,
 rather than as a success that quietly did something else.
 
-`wgaf window move` still returns before the move is readable — poll
-`wgaf window list` if you need the new position.
+`wgaf window move` needs no equivalent — a move is readable as soon as it
+returns.
 
 ### `wgaf window close <id>`
 

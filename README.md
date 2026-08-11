@@ -337,10 +337,6 @@ command can produce.
 - The keyboard layout is read once when the daemon starts. If you change your
   layout afterwards, restart the daemon so `wgaf type` picks up the new one:
   `systemctl --user restart wgaf-daemon.service`.
-- After `wgaf window move`, the new position takes a moment to show up in
-  `wgaf window list`. If you're calculating coordinates from it, read it again
-  until it reports what you asked for. `wgaf window resize` no longer needs
-  this — it waits.
 - `wgaf ping --json` names its result `response`; every other command uses
   `message`.
 - Window and workspace commands need the GNOME Shell extension, and it only

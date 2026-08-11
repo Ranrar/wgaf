@@ -439,6 +439,87 @@ async fn resize_window_changes_the_size_the_application_reports() {
         });
 }
 
+/// Does `MoveWindow` reply before the new position is readable, the way
+/// `ResizeWindow` used to?
+///
+/// # This is a measurement, and it is the one the resize issue asked for
+///
+/// That issue's checklist said to apply the same confirmation to `MoveWindow`
+/// **only if it has the same lag**, and to measure rather than assume — so the
+/// question stayed open through two desktop runs. This answers it, and stays as
+/// a guard afterwards either way.
+///
+/// # Why it compares wgaf against wgaf, which is normally forbidden here
+///
+/// A Wayland client is never told where it is on screen: there is no GTK getter
+/// and nothing in the protocol, so `window-test` cannot report its own position
+/// the way it reports its own size. `wgaf window list` is the only source that
+/// exists, which is why this suite has no test that `MoveWindow` moves a window
+/// to the right place, and why it cannot have one.
+///
+/// That does not block *this* question. The defect is not "the window ends up
+/// somewhere wrong" — it is "the reply arrives before the new value is
+/// readable", and both readings come from the same source by construction. So
+/// the test compares the position read **immediately after the call returns**
+/// against the position once everything has settled. If they differ, the reply
+/// was premature. Nothing here claims the window went where it was asked; that
+/// remains unprovable from outside the compositor.
+///
+/// Comparing settled-against-immediate rather than immediate-against-requested
+/// also survives Mutter constraining the move — `move_frame` is issued as a
+/// user-directed operation, so an off-screen or edge-clamped request is
+/// adjusted, and a test demanding the exact requested coordinate would fail for
+/// a reason that has nothing to do with lag.
+#[tokio::test]
+#[ignore = "takes over the desktop: opens real windows on the running GNOME Shell. \
+            Run deliberately after `make test-apps`, with --test-threads=1."]
+async fn move_window_reports_its_new_position_without_lag() {
+    let _lock = lock_window_test().await;
+    let fixture = Fixture::start("movelag").await;
+
+    let before = fixture.window(MAIN_TITLE).await;
+    // A modest displacement, on-screen from wherever the window opened, so
+    // Mutter has no reason to constrain it.
+    let (target_x, target_y) = (before.x + 120, before.y + 90);
+
+    harness::windows::<(), _>(
+        &fixture.connection,
+        &fixture.bus_name,
+        "MoveWindow",
+        &(before.id, target_x, target_y),
+    )
+    .await
+    .expect("MoveWindow failed against the real extension");
+
+    let immediately = fixture.window(MAIN_TITLE).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let settled = fixture.window(MAIN_TITLE).await;
+
+    // Without this the test proves nothing: a move that did not happen at all
+    // would read identically at both instants and pass.
+    assert_ne!(
+        (settled.x, settled.y),
+        (before.x, before.y),
+        "the window never moved, so this measured nothing — it was at \
+         ({}, {}) before and after a move to ({target_x}, {target_y})",
+        before.x,
+        before.y
+    );
+
+    assert_eq!(
+        (immediately.x, immediately.y),
+        (settled.x, settled.y),
+        "MoveWindow returned before the new position was readable: `wgaf window list` \
+         said ({}, {}) immediately after the call and ({}, {}) once settled. That is the \
+         same defect `ResizeWindow` had — put `moveWindow` on `_confirmGeometrySettled` \
+         too, and update the archived resize issue's open MoveWindow item.",
+        immediately.x,
+        immediately.y,
+        settled.x,
+        settled.y
+    );
+}
+
 /// A resize the window will not take is reported, not reported as success.
 ///
 /// The old behaviour returned immediately and unconditionally, so a clamped
