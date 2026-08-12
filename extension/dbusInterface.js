@@ -183,6 +183,21 @@ function windowRecordToVariantDict(record) {
         fullscreen: new GLib.Variant('b', record.fullscreen),
         above: new GLib.Variant('b', record.above),
         on_all_workspaces: new GLib.Variant('b', record.on_all_workspaces),
+        gtk_application_id: new GLib.Variant('s', record.gtk_application_id),
+        wm_class_instance: new GLib.Variant('s', record.wm_class_instance),
+        sandboxed_app_id: new GLib.Variant('s', record.sandboxed_app_id),
+        pid: new GLib.Variant('u', record.pid),
+        window_type: new GLib.Variant('s', record.window_type),
+        transient_for: new GLib.Variant('u', record.transient_for),
+        buffer_x: new GLib.Variant('i', record.buffer_x),
+        buffer_y: new GLib.Variant('i', record.buffer_y),
+        buffer_width: new GLib.Variant('i', record.buffer_width),
+        buffer_height: new GLib.Variant('i', record.buffer_height),
+        monitor_x: new GLib.Variant('i', record.monitor_x),
+        monitor_y: new GLib.Variant('i', record.monitor_y),
+        monitor_width: new GLib.Variant('i', record.monitor_width),
+        monitor_height: new GLib.Variant('i', record.monitor_height),
+        tiled: new GLib.Variant('b', record.tiled),
     };
 }
 

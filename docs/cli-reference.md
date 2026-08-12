@@ -178,9 +178,23 @@ The bracketed list at the end names whichever of `focused`, `minimized`,
 `maximized`, `fullscreen`, `above` and `all workspaces` currently apply. A
 window with none of them shows nothing there.
 
-`--json` prints the full array of window records (`id`, `title`, `app_id`,
-`workspace`, `x`, `y`, `width`, `height`, `focused`, `maximized`, `minimized`,
-`fullscreen`, `above`, `on_all_workspaces`).
+`--json` prints the full array of window records. The human table stays short
+on purpose; everything wgaf knows about a window is in the JSON.
+
+| Field | |
+|---|---|
+| `id`, `title`, `app_id`, `workspace` | Identity and which workspace it is on. `app_id` is the window's own class |
+| `x`, `y`, `width`, `height` | The frame — the window as you would point at it |
+| `focused`, `maximized`, `minimized`, `fullscreen`, `above`, `on_all_workspaces` | State, each settable by the matching `wgaf window` command |
+| `gtk_application_id` | The application this window belongs to, where `app_id` is only the window's own class. **These differ for a dialog** that never joined its application: the class falls back to the program name, the application id does not. `null` for a non-GTK client |
+| `wm_class_instance` | The instance half of the class, where the toolkit sets one |
+| `sandboxed_app_id` | The Flatpak or Snap identity, or `null` for an ordinary application. `app_id` alone misleads for a sandboxed one |
+| `pid` | The process behind the window — the route to quitting the *application* rather than closing this window. `0` if the compositor does not know it |
+| `window_type` | `normal`, `dialog`, `modal_dialog`, `utility`, `dock`, `tooltip`, … or `unknown` for a kind this version has no name for |
+| `transient_for` | The id of the window this one is a dialog of, or `null` |
+| `buffer_x`, `buffer_y`, `buffer_width`, `buffer_height` | The window *including* its shadow and decoration. The difference from the frame above is the inset — compute a click position from the frame, not from this |
+| `monitor` | The connector this window is on, e.g. `DP-3`, matching a row of `wgaf monitor list`. `null` if it matched no monitor in the current layout |
+| `tiled` | Snapped side by side with another window |
 
 Transient surfaces — tooltips, open menus, combo-box dropdowns — are
 deliberately left out, since they aren't things you'd sensibly focus, move,

@@ -530,7 +530,17 @@ pub struct DaemonStatus {
 /// `id` is Mutter's stable per-window sequence number (see
 /// `extension/windows.js`), not an X11 XID — it is only meaningful for the
 /// lifetime of the window, not persisted across restarts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `Default` exists for **stubs and tests**, which build a record describing a
+/// window that does not exist and care about three or four fields of it. The
+/// alternative is every such site listing all two dozen, which turns adding a
+/// field into a mechanical edit across five files and buries the two lines that
+/// actually matter to each test.
+///
+/// It is deliberately not used anywhere real. A record that reaches a user is
+/// built from the extension's own reply by `From<WindowRecordDict>`, which is
+/// exhaustive and fails to compile when a field is added — so the enforcement
+/// that matters is untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WindowRecord {
     pub id: u32,
     pub title: String,
@@ -558,6 +568,52 @@ pub struct WindowRecord {
     /// differ when trying to undo it, and
     /// `org.wgaf.Windows1.SetWindowOnAllWorkspaces` reports that case.
     pub on_all_workspaces: bool,
+
+    /// The id of the `GtkApplication` this window belongs to, if any.
+    ///
+    /// **Not a duplicate of [`Self::app_id`], which is the window's own
+    /// class.** The two differ exactly where it matters: a plain dialog that
+    /// never joined its application reports the program name as its class,
+    /// while the application id belongs to the application and is the same for
+    /// every one of its windows. So this is what identifies "which program is
+    /// this" when the class does not.
+    pub gtk_application_id: Option<String>,
+    /// The instance half of the window's class, where the toolkit sets one.
+    pub wm_class_instance: Option<String>,
+    /// The application id a sandboxed (Flatpak/Snap) client was launched
+    /// under. `None` for an ordinary one — and knowing which is which is the
+    /// point, since [`Self::app_id`] alone misleads for a sandboxed app.
+    pub sandboxed_app_id: Option<String>,
+    /// The process id behind the window, or `0` where the compositor does not
+    /// know it. The only route to "quit this application" as opposed to "close
+    /// this window".
+    pub pid: u32,
+    /// What kind of window this is: `normal`, `dialog`, `modal_dialog`,
+    /// `utility`, `dropdown_menu`, … or `unknown` for a kind this build of
+    /// wgaf does not have a name for.
+    pub window_type: String,
+    /// The window this one is a dialog of, or `None` when it stands alone.
+    pub transient_for: Option<u32>,
+    /// The window including its shadow and client-side decoration, where
+    /// `x`/`y`/`width`/`height` is the frame a user would point at.
+    ///
+    /// The difference between the two is the inset that coordinate arithmetic
+    /// gets wrong — a click computed from the buffer rectangle can land
+    /// outside the visible window entirely.
+    pub buffer_x: i32,
+    pub buffer_y: i32,
+    pub buffer_width: i32,
+    pub buffer_height: i32,
+    /// The connector this window is on, e.g. `DP-3` — matching a `connector`
+    /// in `wgaf monitor list`.
+    ///
+    /// A **name**, deliberately, and not the monitor index the compositor uses
+    /// internally: that index cannot be looked up in the monitor list, which
+    /// enumerates connectors from a different source. `None` when the window's
+    /// monitor matched nothing in the current layout, rather than a guess.
+    pub monitor: Option<String>,
+    /// Snapped side by side with another window.
+    pub tiled: bool,
 }
 
 /// Which way a restack request moves a window within its stack layer.
@@ -862,6 +918,7 @@ mod tests {
             fullscreen: false,
             above: true,
             on_all_workspaces: false,
+            ..WindowRecord::default()
         }
     }
 

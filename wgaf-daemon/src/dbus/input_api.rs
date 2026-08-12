@@ -1182,6 +1182,7 @@ mod tests {
                     fullscreen: false,
                     above: false,
                     on_all_workspaces: false,
+                    ..WindowRecord::default()
                 }
                 .into(),
             ]

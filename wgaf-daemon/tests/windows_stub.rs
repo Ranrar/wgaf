@@ -84,6 +84,10 @@ fn canned_window_in(state: &StubWindowState) -> WindowRecord {
         fullscreen: state.fullscreen,
         above: state.above,
         on_all_workspaces: state.on_all_workspaces,
+        // The W18.3 metadata is not modelled: this fixture exists to exercise
+        // the window-state operations, and a stub inventing a pid or a monitor
+        // would be asserting about itself.
+        ..WindowRecord::default()
     }
 }
 
@@ -1241,6 +1245,183 @@ async fn a_resize_the_window_refuses_keeps_its_error_name() {
     )
     .await
     .expect("an ordinary resize must still succeed");
+}
+
+/// A window record missing the fields this daemon expects is reported as an
+/// outdated extension, not as a raw D-Bus error.
+///
+/// # The gap being covered, which ADR-0002 does not reach
+///
+/// The member-presence check makes an extension older than the daemon fail *by
+/// name* — but it checks methods and signals, and the window record is an
+/// `a{sv}` dict, invisible to introspection. So an extension predating a new
+/// record field answers `ListWindows` perfectly, passes every check, and the
+/// daemon then fails to deserialize the reply.
+///
+/// That is not hypothetical: it happened on 2026-08-11, on a session running
+/// the previous extension, and `tests/combined.rs` reported
+/// `org.freedesktop.zbus.Error: missing field \`gtk_application_id\`` — exactly
+/// the unexplained failure ADR-0002 exists to replace, and with the actual
+/// remedy (log out and back in) nowhere in sight.
+///
+/// The stub below serves the **pre-W18.3 record shape** on purpose. It is the
+/// only way to have an "old extension" in CI, and it means this test keeps
+/// working as more fields are added: it does not enumerate them, it simply
+/// answers with fewer than the daemon wants.
+#[derive(Default)]
+struct OldShapedExtension;
+
+/// The window record as it stood before W18.3 — fourteen fields, no identity,
+/// geometry detail or monitor.
+///
+/// Frozen deliberately. This is not "the record minus the newest fields", it is
+/// a historical shape, and it must not be updated when the real record grows:
+/// the moment it tracks `WindowRecordDict` again, the test asserts nothing.
+#[derive(
+    Debug,
+    Clone,
+    zbus::zvariant::SerializeDict,
+    zbus::zvariant::DeserializeDict,
+    zbus::zvariant::Type,
+)]
+#[zvariant(signature = "a{sv}")]
+struct PreW18_3WindowRecordDict {
+    id: u32,
+    title: String,
+    app_id: String,
+    workspace: i32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    focused: bool,
+    maximized: bool,
+    minimized: bool,
+    fullscreen: bool,
+    above: bool,
+    on_all_workspaces: bool,
+}
+
+#[interface(name = "org.gnome.Shell.Extensions.Wgaf.V1")]
+impl OldShapedExtension {
+    #[zbus(signal)]
+    async fn window_created(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        window: WindowRecordDict,
+    ) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn window_closed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn window_focus_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        id: u32,
+    ) -> zbus::Result<()>;
+
+    /// The one method that matters here, answering the old shape.
+    fn list_windows(&self) -> Vec<PreW18_3WindowRecordDict> {
+        vec![PreW18_3WindowRecordDict {
+            id: 1,
+            title: "Stub Terminal".to_string(),
+            app_id: "org.gnome.Terminal".to_string(),
+            workspace: 0,
+            x: 10,
+            y: 20,
+            width: 800,
+            height: 600,
+            focused: true,
+            maximized: false,
+            minimized: false,
+            fullscreen: false,
+            above: false,
+            on_all_workspaces: false,
+        }]
+    }
+
+    /* Everything below exists only so `ensure_extension_available`'s member
+     * check passes — which is the whole point. This extension looks completely
+     * current to that check, and is not. */
+    fn focus_window(&self, _id: u32) {}
+    fn move_window(&self, _id: u32, _x: i32, _y: i32) {}
+    fn resize_window(&self, _id: u32, _width: i32, _height: i32) {}
+    fn close_window(&self, _id: u32) {}
+    fn get_workspaces(&self) -> Vec<WorkspaceRecordDict> {
+        vec![]
+    }
+    fn get_workspace_layout(&self) -> WorkspaceLayoutDict {
+        WorkspaceLayout {
+            n_workspaces: 1,
+            active: 0,
+            rows: 1,
+            columns: 1,
+            dynamic: false,
+        }
+        .into()
+    }
+    fn switch_workspace(&self, _index: i32) {}
+    fn add_workspace(&self) -> i32 {
+        0
+    }
+    fn remove_workspace(&self, _index: i32) {}
+    fn reorder_workspace(&self, _index: i32, _new_index: i32) {}
+    fn move_window_to_workspace(&self, _id: u32, _index: i32) {}
+    fn set_window_minimized(&self, _id: u32, _minimized: bool) {}
+    fn set_window_maximized(&self, _id: u32, _maximized: bool) {}
+    fn set_window_fullscreen(&self, _id: u32, _fullscreen: bool) {}
+    fn set_window_above(&self, _id: u32, _above: bool) {}
+    fn set_window_on_all_workspaces(&self, _id: u32, _on_all: bool) {}
+    fn restack_window(&self, _id: u32, _stacking: &str) {}
+    fn get_work_areas(&self) -> Vec<WorkAreaDict> {
+        vec![]
+    }
+    fn warp_pointer(&self, x: i32, y: i32) -> (i32, i32) {
+        (x, y)
+    }
+    fn get_pointer(&self) -> (i32, i32) {
+        (0, 0)
+    }
+    fn get_window_at_pointer(&self) -> (bool, u32) {
+        (false, 0)
+    }
+}
+
+#[tokio::test]
+async fn an_extension_answering_the_old_record_shape_is_named_as_outdated() {
+    let pid = std::process::id();
+    let extension_bus_name = format!("org.wgaf.Test.Extension.OldShape{pid}");
+    let daemon_bus_name = format!("org.wgaf.Test.Daemon.OldShape{pid}");
+
+    let connection = zbus::connection::Builder::session()
+        .expect("session bus builder")
+        .name(extension_bus_name.as_str())
+        .expect("valid bus name")
+        .serve_at(wgaf_common::EXTENSION_OBJECT_PATH, OldShapedExtension)
+        .expect("serve the old-shaped stub")
+        .build()
+        .await
+        .expect("old-shaped stub registers on the session bus");
+    std::mem::forget(connection);
+
+    let _daemon = spawn_daemon(
+        &daemon_bus_name,
+        &extension_bus_name,
+        &format!("oldshape{pid}"),
+    );
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let err =
+        call_windows::<Vec<WindowRecordDict>, _>(&connection, &daemon_bus_name, "ListWindows", &())
+            .await
+            .expect_err("a record missing fields the daemon expects must not succeed");
+
+    let description = assert_named_error(err, wgaf_common::WINDOWS_ERROR_EXTENSION_UNAVAILABLE);
+    assert!(
+        description.contains("log out"),
+        "the message must name the actual remedy — installing the extension is not enough, \
+         because GNOME Shell on Wayland loads extension code only at login. Got: {description}"
+    );
 }
 
 /// Removing the last remaining workspace is refused by name, and the refusal

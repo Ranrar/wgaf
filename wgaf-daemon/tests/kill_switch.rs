@@ -282,6 +282,52 @@ async fn stop_refuses_every_kind_of_synthesis_and_release_restores_it() {
 /// calls fail with `BusUnavailable` or `ExtensionUnavailable`, and that is
 /// fine. The property under test is *which* error, not whether one occurred, so
 /// this stays meaningful everywhere instead of needing a desktop.
+/// How long any single D-Bus call in this file may take before the test gives
+/// up on it.
+///
+/// Generous by two orders of magnitude against a healthy call — the
+/// accessibility probes this bounds answer in single-digit milliseconds on a
+/// working session — because this is a bound on a hang, not a performance
+/// assertion. Too short would make a loaded CI runner look like a deadlock.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run a D-Bus call under [`CALL_TIMEOUT`], failing the test if it never
+/// answers.
+///
+/// # Why this exists, and why it is not paranoia
+///
+/// There is an **open S2**: the daemon can deadlock connecting to the
+/// accessibility bus, and while it is happening `ListApps` never returns. It is
+/// not a hypothetical — it was reproduced on 2026-08-06 in this very test, which
+/// ran green earlier the same session and then hung for over 100 seconds before
+/// being killed, on a session contaminated by repeated `SIGKILL`ing of daemons.
+/// A fresh login ran it in 0.41 s.
+///
+/// This test is **not** `#[ignore]`d, so it is in the plain `cargo test` set and
+/// in CI's integration step. A deadlock there is worse than one that spoils a
+/// status report: CI has no way to recover from a test that never returns, and
+/// the output is a suite that simply stops with nothing said.
+///
+/// So this converts "hangs forever with no output" into a named failure that
+/// says which call stopped answering. **It fixes nothing** — the deadlock is
+/// still unexplained, and a timeout here is containment, exactly as the
+/// three-second per-probe timeout in `dbus/mod.rs`'s `Status` is. Remove it only
+/// when the root cause is found, not when the symptom next goes quiet.
+async fn within<T>(what: &str, call: impl Future<Output = zbus::Result<T>>) -> zbus::Result<T> {
+    match tokio::time::timeout(CALL_TIMEOUT, call).await {
+        Ok(result) => result,
+        Err(_) => panic!(
+            "{what} did not answer within {CALL_TIMEOUT:?}. This is very likely the open S2 — \
+             the daemon deadlocking on a connection to the accessibility bus, after which \
+             `ListApps` never returns. Known to be a function of session state rather than of \
+             the code: it has been reproduced on a session where many daemons had been \
+             SIGKILLed, and not on a fresh login. Try logging out and back in, and if it \
+             reproduces deliberately, say so in issues.md — an on-demand reproduction is what \
+             that issue has never had."
+        ),
+    }
+}
+
 fn assert_not_stopped<T>(result: zbus::Result<T>, what: &str) {
     let Err(err) = result else {
         return;
@@ -339,32 +385,44 @@ async fn stopping_does_not_refuse_window_or_accessibility_commands() {
         "TypeText",
     );
 
+    // Every call below is bounded — see `within`. The two accessibility ones
+    // are the reason it exists; `ListWindows` is bounded too because a hang
+    // there would fail CI the same unhelpful way, not because it has ever hung.
     assert_not_stopped(
-        harness::accessibility::<Vec<wgaf_common::AppRecord>, _>(
-            &connection,
-            &bus_name,
-            "ListApps",
-            &(),
+        within(
+            "a11y ListApps",
+            harness::accessibility::<Vec<wgaf_common::AppRecord>, _>(
+                &connection,
+                &bus_name,
+                "ListApps",
+                &(),
+            ),
         )
         .await,
         "a11y ListApps",
     );
     assert_not_stopped(
-        harness::accessibility::<Vec<wgaf_common::ElementRecord>, _>(
-            &connection,
-            &bus_name,
-            "FindElements",
-            &("no-such-application-xyz", "", "", "", 0i32),
+        within(
+            "a11y FindElements",
+            harness::accessibility::<Vec<wgaf_common::ElementRecord>, _>(
+                &connection,
+                &bus_name,
+                "FindElements",
+                &("no-such-application-xyz", "", "", "", 0i32),
+            ),
         )
         .await,
         "a11y FindElements",
     );
     assert_not_stopped(
-        harness::windows::<Vec<wgaf_common::dict::WindowRecordDict>, _>(
-            &connection,
-            &bus_name,
+        within(
             "ListWindows",
-            &(),
+            harness::windows::<Vec<wgaf_common::dict::WindowRecordDict>, _>(
+                &connection,
+                &bus_name,
+                "ListWindows",
+                &(),
+            ),
         )
         .await,
         "ListWindows",

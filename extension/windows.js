@@ -242,6 +242,33 @@ export function resolveGrid(rows, columns, nWorkspaces) {
  * of width w starting at x covers columns x..x+w-1. Two windows edge to edge
  * therefore never both claim the shared boundary pixel.
  */
+/** `Meta.WindowType` as strings, indexed by the enum's own numeric values.
+ *
+ * Written out rather than imported from Meta, for the reason `MaximizeFlags`
+ * is: a top-level `import Meta` makes this file unloadable outside a Shell and
+ * costs `extension/tests/` its only way to reach anything here. The order is
+ * the enum's declaration order, verified against `Meta.WindowType` on
+ * Mutter 18 — and `windowTypeName()` is pinned by a unit test against a
+ * hardcoded copy of that list, so a reordering in a future Mutter shows up as
+ * a failing test rather than as every window reporting the wrong kind.
+ */
+const WINDOW_TYPE_NAMES = [
+    'normal', 'desktop', 'dock', 'dialog', 'modal_dialog', 'toolbar', 'menu',
+    'utility', 'splashscreen', 'dropdown_menu', 'popup_menu', 'tooltip',
+    'notification', 'combo', 'dnd', 'override_other',
+];
+
+/** The name for a `Meta.WindowType` value, or `'unknown'` for one this build
+ * has never heard of.
+ *
+ * A new enum member in a future Mutter must not become an exception thrown
+ * inside `ListWindows` — losing the whole window list because one window is of
+ * an unfamiliar kind would be a far worse failure than not naming its type.
+ */
+export function windowTypeName(value) {
+    return WINDOW_TYPE_NAMES[value] ?? 'unknown';
+}
+
 export function topmostAt(stacked, x, y) {
     for (let i = stacked.length - 1; i >= 0; i--) {
         const {id, rect} = stacked[i];
@@ -1213,6 +1240,91 @@ export class WindowManager {
             fullscreen: win.fullscreen,
             above: win.above,
             on_all_workspaces: win.on_all_workspaces,
+            ...this._identity(win),
+            ...this._geometryDetail(win),
+        };
+    }
+
+    /** Who this window belongs to: the three answers that are not `app_id`.
+     *
+     * ---------------------------------------------------------------------------
+     * `app_id` IS `get_wm_class()`, WHICH IS WHY THERE IS NO `wm_class` HERE
+     * ---------------------------------------------------------------------------
+     * See the field above. Reporting `wm_class` as well would print the same
+     * string under two names, and the open issue about `window-test`'s dialog
+     * disagreeing with its siblings is *about* that string — a second copy of it
+     * disagrees identically.
+     *
+     * `gtk_application_id` is the one that can tell them apart: a window's class
+     * is the window's, but the application id belongs to the GtkApplication, so
+     * a dialog that never joined one should still report the application's id.
+     * `wm_class_instance` comes along because it is the remaining distinct
+     * identity Mutter holds and costs one call.
+     *
+     * All three are empty strings rather than null when absent. The wire format
+     * is `a{sv}` and a missing key would make every consumer branch; an empty
+     * string is the same "nothing here" and needs no branch.
+     */
+    _identity(win) {
+        return {
+            gtk_application_id: win.get_gtk_application_id() || '',
+            wm_class_instance: win.get_wm_class_instance() || '',
+            // Flatpak/Snap identity. An `app_id` alone misleads for a sandboxed
+            // application, which is precisely the case where knowing what is
+            // really running matters.
+            sandboxed_app_id: win.get_sandboxed_app_id() || '',
+            // 0 when Mutter does not know it, which it genuinely may not for a
+            // remote or reparented client. Not -1: the field is unsigned on the
+            // wire, and "no pid" and "pid 0" are the same statement.
+            pid: Math.max(win.get_pid(), 0),
+            window_type: windowTypeName(win.get_window_type()),
+            // The window this one is a dialog *of*, or 0 for none. Ids are
+            // stable sequences and Mutter starts them above zero, so 0 is free
+            // to mean "none" without a second field to say so.
+            transient_for: win.get_transient_for()?.get_stable_sequence() ?? 0,
+        };
+    }
+
+    /** The geometry a caller cannot get from the frame rectangle alone.
+     *
+     * ---------------------------------------------------------------------------
+     * THE MONITOR IS SENT AS A RECTANGLE, NOT AS MUTTER'S INDEX
+     * ---------------------------------------------------------------------------
+     * `get_monitor()` returns Mutter's own monitor index, and **there is no way
+     * to look that up in `wgaf monitor list`** — that list comes from
+     * `org.gnome.Mutter.DisplayConfig`, which enumerates connectors, and W18.2
+     * established that the two orderings cannot be assumed to match (it could
+     * not be verified from outside the compositor, and pairing them by position
+     * would attach the wrong monitor to the wrong window while looking
+     * plausible). An index the user cannot resolve is the `-1 columns` mistake
+     * again: a number that reaches them as if it meant something.
+     *
+     * So the monitor's *rectangle* goes on the wire and the daemon matches it
+     * against the layout it already reads, reporting a connector name. Exactly
+     * what `GetWorkAreas` does, for exactly that reason. Two monitors cannot
+     * occupy one rectangle, so the match is exact rather than a guess.
+     *
+     * `buffer_*` is the window including its shadow and any client-side
+     * decoration, where the frame rect is what a user would point at. The
+     * difference is the inset that coordinate arithmetic gets wrong.
+     */
+    _geometryDetail(win) {
+        const buffer = win.get_buffer_rect();
+        const monitor = this._display.get_monitor_geometry(win.get_monitor());
+
+        return {
+            buffer_x: buffer.x,
+            buffer_y: buffer.y,
+            buffer_width: buffer.width,
+            buffer_height: buffer.height,
+            monitor_x: monitor ? monitor.x : 0,
+            monitor_y: monitor ? monitor.y : 0,
+            monitor_width: monitor ? monitor.width : 0,
+            monitor_height: monitor ? monitor.height : 0,
+            // Snapped against another window, side by side. Mutter models it as
+            // a link to the window sharing the split, so its presence is the
+            // state and there is no separate flag to read.
+            tiled: win.get_tile_match() !== null,
         };
     }
 

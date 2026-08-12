@@ -315,6 +315,19 @@ impl TestApp {
     /// failure would name whichever assertion came first rather than the fact
     /// that the application never started.
     pub async fn spawn(name: &'static str) -> Self {
+        Self::spawn_with_args(name, &[]).await
+    }
+
+    /// As [`Self::spawn`], with extra command-line arguments for the
+    /// application.
+    ///
+    /// One report directory per process **and thread**, so two applications
+    /// started from the same test would overwrite each other's report — which
+    /// is why this exists rather than a second `spawn` call: `input-test
+    /// --dialog` gives a test a second, independently focusable window from
+    /// one process, and a test that needs somewhere else for focus to be needs
+    /// exactly that.
+    pub async fn spawn_with_args(name: &'static str, args: &[&str]) -> Self {
         let binary = require_test_app(name);
 
         let dir = std::env::temp_dir().join(format!(
@@ -328,6 +341,7 @@ impl TestApp {
         let child = Command::new(&binary)
             .arg("--report")
             .arg(&report_path)
+            .args(args)
             // Take the session's input method out of the path — measured, not
             // precautionary.
             //

@@ -5,5 +5,5 @@
     "settings-schema": "org.gnome.shell.extensions.wgaf",
     "shell-version": ["50"],
     "url": "https://github.com/Ranrar/wgaf",
-    "version-name": "0.8.6"
+    "version-name": "0.8.7"
 }

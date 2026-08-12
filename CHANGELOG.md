@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-08-11
+
+**Needs the GNOME Shell extension reinstalled** (`make -C extension install`, then log out and back in) — the same requirement 0.8.6 carried.
+
+### Added
+
+- **`wgaf window list --json` now reports what a window *is*, not just where it is.** Twelve new fields: which application it belongs to (`gtk_application_id`, `wm_class_instance`, `sandboxed_app_id`), what process is behind it (`pid`), what kind of window it is (`window_type` — `normal`, `dialog`, `utility`, …), which monitor it is on (`monitor`, as a connector name matching `wgaf monitor list`), its full extent including shadow and decoration (`buffer_*`), whether it is snapped beside another window (`tiled`), and `transient_for`, which names a dialog's parent window where the toolkit tells GNOME about it.
+
+  **`gtk_application_id` is the one worth knowing about.** `app_id` is the *window's* own class, which for some programs is not the program at all — GNOME's desktop-icons windows report `gjs`, the interpreter. The application id reports `com.rastersoft.ding`, which is the answer you wanted. It is empty for anything that is not a GTK application, and for the occasional window that was never joined to its own application, so treat it as a better answer where present rather than a replacement.
+
+  **`monitor` is a connector name, not a number.** The compositor tracks monitors by an internal index that has no relation to the order `wgaf monitor list` prints, so reporting that index would have handed you a number you could not look up. wgaf matches the monitor's actual rectangle instead, and reports the connector — or `null` rather than a guess if it matches nothing.
+
+  **The human `wgaf window list` table is unchanged.** Thirteen more columns would wrap on any normal terminal; the common case stays readable and `--json` carries everything.
+
+### Fixed
+
+- **A session still running an older extension now says so, instead of failing with a raw D-Bus error.** wgaf already detects an extension too old to have a command it needs, and says which one — but it could not detect one whose *window records* are missing newer fields, because there is nothing to introspect there. The result was `missing field ...` and no hint that the fix is to log out and back in. It now gives the same "your extension is older than the daemon, install it and log in again" message as any other outdated-extension case. This is the one that bites after an update, since installing the extension and restarting your session are two separate things.
+
 ## [0.8.6] - 2026-08-11
 
 **This release needs the GNOME Shell extension reinstalled**, and Wayland only

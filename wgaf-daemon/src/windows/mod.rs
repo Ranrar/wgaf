@@ -13,7 +13,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::{OnceCell, RwLock};
-use wgaf_common::dict::{WindowRecordDict, WorkAreaDict, WorkspaceRecordDict};
+use wgaf_common::dict::{WorkAreaDict, WorkspaceRecordDict};
 use wgaf_common::{MonitorRecord, Rect, Stacking, WindowRecord, WorkspaceLayout, WorkspaceRecord};
 
 use display_config::{DisplayConfig, DisplayConfigError, MonitorLayout};
@@ -485,10 +485,48 @@ impl WindowManager {
         &self.extension_bus_name
     }
 
+    /// Enumerates every window, resolving each one's monitor to a connector
+    /// name.
+    ///
+    /// # Why the monitor is resolved here and not in the extension
+    ///
+    /// The extension knows the window's monitor as a *Mutter index*, and that
+    /// index cannot be looked up in `wgaf monitor list` — that list comes from
+    /// `org.gnome.Mutter.DisplayConfig`, which enumerates connectors, and W18.2
+    /// established the two orderings cannot be assumed to match. So the
+    /// extension sends the monitor's **rectangle** and the match happens here,
+    /// against the layout this struct already reads and caches. Two monitors
+    /// cannot occupy one rectangle, so it is exact.
+    ///
+    /// **A layout that cannot be read is not an error.** Every other field is
+    /// still correct, and refusing to list windows because the display
+    /// configuration is unavailable would take away the command a user runs to
+    /// find out what is going on. Those windows report `monitor: None`, which
+    /// is the honest answer.
     pub async fn list_windows(&self) -> Result<Vec<WindowRecord>, WindowsError> {
         self.ensure_extension_available().await?;
-        let dicts = self.proxy.list_windows().await?;
-        Ok(dicts.into_iter().map(WindowRecordDict::into).collect())
+        let dicts = self.proxy.list_windows().await.map_err(outdated_record)?;
+
+        // Read once for the whole list rather than per window: it is one D-Bus
+        // round trip either way, and a layout that changed mid-list would
+        // describe different windows against different desktops.
+        let layout = self.monitor_layout().await.ok();
+
+        Ok(dicts
+            .into_iter()
+            .map(|dict| {
+                let rect = dict.monitor_rect();
+                let mut record = WindowRecord::from(dict);
+                record.monitor = layout.as_ref().and_then(|layout| {
+                    layout
+                        .monitors()
+                        .iter()
+                        .find(|m| (m.x, m.y, m.width, m.height) == rect)
+                        .map(|m| m.connector.clone())
+                });
+                record
+            })
+            .collect())
     }
 
     /// Subscribes to the extension's window signals as one typed stream.
@@ -1107,6 +1145,60 @@ impl WindowManager {
 /// `WindowNotFound` error name (`wgaf_common::EXTENSION_ERROR_WINDOW_NOT_FOUND`)
 /// to `WindowsError::WindowNotFound`, using the `id` already known from the
 /// call site rather than parsing the error's free-text description.
+/// Turns "the reply did not have the shape this daemon expects" into the same
+/// outdated-extension message a missing *method* produces.
+///
+/// # The gap this closes, and why ADR-0002 did not already cover it
+///
+/// [ADR-0002] makes additive changes stay within `V1` and requires
+/// `ensure_extension_available` to check that every member the daemon calls is
+/// present — so an extension older than the daemon fails **by name** instead of
+/// mysteriously. That check covers methods and signals, and **the window record
+/// is neither.** It is an `a{sv}` dict, invisible to introspection.
+///
+/// So adding a field to `WindowRecordDict` is not additive-safe the way adding
+/// a method is. An extension that predates the field answers `ListWindows`
+/// perfectly, passes every member check, and then the daemon fails to
+/// deserialize the reply — surfacing as
+/// `org.freedesktop.zbus.Error: missing field ...`, which is exactly the
+/// unexplained failure ADR-0002 exists to replace. Found on 2026-08-11 by
+/// `tests/combined.rs`, on a session running the previous extension.
+///
+/// # Why this is a translation and not a graceful degradation
+///
+/// The alternative was `#[serde(default)]` on every new field, letting an old
+/// extension answer with zeroes and empty strings. Rejected: those are
+/// *indistinguishable from real answers*. A window genuinely can have no
+/// `transient_for` and a pid of 0 is a real "unknown", so degrading silently
+/// would report "this window belongs to no application and is on no monitor"
+/// as fact, on every window, with nothing saying why. Being told to log out is
+/// a better outcome than being quietly lied to — and unlike `GetWorkAreas`'s
+/// degradation, which reports `work_area: null` for a value that has an
+/// obvious "not known" spelling, these fields have none.
+///
+/// Matched on the error *variant* rather than on the words "missing field",
+/// deliberately: that description comes from `serde` and is not a contract, and
+/// matching an English sentence is how a check quietly stops matching.
+///
+/// [ADR-0002]: ../../../.vscode/Documentation/adr/adr-0002-extension-interface-versioning.md
+fn outdated_record(err: zbus::Error) -> WindowsError {
+    if matches!(err, zbus::Error::Variant(_)) {
+        return WindowsError::extension_unavailable(
+            format!(
+                "the extension answered, but its window records are missing fields this daemon \
+                 expects ({err}) — the installed wgaf GNOME Shell Extension is older than this \
+                 daemon and needs updating. Run `make -C extension install`, then log out and \
+                 back in: GNOME Shell on Wayland loads extension code only at login, so \
+                 installing alone is not enough"
+            ),
+            wgaf_common::EXTENSION_BUS_NAME,
+            wgaf_common::EXTENSION_OBJECT_PATH,
+            wgaf_common::EXTENSION_INTERFACE_NAME,
+        );
+    }
+    WindowsError::from(err)
+}
+
 fn translate_window_error(err: zbus::Error, id: u32) -> WindowsError {
     if let zbus::Error::MethodError(name, _, _) = &err
         && name.as_str() == wgaf_common::EXTENSION_ERROR_WINDOW_NOT_FOUND
@@ -1174,7 +1266,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use wgaf_common::dict::WorkspaceLayoutDict;
+    // The stub extension below serves the wire shape, so it names it. Nothing
+    // outside the tests does any more: `list_windows` converts straight to
+    // `WindowRecord` without spelling the dict type out.
+    use wgaf_common::dict::{WindowRecordDict, WorkspaceLayoutDict};
     use zbus::object_server::SignalEmitter;
 
     // These tests need a session bus — the whole `wgaf-daemon` integration
@@ -1242,6 +1337,7 @@ mod tests {
                     fullscreen: false,
                     above: false,
                     on_all_workspaces: false,
+                    ..WindowRecord::default()
                 }
                 .into(),
             ]

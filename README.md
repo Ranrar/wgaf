@@ -55,8 +55,8 @@ Checked items work today.
 - [x] Minimize, maximize, and fullscreen
 - [x] Keep a window always on top, or on every workspace
 - [x] Raise and lower windows
-- [ ] More about each window: its process, its type, the dialog it belongs to,
-      and the monitor it's on
+- [x] More about each window: the application and process behind it, what kind
+      of window it is, and the monitor it's on
 
 ### Workspaces & monitors
 - [x] List workspaces, and switch, add, remove, and reorder them
@@ -72,6 +72,7 @@ Checked items work today.
 - [x] Move, click, and scroll the mouse
 - [x] Move the pointer to an exact screen position
 - [x] Hold off typing when the window you meant isn't focused
+- [x] Refuse to click or scroll when the pointer isn't over the window you meant
 
 ### Accessibility
 - [x] List running accessible applications

@@ -133,6 +133,30 @@ pub struct WindowRecordDict {
     fullscreen: bool,
     above: bool,
     on_all_workspaces: bool,
+    gtk_application_id: String,
+    wm_class_instance: String,
+    sandboxed_app_id: String,
+    pid: u32,
+    window_type: String,
+    transient_for: u32,
+    buffer_x: i32,
+    buffer_y: i32,
+    buffer_width: i32,
+    buffer_height: i32,
+    /// The rectangle of the monitor this window is on — **not** a monitor
+    /// index, and it never reaches the user.
+    ///
+    /// Mutter's monitor index cannot be looked up in `wgaf monitor list`, which
+    /// enumerates connectors from `org.gnome.Mutter.DisplayConfig`; W18.2
+    /// established the two orderings cannot be assumed to match. So the
+    /// extension sends the rectangle and `WindowManager` resolves it to a
+    /// connector name, the same exact-match trick `GetWorkAreas` uses. These
+    /// four fields are consumed there and are absent from [`WindowRecord`].
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_width: i32,
+    monitor_height: i32,
+    tiled: bool,
 }
 
 impl From<WindowRecordDict> for WindowRecord {
@@ -152,8 +176,45 @@ impl From<WindowRecordDict> for WindowRecord {
             fullscreen: d.fullscreen,
             above: d.above,
             on_all_workspaces: d.on_all_workspaces,
+            gtk_application_id: empty_to_none(d.gtk_application_id),
+            wm_class_instance: empty_to_none(d.wm_class_instance),
+            sandboxed_app_id: empty_to_none(d.sandboxed_app_id),
+            pid: d.pid,
+            window_type: d.window_type,
+            transient_for: (d.transient_for != 0).then_some(d.transient_for),
+            buffer_x: d.buffer_x,
+            buffer_y: d.buffer_y,
+            buffer_width: d.buffer_width,
+            buffer_height: d.buffer_height,
+            // Resolved by `WindowManager::list_windows` from the monitor
+            // rectangle above; nothing else can, since this crate has no view
+            // of the display configuration.
+            monitor: None,
+            tiled: d.tiled,
         }
     }
+}
+
+impl WindowRecordDict {
+    /// The monitor rectangle the extension reported, for the daemon to match
+    /// against a connector. See the field docs.
+    pub fn monitor_rect(&self) -> (i32, i32, i32, i32) {
+        (
+            self.monitor_x,
+            self.monitor_y,
+            self.monitor_width,
+            self.monitor_height,
+        )
+    }
+}
+
+/// An empty string on the wire means "the compositor has no such value".
+///
+/// The wire format cannot carry an absent key without every consumer branching
+/// on its absence, and the public DTO should not make a caller tell `""` from
+/// "not applicable" — so the emptiness is translated once, here.
+fn empty_to_none(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
 }
 
 impl From<WindowRecord> for WindowRecordDict {
@@ -173,6 +234,28 @@ impl From<WindowRecord> for WindowRecordDict {
             fullscreen: r.fullscreen,
             above: r.above,
             on_all_workspaces: r.on_all_workspaces,
+            gtk_application_id: r.gtk_application_id.unwrap_or_default(),
+            wm_class_instance: r.wm_class_instance.unwrap_or_default(),
+            sandboxed_app_id: r.sandboxed_app_id.unwrap_or_default(),
+            pid: r.pid,
+            window_type: r.window_type,
+            transient_for: r.transient_for.unwrap_or(0),
+            buffer_x: r.buffer_x,
+            buffer_y: r.buffer_y,
+            buffer_width: r.buffer_width,
+            buffer_height: r.buffer_height,
+            // **Not round-trippable, and it cannot be.** The wire carries the
+            // monitor's rectangle and the public record carries a connector
+            // name; going back the other way would need the display
+            // configuration, which this crate has no view of. This direction
+            // exists for stubs and tests building a record to hand back, and
+            // none of them describe a monitor — so zeroes, which resolve to
+            // `monitor: None` on the way out, which is the truth.
+            monitor_x: 0,
+            monitor_y: 0,
+            monitor_width: 0,
+            monitor_height: 0,
+            tiled: r.tiled,
         }
     }
 }
@@ -461,6 +544,27 @@ mod tests {
             fullscreen: false,
             above: true,
             on_all_workspaces: false,
+            // Same rule as the booleans above, and it matters more here: these
+            // are seventeen fields mapped by hand in both directions, where two
+            // of the same type crossed over would round-trip perfectly and be
+            // wrong. Every value below is distinguishable from its neighbours.
+            gtk_application_id: Some("org.gnome.Terminal.App".to_string()),
+            wm_class_instance: Some("gnome-terminal-server".to_string()),
+            sandboxed_app_id: None,
+            pid: 4231,
+            window_type: "normal".to_string(),
+            transient_for: Some(41),
+            buffer_x: 4,
+            buffer_y: 14,
+            buffer_width: 812,
+            buffer_height: 628,
+            // The one field that cannot round-trip: the wire carries a monitor
+            // rectangle and the record carries a connector name, so this
+            // direction has nothing to put there. `None` is what comes back,
+            // and the test would fail if it were anything else — see
+            // `WindowRecordDict`'s field docs.
+            monitor: None,
+            tiled: true,
         }
         .into()
     }

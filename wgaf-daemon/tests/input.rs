@@ -444,6 +444,119 @@ async fn input_methods_succeed_against_a_real_uinput_device() {
     .expect("MouseScrollAt should succeed with the pointer over the target");
 }
 
+/// `input-test`'s dialog window title, opened by `--dialog`. Must stay in step
+/// with the title in `tests/apps/input-test/src/main.rs`.
+const INPUT_TEST_DIALOG_TITLE: &str = "wgaf input-test — dialog";
+
+/// W17's focus guard **correcting** focus, against real Mutter — the path that
+/// had never run outside a unit test with a stub extension.
+///
+/// # Why this one was worth building
+///
+/// Every path of the guard that *refuses* was verified live on the day W17
+/// shipped, because `verify_target` runs before the input backend is reached and
+/// a refusal synthesizes nothing. The correction path was not, and it is the
+/// load-bearing half: target unfocused → `FocusWindow` → **await the real
+/// `WindowFocusChanged`** → type. The daemon subscribes to that signal *before*
+/// asking for the focus change, and if that ordering were wrong the signal would
+/// arrive in the gap and the wait would sit until it timed out.
+///
+/// The stub models the tightest version of that race — it emits
+/// `WindowFocusChanged` synchronously inside its own `FocusWindow` handler,
+/// before replying — so the ordering was very likely correct. "Very likely
+/// correct" is a weak claim for a guard whose whole purpose is stopping
+/// keystrokes reaching the wrong window, and it was filed as an S4 with the note
+/// that a failure here would not be S4.
+///
+/// # The second window is the application's own dialog
+///
+/// `--dialog` gives `input-test` a second, independently focusable window from
+/// one process. It is deliberately non-modal, so focus can be moved to it and
+/// taken back — a modal one would hold the keyboard and the main window could
+/// not be focused at all, which is a different test.
+///
+/// The oracle is the application's, not wgaf's: `window_focused` is the main
+/// window's own `is_active()`, and `typed` is what actually reached the entry.
+/// A test that asked wgaf whether wgaf had focused the window would be checking
+/// the extension against itself.
+#[ignore = "takes over the desktop: opens an input-test window and its dialog, moves focus \
+            between them and types. Needs a real /dev/uinput and the wgaf GNOME Shell \
+            extension — run via `make test-desktop`."]
+#[tokio::test]
+async fn an_unfocused_target_is_focused_first_and_then_typed_into() {
+    let pid = std::process::id();
+    let daemon_bus_name = format!("org.wgaf.Test.Input.Correct{pid}");
+    let device_name = format!("wgaf test device correct {pid}");
+
+    let _daemon =
+        spawn_daemon_that_delivers(&daemon_bus_name, &device_name, &format!("correct{pid}"), "");
+    let connection = wait_for_daemon(&daemon_bus_name).await;
+
+    let app = TestApp::spawn_with_args("input-test", &["--dialog"]).await;
+    app.wait_for("the input-test window to take keyboard focus", |report| {
+        report.bool("window_focused")
+    })
+    .await;
+
+    let window_id = |title: &str| {
+        let title = title.to_string();
+        let connection = connection.clone();
+        let bus_name = daemon_bus_name.clone();
+        async move {
+            let records: Vec<WindowRecordDict> =
+                harness::windows(&connection, &bus_name, "ListWindows", &())
+                    .await
+                    .expect("ListWindows failed — is the extension installed and current?");
+            records
+                .into_iter()
+                .map(WindowRecord::from)
+                .find(|w| w.title == title)
+                .unwrap_or_else(|| panic!("`{title}` is not in `wgaf window list`"))
+                .id
+        }
+    };
+
+    let main = window_id(INPUT_TEST_TITLE).await;
+    let dialog = window_id(INPUT_TEST_DIALOG_TITLE).await;
+
+    // Put focus somewhere else, and let the application confirm it left — so
+    // the correction below has something real to correct.
+    harness::windows::<(), _>(&connection, &daemon_bus_name, "FocusWindow", &(dialog,))
+        .await
+        .expect("FocusWindow on the dialog failed");
+    app.wait_for("the main window to lose focus to the dialog", |report| {
+        !report.bool("window_focused")
+    })
+    .await;
+
+    // The correction path itself: aimed at the main window, which is not
+    // focused. Nothing here focuses it first — that is the daemon's job, and
+    // the whole point.
+    call_input::<(), _>(
+        &connection,
+        &daemon_bus_name,
+        "TypeTextAt",
+        &("corrected", main),
+    )
+    .await
+    .expect(
+        "TypeTextAt at an unfocused window must correct focus and type, not refuse. A \
+         VerificationFailed here means the correction was attempted and never confirmed — \
+         check the subscribe-before-act ordering in `WindowManager::ensure_focused`",
+    );
+
+    let after = app
+        .wait_for("the corrected text to reach the entry", |report| {
+            report.str("typed").contains("corrected")
+        })
+        .await;
+    assert!(
+        after.bool("window_focused"),
+        "the text arrived but the main window does not report focus, which should be \
+         impossible — the entry is in that window"
+    );
+}
+
 /// The refusal half of the pointer guard, against real Mutter.
 ///
 /// The stub tests in `dbus/input_api.rs` cover what the daemon does with each

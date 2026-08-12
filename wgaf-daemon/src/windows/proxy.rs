@@ -201,7 +201,7 @@ pub(crate) trait ShellExtension {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use wgaf_common::dict::{WorkAreaDict, WorkspaceLayoutDict};
     use zbus::zvariant::Type;
 
@@ -595,6 +595,90 @@ mod tests {
              methods on {}",
             wgaf_common::EXTENSION_INTERFACE_NAME
         );
+    }
+
+    /// The extension's window-record **marshaler** must emit exactly the fields
+    /// the daemon deserializes.
+    ///
+    /// # This is here because the gap it covers cost a desktop run
+    ///
+    /// The record shape lives in two places in the extension and nothing
+    /// connected them: `windows.js`'s `_windowToRecord()` builds a plain JS
+    /// object, and `dbusInterface.js`'s `windowRecordToVariantDict()` converts
+    /// it to a GVariant dict **field by field**. A key added to the first and
+    /// not the second is silently dropped on the way to the bus — no error, no
+    /// warning, the field simply never arrives.
+    ///
+    /// That happened with W18.3 on 2026-08-11: thirteen new fields were built,
+    /// unit-tested, installed and logged into, and every one of them was
+    /// discarded by the marshaler. The visible symptom was the daemon
+    /// reporting the extension as outdated, which was true in effect and
+    /// pointed at entirely the wrong file.
+    ///
+    /// Comparing against `WindowRecordDict` rather than against `windows.js`
+    /// is deliberate: the dict is what the daemon actually demands, so this
+    /// fails for a field missing from the marshaler *and* for one the marshaler
+    /// invents. Same technique as the method drift test below, for the same
+    /// reason — the extension is a separate program the compiler never sees.
+    #[test]
+    fn the_extension_marshals_every_field_the_window_record_expects() {
+        let marshaled = js_object_keys("windowRecordToVariantDict");
+
+        let dict: WindowRecordDict = wgaf_common::WindowRecord::default().into();
+        let expected: BTreeSet<String> = match serde_json::to_value(&dict) {
+            Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
+            other => panic!("WindowRecordDict should serialize as a map, got {other:?}"),
+        };
+
+        assert_eq!(
+            marshaled, expected,
+            "extension/dbusInterface.js's windowRecordToVariantDict() and WindowRecordDict \
+             disagree about the window record's fields. A field in the dict and not the \
+             marshaler is DROPPED SILENTLY on its way to the bus — the daemon then fails to \
+             deserialize the reply and reports the extension as outdated, which sends you to \
+             the wrong file entirely."
+        );
+    }
+
+    /// The keys of the object literal a `function <name>(…) { return { … }; }`
+    /// returns.
+    ///
+    /// Deliberately crude — it reads the first `{` after the function's `return`
+    /// and takes every `identifier:` at the top level of it. Good enough for
+    /// the two flat marshalers here, and it fails loudly rather than silently
+    /// if their shape ever stops being that.
+    fn js_object_keys(function_name: &str) -> BTreeSet<String> {
+        let needle = format!("function {function_name}(");
+        let start = EXTENSION_SOURCE
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no `{function_name}` in dbusInterface.js"));
+        let body = &EXTENSION_SOURCE[start..];
+        let open = body
+            .find("return {")
+            .expect("the marshaler should return an object literal")
+            + "return {".len();
+        let end = body[open..]
+            .find("\n    };")
+            .expect("the returned object literal should be closed at the usual indent")
+            + open;
+
+        let mut keys = BTreeSet::new();
+        let mut depth = 0usize;
+        for line in body[open..end].lines() {
+            let trimmed = line.trim();
+            // Only the outermost level: a nested object's keys are not fields.
+            if depth == 0
+                && let Some((key, _)) = trimmed.split_once(':')
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !key.is_empty()
+            {
+                keys.insert(key.to_string());
+            }
+            depth += trimmed.matches('{').count();
+            depth = depth.saturating_sub(trimmed.matches('}').count());
+        }
+        assert!(!keys.is_empty(), "no fields parsed out of {function_name}");
+        keys
     }
 
     /// ADR-0002's member-presence check is only as good as its list. If a

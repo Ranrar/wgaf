@@ -30,7 +30,7 @@
  *     make -C extension test
  */
 
-import {parseStacking} from '../windows.js';
+import {parseStacking, windowTypeName} from '../windows.js';
 
 let failures = 0;
 
@@ -85,6 +85,29 @@ try {
         failures++;
     }
 }
+
+print('window kinds are named, and an unknown one does not throw');
+/* The order below is `Meta.WindowType`'s own, transcribed on 2026-08-11 from
+ * `Object.keys(Meta.WindowType)` on Mutter 18. windows.js cannot import Meta
+ * (a top-level import makes the file unloadable outside a Shell), so the names
+ * are a literal there and this is the copy that would disagree if a future
+ * Mutter inserted a value. A mismatch means every window reports the wrong
+ * kind, silently and plausibly - `dialog` where `dock` was meant - which is why
+ * the whole list is pinned rather than a sample of it. */
+const META_WINDOW_TYPES = [
+    'normal', 'desktop', 'dock', 'dialog', 'modal_dialog', 'toolbar', 'menu',
+    'utility', 'splashscreen', 'dropdown_menu', 'popup_menu', 'tooltip',
+    'notification', 'combo', 'dnd', 'override_other',
+];
+META_WINDOW_TYPES.forEach((name, value) =>
+    check(`${value} is ${name}`, windowTypeName(value), name));
+
+/* A value from a newer Mutter must not become an exception: it is thrown from
+ * inside ListWindows, so losing the entire window list because one window is of
+ * an unfamiliar kind would be far worse than not naming its kind. */
+check('a value beyond the enum', windowTypeName(META_WINDOW_TYPES.length), 'unknown');
+check('a wildly out-of-range value', windowTypeName(999), 'unknown');
+check('a negative value', windowTypeName(-1), 'unknown');
 
 print('');
 print(failures === 0 ? 'All window-state tests passed.' : `${failures} check(s) failed.`);
