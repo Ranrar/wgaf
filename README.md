@@ -283,6 +283,13 @@ wgaf a11y find --app "Text Editor" --name Save
 wgaf a11y click ':1.87#/org/a11y/atspi/accessible/1234'
 ```
 
+Read text back, which is how you check that what you typed arrived. It reads
+labels too, so it also works for a status line or a result on screen:
+
+```sh
+wgaf a11y text ':1.87#/org/a11y/atspi/accessible/5678'
+```
+
 Machine-readable output for scripts:
 
 ```sh

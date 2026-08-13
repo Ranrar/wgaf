@@ -7,7 +7,7 @@ members = ["wgaf-common", "wgaf-daemon", "wgaf-cli"]
 exclude = ["tests/apps"]
 
 [workspace.package]
-version = "0.8.7"
+version = "0.8.8"
 edition = "2024"
 license = "MIT"
 authors = ["Kim Skov Rasmussen"]

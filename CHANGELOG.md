@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-08-13
+
+**No extension reinstall needed.** Unlike 0.8.6 and 0.8.7, this release changes only the daemon and the CLI, so there is nothing to log out for.
+
 ### Added
 
 - **`wgaf a11y text <element>` — read a widget's text back.** wgaf could put text into a field and never confirm it arrived, so a script could not check its own work against an application you did not write. It can now: type, read back, compare.
