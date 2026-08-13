@@ -136,7 +136,7 @@ gated at all:
 | `org.wgaf.Windows1` — window state | `SetWindowMinimized`, `SetWindowMaximized`, `SetWindowFullscreen`, `SetWindowAbove`, `SetWindowOnAllWorkspaces`, `RestackWindow` |
 | `org.wgaf.Windows1` — workspaces | `SwitchWorkspace`, `AddWorkspace`, `RemoveWorkspace`, `ReorderWorkspace` |
 | `org.wgaf.Input1` | `TypeText`, `KeyPress`, `KeyRelease`, `MouseMove`, `MouseMoveAbsolute`, `MouseClick`, `MouseScroll` |
-| `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement` |
+| `org.wgaf.Accessibility1` | `InvokeAction`, `SetText`, `FocusElement`, `ScrollElement` |
 
 Each name is the D-Bus method it gates, and the command it belongs to is the
 obvious one — `SwitchWorkspace` is `wgaf workspace switch`, and so on.

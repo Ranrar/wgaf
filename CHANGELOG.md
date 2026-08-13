@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`wgaf a11y text <element>` — read a widget's text back.** wgaf could put text into a field and never confirm it arrived, so a script could not check its own work against an application you did not write. It can now: type, read back, compare.
+
+  **It reads more than text fields.** A label carries text too, so this is also how you read what an application is *displaying* — a status line, a result, a message — not only what can be typed into. An element that carries no text at all (a button, say) says so by name rather than returning nothing, which would be indistinguishable from an empty field.
+
+  **What it prints is what is on screen, which is not always the name you searched by.** An element's accessible name is written for a screen reader; its text is what the application displays. They are frequently different, so read the text rather than trusting the name to match.
+
+  The output is the text and nothing else, with no trailing newline added, so `value=$(wgaf a11y text "$ref")` captures exactly what the widget holds. Needs no permission: it reads the desktop without changing it, like `a11y find` and `a11y tree`.
+
+- **`wgaf a11y scroll-to <element>` — bring an element into view.** Scrolls as little as needed to put it on screen. New `ScrollElement` permission, allowed by default; it is kept separate from `FocusElement` even though both go through the same accessibility interface, because moving the keyboard focus decides where your next keystroke lands and scrolling only moves a viewport.
+
+  **It is a convenience, not a prerequisite, and the reason is worth stating.** An element scrolled thousands of pixels out of sight can still be read with `wgaf a11y text` and operated with `wgaf a11y click` — measured, not assumed. Those commands reach the control itself rather than a position on the screen, so being off-screen never stopped them. Use this when something *outside* accessibility has to see the element: a person watching, or a pointer moved there with `wgaf mouse`.
+
+  **It does not work against GTK 4 applications**, which most GNOME apps are. GTK 4's accessibility bridge advertises scrolling and then refuses every request, for every kind of widget — the same limitation `wgaf a11y focus` has, and equally not something wgaf can fix. Firefox and other toolkits do support it. The command says which case you are in.
+
+### Fixed
+
+- **`wgaf a11y focus` now explains itself when the toolkit refuses.** It could never succeed against a GTK 4 application, and it reported that as `D-Bus error talking to the accessibility bus: org.freedesktop.DBus.Error.NotSupported:` — a fault name, a colon, and nothing after it, because the toolkit sends no description. You were told something broke, in the vocabulary of the bus, with no statement of what or what to do instead.
+
+  It now says that GTK 4 does not implement focus grabbing over accessibility, that this cannot succeed against a GTK application, and that `wgaf a11y click` activates the element directly and does work. The command still fails rather than pretending to succeed — a script that carried on typing into a widget that never got focus would be a considerably worse outcome than an error.
+
 ## [0.8.7] - 2026-08-11
 
 **Needs the GNOME Shell extension reinstalled** (`make -C extension install`, then log out and back in) — the same requirement 0.8.6 carried.

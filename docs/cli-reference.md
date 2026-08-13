@@ -865,11 +865,53 @@ Use `wgaf window focus` to focus the *window*, and `wgaf a11y click` to operate
 the control you were aiming at. Between them they cover nearly every reason you
 would have wanted this.
 
+### `wgaf a11y text <element>`
+
+Prints the element's text content, exactly as the application holds it, with no
+trailing newline added:
+
+```sh
+value=$(wgaf a11y text "$ref")
+```
+
+**This is how you check that typing worked.** Set a field, read it back, compare
+— the only way to confirm what actually arrived in an application wgaf did not
+write.
+
+It works on anything that carries text, not just editable fields: a label reads
+back what it displays, which is how you read a status line or a result. An
+element with no text at all — a button, for instance — reports that by name
+rather than printing nothing, so an empty answer always means an empty field.
+
+**Displayed text is not the same as the name you search by.** `wgaf a11y find
+--name` matches an element's *accessible* name, written for a screen reader;
+this prints what is actually on screen. The two are often different — the same
+label can be `wgaf deep leaf` to a search and `Deep leaf` on screen — so read
+the text rather than assuming the name.
+
+Requires no permission, like the other read-only commands.
+
 ### `wgaf a11y set-text <element-ref> <text>`
 
 Replaces an element's text content. Requires the element to implement AT-SPI's
 `EditableText` interface (most text fields do) — fails with "action not
 supported" on elements that don't (e.g. read-only text views).
+
+### `wgaf a11y scroll-to <element-ref>`
+
+Scrolls an element into view, moving as little as needed to put it on screen.
+
+**You probably do not need this.** An element scrolled far out of sight can
+still be read with `wgaf a11y text` and operated with `wgaf a11y click` —
+those reach the control itself, not a position on the screen, so being
+off-screen never stopped them. Reach for this only when something outside
+accessibility has to see the element: a person watching the automation run, or
+a pointer moved there with `wgaf mouse`.
+
+**This does not work on GTK 4 applications**, for the same reason `wgaf a11y
+focus` does not: GTK 4's accessibility bridge offers scrolling and then refuses
+every request, on every kind of widget. Firefox and other toolkits do support
+it. The command tells you which case you are in rather than failing quietly.
 
 ---
 

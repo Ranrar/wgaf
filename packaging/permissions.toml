@@ -68,3 +68,10 @@ MouseScroll = "Allow"
 InvokeAction = "Allow"
 SetText = "Allow"
 FocusElement = "Allow"
+
+# Scrolling an element into view, as `wgaf a11y scroll-to` does. Kept separate
+# from FocusElement even though both go through the same accessibility
+# interface: moving the keyboard focus decides where your next keystroke lands,
+# while scrolling only moves a viewport. Allowing the gentler one should not
+# quietly allow the other.
+ScrollElement = "Allow"

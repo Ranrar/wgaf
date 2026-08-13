@@ -141,6 +141,20 @@ pub enum Capability {
     InvokeAction,
     SetText,
     FocusElement,
+    /// Scrolling an element into view — `wgaf a11y scroll-to`.
+    ///
+    /// Gated rather than left ungated with the reads, because it changes what
+    /// the user is looking at: a script that scrolls someone's document while
+    /// they are reading it has altered their session, however mildly.
+    ///
+    /// Kept separate from [`Capability::FocusElement`] even though the two are
+    /// the same AT-SPI interface and are refused by the same toolkits. The
+    /// interface an operation happens to arrive through is not what a
+    /// permission describes — moving the keyboard focus decides where the next
+    /// keystroke lands, which is the S1 hazard's whole subject matter, while
+    /// scrolling moves a viewport. An operator willing to allow the second has
+    /// not thereby allowed the first.
+    ScrollElement,
 }
 
 impl Capability {
@@ -186,6 +200,7 @@ impl Capability {
         Capability::InvokeAction,
         Capability::SetText,
         Capability::FocusElement,
+        Capability::ScrollElement,
     ];
 
     /// This capability's position in [`Self::ALL`].
@@ -230,6 +245,7 @@ impl Capability {
             Capability::InvokeAction => 23,
             Capability::SetText => 24,
             Capability::FocusElement => 25,
+            Capability::ScrollElement => 26,
         }
     }
 
@@ -264,6 +280,7 @@ impl Capability {
             Capability::InvokeAction => "InvokeAction",
             Capability::SetText => "SetText",
             Capability::FocusElement => "FocusElement",
+            Capability::ScrollElement => "ScrollElement",
         }
     }
 }

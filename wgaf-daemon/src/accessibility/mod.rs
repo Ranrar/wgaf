@@ -306,6 +306,19 @@ impl AccessibilityBackend {
         actions::set_text(conn.connection(), element, text).await
     }
 
+    /// Reads `element`'s text, if it implements `Text`.
+    ///
+    /// **No audit line, deliberately.** The `permissions::audit` trail records
+    /// what wgaf *did to* the desktop; this changes nothing, exactly like
+    /// `find_elements` and `get_tree`, neither of which logs either. Logging
+    /// every read would also put the widget's contents — which may be whatever
+    /// the user is typing — into a file, which is the opposite of what the
+    /// trail is for.
+    pub async fn get_text(&self, element: &ElementRef) -> Result<String, AccessibilityError> {
+        let conn = self.connection().await?;
+        actions::get_text(conn.connection(), element).await
+    }
+
     /// Requests keyboard focus for `element`, if it implements `Component`.
     pub async fn focus_element(&self, element: &ElementRef) -> Result<(), AccessibilityError> {
         tracing::info!(
@@ -316,6 +329,21 @@ impl AccessibilityBackend {
         );
         let conn = self.connection().await?;
         actions::focus(conn.connection(), element).await
+    }
+
+    /// Scrolls `element` into view, if it implements `Component`.
+    ///
+    /// Audited like the other mutating operations: it moves what the user is
+    /// looking at, so the trail should say wgaf did it.
+    pub async fn scroll_element(&self, element: &ElementRef) -> Result<(), AccessibilityError> {
+        tracing::info!(
+            target: AUDIT_TARGET,
+            action = "scroll",
+            element = %element,
+            "scrolling accessible element into view"
+        );
+        let conn = self.connection().await?;
+        actions::scroll_to(conn.connection(), element).await
     }
 }
 
@@ -406,6 +434,58 @@ fn is_stale_object_error_name(name: &str) -> bool {
         name,
         "org.freedesktop.DBus.Error.UnknownObject" | "org.freedesktop.DBus.Error.ServiceUnknown"
     )
+}
+
+/// Maps a toolkit's outright refusal of an operation
+/// (`org.freedesktop.DBus.Error.NotSupported`) to
+/// [`AccessibilityError::ActionNotSupported`] carrying `explanation`, and
+/// leaves every other error to [`translate_element_error`].
+///
+/// # Why this is shared rather than written once inline
+///
+/// **GTK4 answers `NotSupported` with an empty description**, so the raw error
+/// reaches the user as `org.freedesktop.DBus.Error.NotSupported:` — a fault
+/// name, a colon, and nothing. Two operations hit this, for one underlying
+/// reason (the GTK AT-SPI bridge implements neither), and both were measured
+/// against `accessibility-test` on GTK 4.22.4:
+///
+/// - `Component.GrabFocus` — every widget tried, including a focusable button
+///   that a keyboard `Tab` focuses normally.
+/// - `Component.ScrollTo` / `ScrollToPoint` — every [`atspi::ScrollType`], on
+///   a label and on an entry alike.
+///
+/// The interface *is* advertised by `GetInterfaces` and the methods *are* in
+/// the introspection XML, so the checks in `actions` cannot catch this ahead of
+/// time: the only signal is the call failing. Firefox implements both and
+/// succeeds, so this is toolkit unevenness rather than a dead interface.
+///
+/// **`explanation` must name a remedy, not merely restate the failure.** That is
+/// the difference this exists to make; each caller knows what to suggest.
+///
+/// Both `MethodError` and `FDO` are matched for the reason
+/// [`translate_element_error`] documents at length — zbus reports the same bus
+/// error under either variant depending on whether a method or a property was
+/// called. Both operations here are methods, so only the first can fire today;
+/// matching one of the two is the bug that was already found once in this file,
+/// and it is not worth re-introducing for a line.
+fn translate_toolkit_refusal(err: zbus::Error, explanation: String) -> AccessibilityError {
+    let refused = match &err {
+        zbus::Error::MethodError(name, _, _) => is_unsupported_error_name(name.as_str()),
+        zbus::Error::FDO(fdo) => is_unsupported_error_name(zbus::DBusError::name(&**fdo).as_str()),
+        _ => false,
+    };
+
+    if refused {
+        AccessibilityError::ActionNotSupported(explanation)
+    } else {
+        translate_element_error(err)
+    }
+}
+
+/// Whether `name` is the D-Bus error a toolkit sends to say it does not
+/// implement an operation it nonetheless advertises.
+fn is_unsupported_error_name(name: &str) -> bool {
+    name == "org.freedesktop.DBus.Error.NotSupported"
 }
 
 fn clamp_depth(max_depth: i32) -> u32 {
@@ -508,6 +588,73 @@ mod tests {
         assert!(matches!(
             translate_element_error(err),
             AccessibilityError::DBus(_)
+        ));
+    }
+
+    /// The S3 fix, at the level that can be tested without a desktop.
+    ///
+    /// GTK4 refuses `GrabFocus` and `ScrollTo` with a `NotSupported` carrying
+    /// **no description at all**, which used to reach the user as
+    /// `org.freedesktop.DBus.Error.NotSupported:` — a fault name and a colon.
+    /// The whole point of the translation is that the explanation comes from
+    /// wgaf, so an empty description is the case worth pinning.
+    #[test]
+    fn a_description_less_not_supported_becomes_the_explanation_wgaf_supplies() {
+        let err = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.NotSupported")
+                .expect("a valid error name"),
+            None,
+            zbus::Message::method_call("/", "Whatever")
+                .expect("a valid method call builder")
+                .build(&())
+                .expect("a valid method call"),
+        );
+
+        match translate_toolkit_refusal(err, "try `wgaf a11y click` instead".to_string()) {
+            AccessibilityError::ActionNotSupported(explanation) => {
+                assert_eq!(explanation, "try `wgaf a11y click` instead");
+            }
+            other => panic!("expected ActionNotSupported, got {other:?}"),
+        }
+    }
+
+    /// The same guard the stale-element translator has: widening the match
+    /// must not start relabelling unrelated faults as "this toolkit cannot do
+    /// that". An `AccessDenied` is a real failure and must stay one.
+    #[test]
+    fn an_error_other_than_not_supported_is_not_reported_as_a_refusal() {
+        let err = zbus::Error::FDO(Box::new(zbus::fdo::Error::AccessDenied(
+            "not permitted".to_string(),
+        )));
+
+        assert!(matches!(
+            translate_toolkit_refusal(err, "should not be used".to_string()),
+            AccessibilityError::DBus(_)
+        ));
+    }
+
+    /// A refusal must not swallow the stale-element case. If the application
+    /// exited mid-call, "this toolkit does not support scrolling" would send
+    /// the user looking for a toolkit bug that is not there.
+    #[test]
+    fn a_gone_application_is_still_element_not_found_when_a_refusal_was_possible() {
+        let err = zbus::Error::FDO(Box::new(zbus::fdo::Error::ServiceUnknown(
+            "The name :1.42 was not provided by any .service files".to_string(),
+        )));
+
+        assert!(matches!(
+            translate_toolkit_refusal(err, "should not be used".to_string()),
+            AccessibilityError::ElementNotFound(_)
+        ));
+    }
+
+    #[test]
+    fn recognizes_the_unsupported_error_name() {
+        assert!(is_unsupported_error_name(
+            "org.freedesktop.DBus.Error.NotSupported"
+        ));
+        assert!(!is_unsupported_error_name(
+            "org.freedesktop.DBus.Error.UnknownMethod"
         ));
     }
 }

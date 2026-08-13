@@ -73,6 +73,11 @@ const FOCUS_TARGET: &str = "wgaf focus target";
 const DEEP_LEAF: &str = "wgaf deep leaf";
 const WIDE_ITEM_PREFIX: &str = "wgaf wide item";
 
+/// The text the deep leaf label *displays*, as distinct from [`DEEP_LEAF`],
+/// which is its accessible *name*. The fixture sets the two differently on
+/// purpose — see `accessibility-test`'s source.
+const DEEP_LEAF_TEXT: &str = "Deep leaf";
+
 /// What the application's read-only entry contains, and must go on containing.
 const READONLY_TEXT: &str = "read-only";
 
@@ -462,6 +467,105 @@ async fn setting_text_replaces_the_entry_contents_and_the_application_reports_it
         .await;
 }
 
+/// `GetElementText` reads back exactly what `SetText` put in, and reads a
+/// static label too.
+///
+/// # This closes the verification hole, so it is the assertion that matters
+///
+/// wgaf could set text and never confirm it arrived, which meant no automation
+/// could check its own work against an application this project did not write.
+/// The round trip below is that check, performed the way a script would: set,
+/// read, compare.
+///
+/// **The label half is not padding.** `Text` and `EditableText` are different
+/// interfaces, and a label implements only the first — so this pins that
+/// reading is available for what an application *displays*, not merely for what
+/// a script has just typed. A version of this method requiring `EditableText`
+/// would pass the first assertion and fail the second.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn reading_an_element_returns_the_text_that_was_set_and_a_labels_own_text() {
+    let fixture = Fixture::start("GetText").await;
+
+    const TEXT: &str = "read back through the accessibility bus";
+    let entry = fixture.element(ROLE_TEXT_BOX, ENTRY).await;
+    fixture
+        .call::<(), _>("SetText", &(entry.clone(), TEXT))
+        .await
+        .expect("SetText should succeed against an editable entry");
+
+    let read: String = fixture
+        .call("GetElementText", &(entry,))
+        .await
+        .expect("GetElementText should succeed against an entry implementing Text");
+    assert_eq!(
+        read, TEXT,
+        "the entry did not read back what was written into it — the round trip that lets a \
+         script verify its own typing is what this method exists for"
+    );
+
+    // The read-only entry is the one element whose contents this suite already
+    // treats as fixed, so it is the safest thing to assert an exact value on.
+    let readonly = fixture.element(ROLE_TEXT_BOX, READONLY).await;
+    let read: String = fixture
+        .call("GetElementText", &(readonly,))
+        .await
+        .expect("a read-only entry still implements Text");
+    assert_eq!(read, READONLY_TEXT);
+
+    // A label: `Text` without `EditableText`.
+    //
+    // **Its displayed text is not its accessible name**, and this test found
+    // that out the hard way — a first version asserted the two matched and got
+    // `"Deep leaf"` where it expected `"wgaf deep leaf"`. The fixture sets them
+    // separately on purpose (`Label::builder().label("Deep leaf")` plus a fixed
+    // accessible name), and that is the ordinary case rather than a quirk: an
+    // accessible name is written for a screen reader, the label is written for
+    // the screen.
+    //
+    // So the two are asserted to **differ**, not to match. `wgaf a11y find
+    // --name` searches the first and `wgaf a11y text` returns the second, and a
+    // script that assumes they are interchangeable will be wrong on most real
+    // applications.
+    let label = fixture.element(ROLE_LABEL, DEEP_LEAF).await;
+    let read: String = fixture
+        .call("GetElementText", &(label,))
+        .await
+        .expect("a label implements Text even though nothing can write to it");
+    assert_eq!(
+        read, DEEP_LEAF_TEXT,
+        "a label should read back the text it displays"
+    );
+    assert_ne!(
+        read, DEEP_LEAF,
+        "displayed text and accessible name are different things, and this fixture sets them \
+         to different values so that nothing here can quietly conflate them"
+    );
+}
+
+/// An element with no text at all is refused by name, not answered with an
+/// empty string.
+///
+/// The distinction is the whole point: an empty answer must mean "this field is
+/// empty", so "this element cannot hold text" has to be a different outcome. A
+/// script that could not tell them apart would read a button as a blank field.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn an_element_without_text_is_refused_rather_than_read_as_empty() {
+    let fixture = Fixture::start("GetTextUnsupported").await;
+    let button = fixture.element(ROLE_BUTTON, ACTIVATE).await;
+
+    let err = fixture
+        .call::<String, _>("GetElementText", &(button,))
+        .await
+        .expect_err("a button implements no Text interface and must say so");
+    assert_eq!(
+        dbus_error_name(&err),
+        Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED),
+        "got {err:?}"
+    );
+}
+
 /// An element offering no `Action` and no `EditableText` refuses both, with the
 /// daemon's own named error rather than a raw D-Bus fault.
 ///
@@ -540,12 +644,16 @@ async fn setting_text_on_the_read_only_entry_is_refused_and_leaves_it_unchanged(
 /// 4.22.4, so it is a property of GTK rather than of this application.
 ///
 /// What is asserted is what a user can still rely on: the call returns rather
-/// than hanging, it reports failure rather than claiming success, and the
-/// application's focus is left where it was. The application reports
+/// than hanging, it reports the refusal **as wgaf's own `ActionNotSupported`
+/// naming a remedy** rather than as the toolkit's empty-bodied D-Bus error, and
+/// the application's focus is left where it was. The application reports
 /// `focused_widget` so that the day the bridge does implement this, the
-/// assertion to write is already obvious — and `issues.md` carries the fact
-/// that wgaf currently passes the toolkit's refusal through as a raw D-Bus
-/// error with an empty message.
+/// assertion to write is already obvious.
+///
+/// The error assertion is the S3 fix, and it is the half most worth pinning:
+/// the refusal used to reach the user as
+/// `org.freedesktop.DBus.Error.NotSupported:` — a fault name, a colon, and
+/// nothing else.
 #[tokio::test]
 #[ignore = "opens a window on the live session; run via `make test-desktop`"]
 async fn focus_element_completes_against_this_gtk4_bridge() {
@@ -569,10 +677,18 @@ async fn focus_element_completes_against_this_gtk4_bridge() {
              so update this test and the entry in issues.md rather than silencing it."
         ),
         Err(err) => {
-            // The point is that it came back at all, and as a failure. The
-            // specific error name is the toolkit's, not wgaf's, so pinning it
-            // would be pinning GTK.
-            eprintln!("FocusElement reported, as expected on GTK4: {err}");
+            assert_eq!(
+                dbus_error_name(&err),
+                Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED),
+                "the toolkit's refusal must be translated into wgaf's own error, not passed \
+                 through as a bare NotSupported: {err}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains("wgaf a11y click"),
+                "the message must name the remedy, since the toolkit supplies no description at \
+                 all: {message}"
+            );
         }
     }
 
@@ -586,6 +702,83 @@ async fn focus_element_completes_against_this_gtk4_bridge() {
             .and_then(|v| v.as_str()),
         Some("entry"),
         "a refused focus grab must not have moved the focus"
+    );
+}
+
+/// `ScrollElement` is refused by this toolkit, legibly — and the element is
+/// reachable regardless, which is the more important half.
+///
+/// **The target is genuinely off-screen.** The application's wide list lives in
+/// a `ScrolledWindow` capped at 80px, so the last item sits roughly 2,500px
+/// below a 480px window. Measured on 2026-08-12, in window coordinates;
+/// `CoordType::Screen` is useless here, because GTK4 on Wayland reports
+/// `(0, 0, w, h)` for every element regardless of where it is.
+///
+/// Two assertions, and the second is why `wgaf a11y scroll-to` is a
+/// convenience rather than a prerequisite:
+///
+/// - The scroll is refused, as wgaf's own `ActionNotSupported` naming what
+///   still works. GTK 4.22.4 answers every `ScrollType` with `NotSupported` on
+///   a label and on an entry alike; Firefox implements it and succeeds, so this
+///   is toolkit unevenness rather than a dead interface.
+/// - **The off-screen element answers anyway.** Reading its text works with no
+///   scrolling at all, because AT-SPI dispatches to the widget rather than to a
+///   pixel. If this ever stops being true, the reasoning in W18.5 that made
+///   `ScrollTo` optional stops holding, and this is where that shows up.
+///
+/// Not asserted: that a *successful* scroll moves anything. Nothing in this
+/// suite's reach implements it, and verifying against Firefox would pin a test
+/// to an application this project does not control — the mistake the old
+/// `gtk4-demo` suite existed to demonstrate.
+#[tokio::test]
+#[ignore = "opens a window on the live session; run via `make test-desktop`"]
+async fn scrolling_is_refused_by_this_gtk4_bridge_and_the_element_answers_anyway() {
+    let fixture = Fixture::start("Scroll").await;
+
+    // The last item in the wide list: the furthest thing from the top of the
+    // window that this application contains.
+    let last = fixture.app.read().expect("the application reports");
+    let count = last
+        .json()
+        .get("wide_item_count")
+        .and_then(|v| v.as_u64())
+        .expect("the application reports how many wide items it built");
+    let name = format!("{WIDE_ITEM_PREFIX} {:03}", count - 1);
+    let offscreen = fixture.element(ROLE_LABEL, &name).await;
+
+    match fixture
+        .call::<(), _>("ScrollElement", &(offscreen.clone(),))
+        .await
+    {
+        Ok(()) => panic!(
+            "ScrollElement succeeded against a GTK4 widget. That is a better outcome than this \
+             test expects — GTK's bridge answered NotSupported for every ScrollType when this was \
+             measured — so update this test and W18.5 rather than silencing it."
+        ),
+        Err(err) => {
+            assert_eq!(
+                dbus_error_name(&err),
+                Some(wgaf_common::ACCESSIBILITY_ERROR_ACTION_NOT_SUPPORTED),
+                "the toolkit's refusal must be translated into wgaf's own error, not passed \
+                 through as a bare NotSupported: {err}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains("wgaf a11y click"),
+                "the message must say what still works, since the toolkit supplies no description \
+                 at all: {message}"
+            );
+        }
+    }
+
+    let text: String = fixture.call("GetElementText", &(offscreen,)).await.expect(
+        "an off-screen element must still be readable — this is what makes scrolling \
+                 optional rather than a prerequisite",
+    );
+    assert_eq!(
+        text,
+        format!("Item {}", count - 1),
+        "the off-screen element returned text, but not its own"
     );
 }
 

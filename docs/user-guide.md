@@ -304,8 +304,28 @@ Take the element reference from the output (looks like
 ```sh
 wgaf a11y click :1.87#/org/a11y/atspi/accessible/1234
 wgaf a11y set-text :1.87#/org/a11y/atspi/accessible/5678 "new text"
+wgaf a11y text :1.87#/org/a11y/atspi/accessible/5678
 wgaf a11y focus :1.87#/org/a11y/atspi/accessible/1234
 ```
+
+`wgaf a11y text` reads an element's text back, which is how you check that what
+you typed actually arrived:
+
+```sh
+ref=:1.87#/org/a11y/atspi/accessible/5678
+wgaf a11y set-text "$ref" "new text"
+[ "$(wgaf a11y text "$ref")" = "new text" ] || echo "the text did not take"
+```
+
+It reads labels too, not only fields you can type into, so it is also how you
+read a status line or a result off the screen.
+
+Two of these commands do not work against GTK 4 applications, which most GNOME
+apps are: `wgaf a11y focus` and `wgaf a11y scroll-to`. GTK 4's accessibility
+bridge refuses both for every widget, and no version of wgaf can change that.
+Use `wgaf window focus` for the window and `wgaf a11y click` for the control,
+and note that clicking and reading work whether or not the element is scrolled
+into view — they reach the control itself, not a spot on the screen.
 
 If you're not sure what to search for, browse the whole structure first:
 

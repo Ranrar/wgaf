@@ -156,11 +156,41 @@ pub async fn set_text(
     Ok(())
 }
 
+/// Prints the element's text verbatim on success.
+///
+/// **Not `print_ok`**, which would wrap it in a sentence: the point of this
+/// command is that its output *is* the value, so `$(wgaf a11y text "$ref")`
+/// captures the text and nothing else. `--json` puts it in the `message` field
+/// every other command uses, so a JSON consumer needs no special case either.
+pub async fn text(bus_name: &str, element: &ElementRef, json: bool) -> CliResult<()> {
+    let connection = connect().await?;
+    let text: String = call(&connection, bus_name, "GetElementText", &(element.clone(),))
+        .await
+        .map_err(map_err)?;
+    if json {
+        crate::output::print_ok(json, &text);
+    } else {
+        // No trailing newline: the text is the output, and a newline this
+        // command invented would end up inside the captured value.
+        print!("{text}");
+    }
+    Ok(())
+}
+
 pub async fn focus(bus_name: &str, element: &ElementRef, json: bool) -> CliResult<()> {
     let connection = connect().await?;
     call::<(), _>(&connection, bus_name, "FocusElement", &(element.clone(),))
         .await
         .map_err(map_err)?;
     crate::output::print_ok(json, &format!("focused {element}"));
+    Ok(())
+}
+
+pub async fn scroll_to(bus_name: &str, element: &ElementRef, json: bool) -> CliResult<()> {
+    let connection = connect().await?;
+    call::<(), _>(&connection, bus_name, "ScrollElement", &(element.clone(),))
+        .await
+        .map_err(map_err)?;
+    crate::output::print_ok(json, &format!("scrolled {element} into view"));
     Ok(())
 }

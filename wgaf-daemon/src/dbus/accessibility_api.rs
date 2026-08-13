@@ -163,6 +163,18 @@ impl AccessibilityApi {
         Ok(self.backend.set_text(&element, text).await?)
     }
 
+    /// Reads `element`'s text content (requires the AT-SPI `Text` interface).
+    ///
+    /// **Ungated**, like every other read-only method on this interface: it
+    /// observes the desktop rather than changing it. See `permissions::policy`
+    /// for why those have no `Capability` variant at all.
+    ///
+    /// Works on more than text fields — a static label implements `Text` too,
+    /// so this reads what is *displayed*, not only what can be typed into.
+    async fn get_element_text(&self, element: ElementRef) -> Result<String, AccessibilityApiError> {
+        Ok(self.backend.get_text(&element).await?)
+    }
+
     /// Requests keyboard focus for `element` (requires the AT-SPI
     /// `Component` interface).
     async fn focus_element(
@@ -175,6 +187,24 @@ impl AccessibilityApi {
             .check(Capability::FocusElement, connection, &header)
             .await?;
         Ok(self.backend.focus_element(&element).await?)
+    }
+
+    /// Scrolls `element` into view (requires the AT-SPI `Component`
+    /// interface, and a toolkit that implements `ScrollTo` — GTK4 does not).
+    ///
+    /// Gated: it changes what the user is looking at. See
+    /// `Capability::ScrollElement` for why it is not folded into
+    /// `FocusElement` despite sharing an interface.
+    async fn scroll_element(
+        &self,
+        element: ElementRef,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), AccessibilityApiError> {
+        self.permissions
+            .check(Capability::ScrollElement, connection, &header)
+            .await?;
+        Ok(self.backend.scroll_element(&element).await?)
     }
 }
 

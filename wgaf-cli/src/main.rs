@@ -486,6 +486,42 @@ enum A11yCommand {
         /// The new text content.
         text: String,
     },
+
+    /// Read an element's text content.
+    ///
+    /// Prints exactly the text, with no trailing newline added, so it can be
+    /// captured directly: `value=$(wgaf a11y text "$ref")`.
+    ///
+    /// Works on more than text fields. A label implements AT-SPI's `Text`
+    /// interface too, so this reads what an application is *displaying*, not
+    /// only what can be typed into. An element that carries no text at all
+    /// says so rather than printing nothing.
+    ///
+    /// This is what checks that typing worked: type into a field, read it
+    /// back, compare.
+    Text {
+        /// Element reference, in `bus_name#object_path` form.
+        element: wgaf_common::ElementRef,
+    },
+
+    /// Scroll an element into view.
+    ///
+    /// Scrolls as little as needed to put the element on screen.
+    ///
+    /// **This does not work against GTK4 applications**, which is most of a
+    /// GNOME desktop: GTK's accessibility bridge advertises scrolling and then
+    /// refuses every request. The command says so rather than failing
+    /// silently. Firefox and other toolkits do support it.
+    ///
+    /// You rarely need this. An element scrolled out of view can still be
+    /// read with `wgaf a11y text` and activated with `wgaf a11y click` —
+    /// those address the widget, not a pixel. Reach for this when something
+    /// outside accessibility has to see the element: a person watching, or
+    /// pointer input from `wgaf mouse`.
+    ScrollTo {
+        /// Element reference, in `bus_name#object_path` form.
+        element: wgaf_common::ElementRef,
+    },
 }
 
 #[derive(Subcommand)]
@@ -898,6 +934,12 @@ async fn run(cli: Cli) -> CliResult<Outcome> {
             }
             A11yCommand::Focus { element } => {
                 commands::accessibility::focus(bus_name, &element, json).await?
+            }
+            A11yCommand::Text { element } => {
+                commands::accessibility::text(bus_name, &element, json).await?
+            }
+            A11yCommand::ScrollTo { element } => {
+                commands::accessibility::scroll_to(bus_name, &element, json).await?
             }
             A11yCommand::SetText { element, text } => {
                 commands::accessibility::set_text(bus_name, &element, &text, json).await?
