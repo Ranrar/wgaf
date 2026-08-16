@@ -90,6 +90,7 @@ jobs:
           --test permissions
           --test status
           --test input
+          --test bus_name
 
       # Needs the host's uinput device and Wayland socket mapped into the
       # container — see the header for the `act` flags that do it.

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-08-16
+
+**No extension reinstall needed.** Like 0.8.8, this release changes only the daemon, so there is nothing to log out for.
+
+### Fixed
+
+- **The daemon's bus name can no longer be taken away from it.** `org.wgaf.Daemon` is the name the CLI addresses, and therefore the name it trusts — but the daemon was claiming it with flags that let *anything else on your session bus* take it, just by asking. Whatever held the name would receive what the CLI sent, including the text passed to `wgaf type`, and could answer however it liked while consulting no `permissions.toml` at all, because it was never running one. The daemon now refuses replacement, which was measured against a plain `busctl` command that could previously take the name in one line.
+
+- **Starting a second daemon now refuses instead of silently displacing the first.** Running `wgaf-daemon` twice used to hand the bus name to the newcomer and leave the original running forever — owning nothing, answering nobody, and giving no indication that anything had happened. The second one now exits with an error naming the bus name, saying that the running daemon has been left alone, and showing how to find it (`busctl --user list | grep org.wgaf`).
+
+  If a running daemon somehow loses the name anyway, it now logs an error and exits rather than staying up unreachable, so a supervised daemon restarts instead of quietly serving nobody.
+
 ## [0.8.8] - 2026-08-13
 
 **No extension reinstall needed.** Unlike 0.8.6 and 0.8.7, this release changes only the daemon and the CLI, so there is nothing to log out for.

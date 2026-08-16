@@ -58,6 +58,25 @@ struct Args {
     log_level: Option<String>,
 }
 
+/// Why the daemon refused to finish starting.
+///
+/// Only the bus-name case needs its own wording; every other connection
+/// failure is a zbus error the user can act on as it stands.
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    #[error(
+        "another wgaf-daemon already owns the bus name `{bus_name}`\n\n\
+         This daemon is exiting rather than taking the name from it, so the \
+         running one keeps working.\n\n\
+         Find it with:\n\n    \
+         busctl --user list | grep org.wgaf"
+    )]
+    BusNameTaken { bus_name: String },
+
+    #[error(transparent)]
+    Connection(zbus::Error),
+}
+
 #[tokio::main]
 async fn main() {
     // Errors are printed here rather than returned from `main`, because
@@ -226,6 +245,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let connection = zbus::connection::Builder::session()?
         .name(config.bus_name.as_str())?
+        // Both of these are `true` by default — `zbus::fdo::RequestNameFlags`
+        // declares `#[bitflags(default = AllowReplacement | ReplaceExisting |
+        // DoNotQueue)]`, so a builder that names nothing asks for all three.
+        // Two of them are wrong for this program, and neither was chosen:
+        //
+        // * `AllowReplacement` let *any* process on the session bus take
+        //   `org.wgaf.Daemon` away just by asking for it. Measured with a
+        //   one-line `busctl call ... RequestName ... 2`, which came back
+        //   `PrimaryOwner`. The CLI trusts this name, so whatever holds it
+        //   receives the text passed to `wgaf type` and answers however it
+        //   likes — consulting no `permissions.toml`, because an impostor was
+        //   never running one.
+        // * `ReplaceExisting` made a second daemon silently displace a running
+        //   first one, which kept running, owned nothing, answered nobody, and
+        //   never exited. That is how strays accumulate.
+        //
+        // `DoNotQueue` is deliberately left set: `.set()` touches only the
+        // named flag, and it is what makes a second instance fail immediately
+        // instead of waiting in a queue for a name it should not get.
+        .allow_name_replacements(false)
+        .replace_existing_names(false)
         .serve_at(
             wgaf_common::OBJECT_PATH,
             dbus::Daemon::new(
@@ -273,7 +313,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             ),
         )?
         .build()
-        .await?;
+        .await
+        // With `ReplaceExisting` off, the bus answers `Exists` and zbus turns
+        // that into `NameTaken`. Translated here because this is the first
+        // thing a user meets when they start the daemon twice, and a bare
+        // "name already taken on the bus" names neither the name nor the
+        // remedy.
+        .map_err(|error| match error {
+            zbus::Error::NameTaken => StartupError::BusNameTaken {
+                bus_name: config.bus_name.clone(),
+            },
+            other => StartupError::Connection(other),
+        })?;
 
     tokio::spawn(announce_device_presence(
         connection.clone(),
@@ -297,10 +348,75 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         accessibility_object_path = wgaf_common::ACCESSIBILITY_OBJECT_PATH,
         "registered on session bus, waiting for requests"
     );
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("shutting down");
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            tracing::info!("shutting down");
+        }
+        () = exit_if_bus_name_lost(&connection, &config.bus_name) => {}
+    }
 
     Ok(())
+}
+
+/// Exits the process if the bus name is taken away while the daemon is running.
+///
+/// With `AllowReplacement` off this should be unreachable — the bus has no one
+/// to give the name to. "Unreachable" is not "impossible", though, and the
+/// state it would leave behind is the worst one available: a daemon that is
+/// still running, still holding its `uinput` device, and answering nobody,
+/// because every client addresses it by the name it no longer owns. zbus does
+/// log the loss at INFO, and that line is precisely what nobody acted on when
+/// this was found.
+///
+/// Exiting non-zero says so once, loudly, and lets the systemd user unit
+/// restart the daemon into a session where it can serve again.
+///
+/// Never returns: the only paths out of it are `exit` or the caller's
+/// `tokio::select!` dropping it at shutdown.
+async fn exit_if_bus_name_lost(connection: &zbus::Connection, bus_name: &str) -> ! {
+    // A failure to subscribe is not worth aborting a healthy start for — the
+    // daemon serves perfectly well without this watch, and the condition it
+    // watches for is one the request flags above already prevent.
+    let mut lost = match zbus::fdo::DBusProxy::new(connection).await {
+        Ok(proxy) => match proxy.receive_name_lost().await {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!(%error, "cannot watch for bus-name loss; continuing without it");
+                std::future::pending().await
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "cannot watch for bus-name loss; continuing without it");
+            std::future::pending().await
+        }
+    };
+
+    loop {
+        let Some(signal) = futures_util::StreamExt::next(&mut lost).await else {
+            // The bus connection is gone, which shutdown also does. Nothing
+            // useful is left to watch for.
+            std::future::pending().await
+        };
+
+        // The bus sends `NameLost` for every well-known name this connection
+        // gives up, including any released during an orderly shutdown, so
+        // match on the one that matters rather than on the signal alone.
+        match signal.args() {
+            Ok(args) if args.name.as_str() == bus_name => {
+                tracing::error!(
+                    bus_name,
+                    "lost the bus name to another process; exiting rather than \
+                     staying up unreachable. Another wgaf-daemon has almost \
+                     certainly been started"
+                );
+                std::process::exit(1);
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "unreadable NameLost signal"),
+        }
+    }
 }
 
 /// Emits `PropertiesChanged` for `org.wgaf.Daemon1.InputDeviceActive` whenever
